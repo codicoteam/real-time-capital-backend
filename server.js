@@ -1,0 +1,49 @@
+// app.js
+const express = require("express");
+const http = require("http");
+const cors = require("cors");
+const bodyParser = require("body-parser");
+const dotenv = require("dotenv");
+// DB + Socket config
+const connectDB = require("./configs/db_config");
+// const initChatSocket = require("./config/socket_config");
+// Swagger setup
+const setupSwagger = require("./middlewares/swagger");
+// Routers
+// const userRouter = require("./routers/user_router");
+
+// Load env
+dotenv.config();
+
+// Connect DB
+connectDB();
+
+const app = express();
+// const server = http.createServer(app);
+
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+app.use(express.json());
+
+// Swagger docs
+setupSwagger(app);
+
+// REST Routes
+// app.use("/api/v1/users", userRouter);
+
+// Global error handler (REST)
+app.use((err, req, res, next) => {
+  console.error("Global error handler:", err.stack || err);
+  res.status(500).json({ message: "Something went wrong!" });
+});
+
+// Init Socket.IO (chat + tracking now)
+// initChatSocket(server);
+
+// Start server
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+  console.log(`🚗 Server running on port ${PORT}`);
+  console.log(`📘 Swagger docs available at http://localhost:${PORT}/api-docs`);
+});
