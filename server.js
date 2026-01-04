@@ -10,7 +10,9 @@ const connectDB = require("./configs/db_config");
 // Swagger setup
 const setupSwagger = require("./middlewares/swagger");
 // Routers
-// const userRouter = require("./routers/user_router");
+const debtorRecordRouter = require("./routers/debtor_record_router");
+const userRouter = require("./routers/user_router");
+const attachmentRouter = require("./routers/attachment_router");
 
 // Load env
 dotenv.config();
@@ -30,7 +32,9 @@ app.use(express.json());
 setupSwagger(app);
 
 // REST Routes
-// app.use("/api/v1/users", userRouter);
+app.use("/api/v1/users", userRouter);
+app.use("/api/v1/debtor-records", debtorRecordRouter);
+app.use("/api/v1/attachments", attachmentRouter);
 
 // Global error handler (REST)
 app.use((err, req, res, next) => {

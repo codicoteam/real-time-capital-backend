@@ -32,8 +32,8 @@ const UserDocumentSchema = new mongoose.Schema(
 
 const UserSchema = new mongoose.Schema(
   {
-    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-    phone: { type: String, unique: true, sparse: true, trim: true },
+    email: { type: String, required: true, lowercase: true, trim: true },
+    phone: { type: String,  trim: true },
     password_hash: { type: String, select: false },
 
     // Roles
@@ -66,7 +66,7 @@ const UserSchema = new mongoose.Schema(
     },
 
     // KYC (minimum set)
-    national_id_number: { type: String, index: true, sparse: true, trim: true },
+    national_id_number: { type: String, sparse: true, trim: true },
     date_of_birth: { type: Date },
     address: { type: String, trim: true },
     location: { type: String, trim: true },
@@ -98,6 +98,5 @@ const UserSchema = new mongoose.Schema(
 UserSchema.index({ email: 1 });
 UserSchema.index({ phone: 1 });
 UserSchema.index({ roles: 1 });
-UserSchema.index({ national_id_number: 1 });
 
 module.exports = mongoose.model("User", UserSchema);
