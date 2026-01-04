@@ -13,6 +13,7 @@ const setupSwagger = require("./middlewares/swagger");
 const debtorRecordRouter = require("./routers/debtor_record_router");
 const userRouter = require("./routers/user_router");
 const attachmentRouter = require("./routers/attachment_router");
+const loanApplicationRouter = require("./routers/loan_application_router");
 
 // Load env
 dotenv.config();
@@ -35,6 +36,7 @@ setupSwagger(app);
 app.use("/api/v1/users", userRouter);
 app.use("/api/v1/debtor-records", debtorRecordRouter);
 app.use("/api/v1/attachments", attachmentRouter);
+app.use("/api/v1/loan-applications", loanApplicationRouter);
 
 // Global error handler (REST)
 app.use((err, req, res, next) => {

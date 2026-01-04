@@ -321,7 +321,11 @@ function generateDocumentTemplate({ title, message, details = null }) {
 /**
  * Send transaction notification email
  */
-async function sendTransactionNotificationEmail({ to, fullName, notification }) {
+async function sendTransactionNotificationEmail({
+  to,
+  fullName,
+  notification,
+}) {
   const subject = `Transaction Notification: ${notification.subject}`;
   const title = notification.subject;
 
@@ -493,6 +497,410 @@ async function sendAdminCreatedAccountEmail({
   await sendEmail({ to, subject, html });
 }
 
+/**
+ * Send loan application submitted email to customer
+ */
+async function sendLoanApplicationSubmittedEmail({
+  to,
+  fullName,
+  applicationNo,
+}) {
+  const subject = `Loan Application Submitted - Application #${applicationNo}`;
+  const title = "Loan Application Submitted Successfully";
+
+  const message = `
+    <p style="margin: 0 0 15px 0;">Dear ${fullName},</p>
+    <p style="margin: 0 0 15px 0;">
+      Thank you for submitting your loan application to Real Time Capital. 
+      Your application has been received and is currently under review.
+    </p>
+    <p style="margin: 0 0 15px 0;">
+      <strong>Application Details:</strong><br>
+      Application Number: <strong>${applicationNo}</strong><br>
+      Submission Date: ${new Date().toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      })}
+    </p>
+    <p style="margin: 0 0 15px 0;">
+      Our loan officers will review your application and contact you within 1-2 business days. 
+      Please ensure all required documents are submitted to avoid delays.
+    </p>
+    <p style="margin: 0;">
+      You can track your application status by logging into your account.
+    </p>
+  `;
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0; background-color: #f5f5f5; border: 1px solid #d1d1d1; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #1a1a1a; font-size: 12px; margin: 0 0 10px 0; font-weight: bold;">
+            APPLICATION SUMMARY:
+          </p>
+          <p style="color: #666666; font-size: 12px; margin: 0 0 5px 0;">
+            <span style="font-weight: bold; color: #333333;">Application #:</span> ${applicationNo}
+          </p>
+          <p style="color: #666666; font-size: 12px; margin: 0 0 5px 0;">
+            <span style="font-weight: bold; color: #333333;">Status:</span> Submitted for Review
+          </p>
+          <p style="color: #666666; font-size: 12px; margin: 0 0 5px 0;">
+            <span style="font-weight: bold; color: #333333;">Next Steps:</span> Document verification and assessment
+          </p>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  const html = generateDocumentTemplate({
+    title,
+    message,
+    details: detailsHtml,
+  });
+
+  await sendEmail({ to, subject, html });
+}
+
+/**
+ * Send loan application notification to admin team
+ */
+async function sendLoanApplicationAdminNotification({
+  applicationNo,
+  customerName,
+  requestedAmount,
+  collateralCategory,
+}) {
+  const subject = `New Loan Application Received - #${applicationNo}`;
+  const title = "New Loan Application Requires Review";
+
+  const message = `
+    <p style="margin: 0 0 15px 0;">Loan Officer Team,</p>
+    <p style="margin: 0 0 15px 0;">
+      A new loan application has been submitted and requires review.
+    </p>
+    <p style="margin: 0;">
+      Please review the application details and process according to company guidelines.
+    </p>
+  `;
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0; background-color: #f0f7ec; border: 1px solid #6ba547; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #1a1a1a; font-size: 12px; margin: 0 0 15px 0; font-weight: bold; border-bottom: 2px solid #6ba547; padding-bottom: 5px;">
+            APPLICATION DETAILS
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px; width: 180px;">Application Number:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">${applicationNo}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Customer Name:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${customerName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Requested Amount:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">$${requestedAmount.toLocaleString()}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Collateral Category:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">
+                ${collateralCategory.replace("_", " ").toUpperCase()}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Submission Time:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">
+                ${new Date().toLocaleString("en-US", {
+                  year: "numeric",
+                  month: "long",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+    
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 20px 0;">
+      <tr>
+        <td align="center">
+          <a href="${
+            process.env.ADMIN_PORTAL_URL
+          }/loan-applications/${applicationNo}" 
+             style="display: inline-block; padding: 12px 30px; background: linear-gradient(135deg, #6ba547 0%, #5a8f3c 100%); 
+                    color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 14px;">
+            Review Application
+          </a>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  const html = generateDocumentTemplate({
+    title,
+    message,
+    details: detailsHtml,
+  });
+
+  // Send to admin email(s) - could be multiple
+  const adminEmails = process.env.ADMIN_NOTIFICATION_EMAILS?.split(",") || [
+    process.env.EMAIL_USER,
+  ];
+
+  for (const email of adminEmails) {
+    await sendEmail({
+      to: email,
+      subject,
+      html,
+    });
+  }
+}
+
+/**
+ * Send loan application status update email to customer
+ */
+async function sendLoanApplicationStatusUpdateEmail({
+  to,
+  fullName,
+  applicationNo,
+  status,
+  notes = "",
+  officerName = "Loan Officer",
+  contactDetails = "",
+}) {
+  const statusTitles = {
+    processing: "Application Under Review",
+    approved: "Application Approved",
+    rejected: "Application Decision",
+    cancelled: "Application Cancelled",
+  };
+
+  const subject = `Loan Application Update - #${applicationNo}`;
+  const title = statusTitles[status] || "Application Status Update";
+
+  let statusMessage = "";
+  switch (status) {
+    case "processing":
+      statusMessage = `
+        <p style="margin: 0 0 15px 0;">
+          Your loan application is now being processed by our loan officers.
+        </p>
+        <p style="margin: 0 0 15px 0;">
+          We are currently verifying your documents and conducting necessary checks. 
+          You will be notified once the review is complete.
+        </p>
+      `;
+      break;
+    case "approved":
+      statusMessage = `
+        <p style="margin: 0 0 15px 0;">
+          <strong>Congratulations!</strong> Your loan application has been approved.
+        </p>
+        <p style="margin: 0 0 15px 0;">
+          Our team will contact you shortly to complete the final paperwork and disburse your funds.
+        </p>
+      `;
+      break;
+    case "rejected":
+      statusMessage = `
+        <p style="margin: 0 0 15px 0;">
+          After careful review, we regret to inform you that your loan application has not been approved at this time.
+        </p>
+        <p style="margin: 0 0 15px 0;">
+          This decision was based on our current lending criteria and risk assessment.
+        </p>
+      `;
+      break;
+    case "cancelled":
+      statusMessage = `
+        <p style="margin: 0 0 15px 0;">
+          Your loan application has been cancelled as requested.
+        </p>
+        <p style="margin: 0 0 15px 0;">
+          If you wish to apply again in the future, please visit our office or contact our customer service team.
+        </p>
+      `;
+      break;
+  }
+
+  const message = `
+    <p style="margin: 0 0 15px 0;">Dear ${fullName},</p>
+    ${statusMessage}
+    ${
+      notes
+        ? `<p style="margin: 0 0 15px 0;"><strong>Notes:</strong> ${notes}</p>`
+        : ""
+    }
+  `;
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0; background-color: #f5f5f5; border: 1px solid #d1d1d1; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #1a1a1a; font-size: 12px; margin: 0 0 10px 0; font-weight: bold; border-bottom: 2px solid #6ba547; padding-bottom: 5px;">
+            APPLICATION STATUS UPDATE
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px; width: 150px;">Application #:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">${applicationNo}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">New Status:</td>
+              <td style="padding: 5px 0; color: ${getStatusColor(
+                status
+              )}; font-size: 12px; font-weight: bold;">
+                ${status.toUpperCase()}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Updated By:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${officerName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Update Date:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">
+                ${new Date().toLocaleString("en-US", {
+                  year: "numeric",
+                  month: "long",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+    
+    ${
+      contactDetails
+        ? `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 20px 0; background-color: #fff9e6; border: 1px solid #ffa500; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #8b5a00; font-size: 12px; margin: 0 0 5px 0; font-weight: bold;">
+            CONTACT INFORMATION:
+          </p>
+          <p style="color: #a56c00; font-size: 11px; margin: 0;">
+            ${contactDetails}
+          </p>
+        </td>
+      </tr>
+    </table>
+    `
+        : ""
+    }
+  `;
+
+  const html = generateDocumentTemplate({
+    title,
+    message,
+    details: detailsHtml,
+  });
+
+  await sendEmail({ to, subject, html });
+}
+
+/**
+ * Send document requirement email to customer
+ */
+async function sendDocumentRequirementEmail({
+  to,
+  fullName,
+  applicationNo,
+  requiredDocuments,
+}) {
+  const subject = `Additional Documents Required - Application #${applicationNo}`;
+  const title = "Additional Documents Required";
+
+  const message = `
+    <p style="margin: 0 0 15px 0;">Dear ${fullName},</p>
+    <p style="margin: 0 0 15px 0;">
+      Our review of your loan application requires additional documentation to proceed.
+    </p>
+    <p style="margin: 0 0 15px 0;">
+      Please submit the following documents to continue processing your application:
+    </p>
+  `;
+
+  const documentsHtml = requiredDocuments
+    .map(
+      (doc) =>
+        `<li style="color: #333333; font-size: 13px; margin: 5px 0;">${doc}</li>`
+    )
+    .join("");
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0; background-color: #fff9e6; border: 1px solid #ffa500; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #8b5a00; font-size: 12px; margin: 0 0 10px 0; font-weight: bold;">
+            REQUIRED DOCUMENTS:
+          </p>
+          <ul style="color: #333333; font-size: 13px; margin: 0; padding-left: 20px;">
+            ${documentsHtml}
+          </ul>
+          <p style="color: #a56c00; font-size: 11px; margin: 15px 0 0 0; font-style: italic;">
+            Please submit these documents within 7 days to avoid delays in processing.
+          </p>
+        </td>
+      </tr>
+    </table>
+    
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 20px 0; background-color: #f0f7ec; border: 1px solid #6ba547; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #1a1a1a; font-size: 12px; margin: 0 0 5px 0; font-weight: bold;">
+            APPLICATION INFORMATION:
+          </p>
+          <p style="color: #666666; font-size: 11px; margin: 0 0 5px 0;">
+            <span style="font-weight: bold;">Application #:</span> ${applicationNo}
+          </p>
+          <p style="color: #666666; font-size: 11px; margin: 0;">
+            <span style="font-weight: bold;">Submission Date:</span> ${new Date().toLocaleDateString(
+              "en-US",
+              {
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              }
+            )}
+          </p>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  const html = generateDocumentTemplate({
+    title,
+    message,
+    details: detailsHtml,
+  });
+
+  await sendEmail({ to, subject, html });
+}
+
+// Helper function to get status color
+function getStatusColor(status) {
+  const colors = {
+    draft: "#666666",
+    submitted: "#2196F3",
+    processing: "#FF9800",
+    approved: "#4CAF50",
+    rejected: "#F44336",
+    cancelled: "#9E9E9E",
+  };
+  return colors[status] || "#666666";
+}
+
 module.exports = {
   sendEmail,
   sendVerificationEmail,
@@ -502,5 +910,9 @@ module.exports = {
   sendPawnConfirmationEmail,
   generateEmailTemplate,
   generateDocumentTemplate,
-  sendAdminCreatedAccountEmail
+  sendAdminCreatedAccountEmail,
+  sendLoanApplicationSubmittedEmail,
+  sendLoanApplicationAdminNotification,
+  sendLoanApplicationStatusUpdateEmail,
+  sendDocumentRequirementEmail,
 };

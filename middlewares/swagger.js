@@ -2782,6 +2782,7 @@ const options = {
     "./routers/user_router.js", // adjust path if needed
     "./routers/debtor_record_router.js",
     "./routers/attachment_router.js",
+    "./routers/loan_application_router.js",
   ],
 };
 
