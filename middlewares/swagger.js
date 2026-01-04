@@ -12,6 +12,10 @@ const options = {
     },
     servers: [
       {
+        url: "https://real-time-capital-backend.onrender.com",
+        description: "Render server",
+      },
+      {
         url: "http://localhost:5050",
         description: "Local server",
       },
@@ -2776,6 +2780,8 @@ const options = {
   },
   apis: [
     "./routers/user_router.js", // adjust path if needed
+    "./routers/debtor_record_router.js",
+    "./routers/attachment_router.js",
   ],
 };
 
