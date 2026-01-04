@@ -14,6 +14,10 @@ const debtorRecordRouter = require("./routers/debtor_record_router");
 const userRouter = require("./routers/user_router");
 const attachmentRouter = require("./routers/attachment_router");
 const loanApplicationRouter = require("./routers/loan_application_router");
+const assetRouter = require("./routers/asset_router");
+const loanRouter = require("./routers/loan_router");
+const loanTermRouter = require("./routers/loan_term_router");
+const paymentRouter = require("./routers/payment_router");
 
 // Load env
 dotenv.config();
@@ -37,6 +41,10 @@ app.use("/api/v1/users", userRouter);
 app.use("/api/v1/debtor-records", debtorRecordRouter);
 app.use("/api/v1/attachments", attachmentRouter);
 app.use("/api/v1/loan-applications", loanApplicationRouter);
+app.use("/api/v1/assets", assetRouter);
+app.use("/api/v1/loans", loanRouter);
+app.use("/api/v1/loan-terms", loanTermRouter);
+app.use("/api/v1/payments", paymentRouter);
 
 // Global error handler (REST)
 app.use((err, req, res, next) => {
