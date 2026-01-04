@@ -2,7 +2,9 @@ const LoanApplication = require('../models/loanApplication.model');
 const User = require('../models/user.model');
 const DebtorRecord = require('../models/debtorRecord.model');
 const mongoose = require('mongoose');
-const { v4: uuidv4 } = require('uuid');
+(async () => {
+  ({ v4: uuidv4 } = await import("uuid"));
+})();
 const emailService = require('../utils/emails_util');
 
 class LoanApplicationService {

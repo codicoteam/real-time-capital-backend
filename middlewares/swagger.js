@@ -2783,6 +2783,10 @@ const options = {
     "./routers/debtor_record_router.js",
     "./routers/attachment_router.js",
     "./routers/loan_application_router.js",
+    "./routers/asset_router.js",
+    "./routers/loan_term_router.js",
+    "./routers/loan_router.js",
+    "./routers/payment_router.js",
   ],
 };
 

@@ -2,7 +2,11 @@ const mongoose = require("mongoose");
 
 const AuditLogSchema = new mongoose.Schema(
   {
-    actor_user: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
+    actor_user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
+    },
     actor_role_snapshot: { type: [String], default: [] },
 
     action: { type: String, required: true, index: true }, // e.g. "loan.approve", "asset.update"
@@ -15,7 +19,11 @@ const AuditLogSchema = new mongoose.Schema(
 
     ip: { type: String },
     user_agent: { type: String },
-    channel: { type: String, enum: ["web", "mobile", "api", "admin"], default: "api" },
+    channel: {
+      type: String,
+      enum: ["web", "mobile", "api", "admin"],
+      default: "api",
+    },
 
     meta: { type: mongoose.Schema.Types.Mixed },
   },
