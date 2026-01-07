@@ -18,7 +18,7 @@ const BidDisputeSchema = new mongoose.Schema(
   { _id: false }
 );
 
-const BidSchema = new mongoose.Schema(
+const BidSchema = new mongoose.Schema( 
   {
     auction: { type: mongoose.Schema.Types.ObjectId, ref: "Auction", required: true, index: true },
     bidder_user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },

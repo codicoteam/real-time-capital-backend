@@ -2787,6 +2787,9 @@ const options = {
     "./routers/loan_term_router.js",
     "./routers/loan_router.js",
     "./routers/payment_router.js",
+    "./routers/support_ticket_router.js",
+    "./routers/auction_router.js",
+    "./routers/bid_router.js",
   ],
 };
 
