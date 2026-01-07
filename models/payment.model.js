@@ -16,11 +16,9 @@ const PaymentSchema = new Schema(
       ref: "LoanTerm",
       index: true,
     },
-
     /* -------------------- Payment Amounts -------------------- */
     amount: { type: Number, required: true, min: 0 },
     currency: { type: String, enum: ["USD", "ZWL"], default: "USD" },
-
     // Allocation for reducing balance
     interest_component: { type: Number, default: 0, min: 0 },
     principal_component: { type: Number, default: 0, min: 0 },
@@ -34,22 +32,22 @@ const PaymentSchema = new Schema(
       default: "cash",
       index: true,
     },
-
     method: {
       type: String,
-      enum: ["card", "wallet", "bank", "cash"],
-      default: "cash",
+      enum: [
+        "cash",
+        "bank",
+        "ecocash",
+        "onemoney",
+        "telecash",
+        "card",
+        "paynow",
+      ],
+      trim: true,
     },
-
     payment_status: {
       type: String,
-      enum: [
-        "paid",
-        "pending",
-        "failed",
-        "cancelled",
-        "awaiting_confirmation",
-      ],
+      enum: ["paid", "pending", "failed", "cancelled", "awaiting_confirmation"],
       default: "pending",
       index: true,
     },
