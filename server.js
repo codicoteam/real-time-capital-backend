@@ -25,6 +25,7 @@ const bidPaymentRouter = require("./routers/bid_payment_router");
 const auditLogRouter = require("./routers/audit_log_router");
 const inventoryRouter = require("./routers/inventory_transaction_router");
 const ledgerEntryRouter = require("./routers/ledger_entry_router");
+const assetValuationRouter = require("./routers/asset_valuation_router");
 
 // Load env
 dotenv.config();
@@ -59,6 +60,7 @@ app.use("/api/v1/bid-payments", bidPaymentRouter);
 app.use("/api/v1/audit-logs", auditLogRouter);
 app.use("/api/v1/inventory", inventoryRouter);
 app.use("/api/v1/ledger-entries", ledgerEntryRouter);
+app.use("/api/v1/asset-valuations", assetValuationRouter);
 
 // Global error handler (REST)
 app.use((err, req, res, next) => {
