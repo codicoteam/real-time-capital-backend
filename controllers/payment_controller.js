@@ -9,6 +9,18 @@ class PaymentController {
       const paymentData = req.body;
       const userId = req.user?.id;
 
+      // Validate mobile payments
+      const mobileMethods = ["ecocash", "onemoney", "telecash"];
+      if (
+        mobileMethods.includes(paymentData.provider) &&
+        !paymentData.payer_phone
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: `Phone number is required for ${paymentData.provider} payment`,
+        });
+      }
+
       const result = await paymentService.createPayment(paymentData, userId);
 
       res.status(201).json({
@@ -359,6 +371,28 @@ class PaymentController {
   }
 
   /**
+   * Get mobile payment methods
+   */
+  async getMobilePaymentMethods(req, res) {
+    try {
+      const result = await paymentService.getMobilePaymentMethods();
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to retrieve mobile payment methods",
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
    * Generate payment report
    */
   async generatePaymentReport(req, res) {
@@ -419,7 +453,7 @@ class PaymentController {
       const stats = await paymentService.getPaymentStats();
 
       // Get recent payments
-      const recentPayments = await require("../models/payment_model")
+      const recentPayments = await require("../models/payment.model")
         .find({ payment_status: "paid" })
         .sort({ paid_at: -1 })
         .limit(10)
@@ -445,6 +479,8 @@ class PaymentController {
             payment_success_rate:
               (((stats.by_status.paid || 0) / stats.total) * 100).toFixed(2) +
               "%",
+            mobile_payments_percentage:
+              ((stats.mobile_payments / stats.total) * 100).toFixed(2) + "%",
           },
         },
       });
@@ -465,7 +501,7 @@ class PaymentController {
     try {
       const { receipt_no } = req.params;
 
-      const payment = await require("../models/payment_model")
+      const payment = await require("../models/payment.model")
         .findOne({ receipt_no })
         .populate([
           {
@@ -523,6 +559,7 @@ class PaymentController {
       "Payment Method",
       "Status",
       "Provider Reference",
+      "Poll URL",
     ];
 
     const rows = payments.map((payment) => [
@@ -537,6 +574,7 @@ class PaymentController {
       payment.provider || "",
       payment.payment_status || "",
       payment.provider_ref || "",
+      payment.poll_url || "",
     ]);
 
     const csvContent = [

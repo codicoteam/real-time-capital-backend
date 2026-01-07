@@ -2,13 +2,12 @@ const Payment = require("../models/payment.model");
 const Loan = require("../models/loan.model");
 const User = require("../models/user.model");
 const emailService = require("../utils/emails_util");
-const { Paynow } = require("paynow"); // Changed to uppercase Paynow
+const { Paynow } = require("paynow");
 require("dotenv").config();
 
 class PaymentService {
   constructor() {
-    // Initialize PayNow
-    this.Paynow = Paynow; // Store the Paynow class
+    this.Paynow = Paynow;
     this.paynowIntegration = null;
     this.initializePayNow();
   }
@@ -18,23 +17,68 @@ class PaymentService {
    */
   initializePayNow() {
     try {
-      const { PAYNOW_ID, PAYNOW_KEY, PAYNOW_RESULT_URL, PAYNOW_RETURN_URL } = process.env;
+      const { PAYNOW_ID, PAYNOW_KEY, PAYNOW_RESULT_URL, PAYNOW_RETURN_URL } =
+        process.env;
 
       if (!PAYNOW_ID || !PAYNOW_KEY) {
         throw new Error("Paynow credentials are not configured.");
       }
 
-      this.paynowIntegration = new this.Paynow(String(PAYNOW_ID), String(PAYNOW_KEY));
+      this.paynowIntegration = new this.Paynow(
+        String(PAYNOW_ID),
+        String(PAYNOW_KEY)
+      );
 
       // Set URLs if they exist
-      if (PAYNOW_RESULT_URL) this.paynowIntegration.resultUrl = PAYNOW_RESULT_URL;
-      if (PAYNOW_RETURN_URL) this.paynowIntegration.returnUrl = PAYNOW_RETURN_URL;
+      if (PAYNOW_RESULT_URL)
+        this.paynowIntegration.resultUrl = PAYNOW_RESULT_URL;
+      if (PAYNOW_RETURN_URL)
+        this.paynowIntegration.returnUrl = PAYNOW_RETURN_URL;
 
       console.log("PayNow integration initialized successfully");
     } catch (error) {
       console.error("Failed to initialize PayNow:", error);
       throw this.handleError(500, "Payment gateway initialization failed");
     }
+  }
+
+  /**
+   * Validate phone number for mobile payments
+   */
+  static validatePhoneNumber(phone, method) {
+    if (!phone) {
+      throw new Error(`Phone number is required for ${method} payment`);
+    }
+
+    // Remove any non-digit characters
+    const cleanPhone = phone.replace(/\D/g, "");
+
+    // Validate based on payment method
+    switch (method) {
+      case "ecocash":
+        if (!cleanPhone.match(/^(26377|26378|26371|26373)\d{7}$/)) {
+          throw new Error(
+            "Invalid Ecocash phone number. Must be a valid Zimbabwean number starting with 077, 078, 071, or 073"
+          );
+        }
+        break;
+      case "onemoney":
+        if (!cleanPhone.match(/^(26377|26378|26371|26373)\d{7}$/)) {
+          throw new Error(
+            "Invalid OneMoney phone number. Must be a valid Zimbabwean number"
+          );
+        }
+        break;
+      case "telecash":
+        if (!cleanPhone.match(/^(26377|26378|26371|26373)\d{7}$/)) {
+          throw new Error(
+            "Invalid Telecash phone number. Must be a valid Zimbabwean number"
+          );
+        }
+        break;
+    }
+
+    return `+${cleanPhone}`;
   }
 
   /**
@@ -45,14 +89,23 @@ class PaymentService {
       // Validate loan exists
       const loan = await Loan.findById(paymentData.loan);
       if (!loan) {
-        throw this.handleError(404, `Loan with ID ${paymentData.loan} not found`);
+        throw this.handleError(
+          404,
+          `Loan with ID ${paymentData.loan} not found`
+        );
+      }
+
+      // Get customer details
+      const customer = await User.findById(loan.customer_user);
+      if (!customer) {
+        throw this.handleError(404, "Customer not found");
       }
 
       // Generate receipt number if not provided
       if (!paymentData.receipt_no) {
         const date = new Date();
         const year = date.getFullYear().toString().slice(-2);
-        const month = (date.getMonth() + 1).toString().padStart(2, '0');
+        const month = (date.getMonth() + 1).toString().padStart(2, "0");
         const random = Math.floor(1000 + Math.random() * 9000);
         paymentData.receipt_no = `RCPT${year}${month}${random}`;
       }
@@ -62,40 +115,54 @@ class PaymentService {
         paymentData.received_by = userId;
       }
 
-      // If PayNow payment, initiate payment
-      if (paymentData.provider === 'paynow' && paymentData.payment_status === 'pending') {
-        return await this.initiatePayNowPayment(paymentData, loan, userId);
+      // For PayNow and mobile payments, initiate payment
+      if (
+        ["paynow", "ecocash", "onemoney", "telecash"].includes(
+          paymentData.provider
+        )
+      ) {
+        return await this.initiatePayNowPayment(
+          paymentData,
+          loan,
+          customer,
+          userId
+        );
       }
 
-      // For other payment methods, create directly
+      // For other payment methods (cash, bank_transfer), create directly
       const payment = new Payment(paymentData);
       await payment.save();
-      
+
       // Populate necessary fields
       const populatedPayment = await payment.populate([
-        { 
-          path: 'loan', 
-          select: 'loan_no customer_user principal_amount current_balance currency status' 
+        {
+          path: "loan",
+          select:
+            "loan_no customer_user principal_amount current_balance currency status",
         },
-        { 
-          path: 'loan_term',
-          select: 'term_no start_date due_date opening_balance closing_balance'
+        {
+          path: "loan_term",
+          select: "term_no start_date due_date opening_balance closing_balance",
         },
-        { 
-          path: 'received_by',
-          select: 'first_name last_name email roles'
-        }
+        {
+          path: "received_by",
+          select: "first_name last_name email roles",
+        },
       ]);
 
       // If payment is successful, update loan balance
-      if (paymentData.payment_status === 'paid' && paymentData.amount > 0) {
+      if (paymentData.payment_status === "paid" && paymentData.amount > 0) {
         await this.updateLoanBalance(payment);
       }
 
       return {
         success: true,
-        data: populatedPayment,
-        message: "Payment created successfully"
+        data: {
+          payment: populatedPayment,
+          poll_url: null,
+          redirect_url: null,
+        },
+        message: "Payment created successfully",
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -103,71 +170,136 @@ class PaymentService {
   }
 
   /**
-   * Initiate PayNow payment
+   * Initiate PayNow or mobile payment
    */
-  async initiatePayNowPayment(paymentData, loan, userId) {
+  async initiatePayNowPayment(paymentData, loan, customer, userId) {
     try {
-      // Get customer details
-      const customer = await User.findById(loan.customer_user);
-      if (!customer) {
-        throw this.handleError(404, "Customer not found");
-      }
+      // Create payment record first to get ID
+      const payment = new Payment({
+        ...paymentData,
+        payment_status: "pending",
+      });
+      await payment.save();
 
       // Create PayNow payment
-      const payment = this.paynowIntegration.createPayment(
+      const paynowPayment = this.paynowIntegration.createPayment(
         paymentData.receipt_no,
-        customer.email || "customer@example.com" // Provide a fallback email
+        customer.email || "customer@example.com"
       );
 
-      payment.add(paymentData.receipt_no, parseFloat(paymentData.amount));
-      
-      // Set additional fields
-      paymentData.paynow_invoice_id = paymentData.receipt_no;
-      paymentData.payment_method_label = "PayNow Online Payment";
+      paynowPayment.add(
+        `Loan Payment - ${loan.loan_no}`,
+        parseFloat(paymentData.amount)
+      );
+
+      // Set mobile payment method if applicable
+      if (["ecocash", "onemoney", "telecash"].includes(paymentData.provider)) {
+        // Validate and format phone number
+        if (!paymentData.payer_phone) {
+          throw this.handleError(
+            400,
+            `Phone number is required for ${paymentData.provider} payment`
+          );
+        }
+
+        const validatedPhone = this.constructor.validatePhoneNumber(
+          paymentData.payer_phone,
+          paymentData.provider
+        );
+
+        // Set auth email to phone number for mobile payments
+        const phoneEmail = `${validatedPhone.replace("+", "")}@${
+          paymentData.provider
+        }.com`;
+        paynowPayment.authEmail = phoneEmail;
+
+        // Update payment with phone number
+        payment.meta = {
+          ...payment.meta,
+          mobile_method: paymentData.provider,
+          phone_number: validatedPhone,
+        };
+        await payment.save();
+      }
 
       // Send payment to PayNow
-      const response = await this.paynowIntegration.send(payment);
+      const response = await this.paynowIntegration.send(paynowPayment);
 
       if (response.success) {
-        // Save poll URL and provider reference
-        paymentData.poll_url = response.pollUrl;
-        paymentData.provider_ref = response.pollUrl ? response.pollUrl.split("/").pop() : response.reference;
+        // Update payment with PayNow response
+        payment.poll_url = response.pollUrl || response.pollurl || null;
+        payment.provider_ref = response.reference || null;
+        payment.paynow_invoice_id = paymentData.receipt_no;
+        payment.payment_method_label = `${
+          paymentData.provider.charAt(0).toUpperCase() +
+          paymentData.provider.slice(1)
+        } Payment`;
+        payment.meta = {
+          ...payment.meta,
+          paynow_response: response,
+          redirect_url: response.redirectUrl,
+          instructions: response.instructions,
+        };
 
-        // Create payment record
-        const newPayment = new Payment(paymentData);
-        await newPayment.save();
+        // If redirect URL is provided in response, update it
+        if (response.redirectUrl) {
+          payment.meta.redirect_url = response.redirectUrl;
+        }
+
+        await payment.save();
 
         // Populate before returning
-        await newPayment.populate([
-          { 
-            path: 'loan', 
-            select: 'loan_no customer_user principal_amount current_balance' 
+        await payment.populate([
+          {
+            path: "loan",
+            select: "loan_no customer_user principal_amount current_balance",
           },
-          { 
-            path: 'received_by',
-            select: 'first_name last_name email'
-          }
+          {
+            path: "received_by",
+            select: "first_name last_name email",
+          },
         ]);
 
         return {
           success: true,
           data: {
-            payment: newPayment,
+            payment,
+            poll_url: payment.poll_url,
+            redirect_url: payment.meta.redirect_url || null,
             paynow_response: {
               payment_url: response.redirectUrl,
-              poll_url: response.pollUrl,
+              poll_url: response.pollUrl || response.pollurl,
               instructions: response.instructions,
-              success: true
-            }
+              method: response.method || paymentData.provider,
+              success: true,
+              reference: response.reference,
+            },
           },
-          message: "PayNow payment initiated successfully. Redirect user to payment URL."
+          message: `${
+            paymentData.provider.charAt(0).toUpperCase() +
+            paymentData.provider.slice(1)
+          } payment initiated successfully`,
         };
       } else {
-        throw this.handleError(400, "PayNow payment initiation failed: " + (response.error || "Unknown error"));
+        // If PayNow fails, update payment status
+        payment.payment_status = "failed";
+        payment.meta = {
+          ...payment.meta,
+          paynow_error: response.error || "Unknown error",
+        };
+        await payment.save();
+
+        throw this.handleError(
+          400,
+          `Payment initiation failed: ${response.error || "Unknown error"}`
+        );
       }
     } catch (error) {
-      console.error("PayNow initiation error:", error);
-      throw this.handleError(500, "Failed to initiate PayNow payment: " + error.message);
+      console.error("Payment initiation error:", error);
+      throw this.handleError(
+        500,
+        `Failed to initiate payment: ${error.message}`
+      );
     }
   }
 
@@ -177,18 +309,20 @@ class PaymentService {
   async getPaymentById(paymentId) {
     try {
       const payment = await Payment.findById(paymentId).populate([
-        { 
-          path: 'loan', 
-          select: 'loan_no customer_user principal_amount current_balance currency status due_date' 
+        {
+          path: "loan",
+          select:
+            "loan_no customer_user principal_amount current_balance currency status due_date",
         },
-        { 
-          path: 'loan_term',
-          select: 'term_no start_date due_date opening_balance closing_balance interest_rate_percent'
+        {
+          path: "loan_term",
+          select:
+            "term_no start_date due_date opening_balance closing_balance interest_rate_percent",
         },
-        { 
-          path: 'received_by',
-          select: 'first_name last_name email phone roles'
-        }
+        {
+          path: "received_by",
+          select: "first_name last_name email phone roles",
+        },
       ]);
 
       if (!payment) {
@@ -197,15 +331,16 @@ class PaymentService {
 
       // Populate customer details if loan exists
       if (payment.loan && payment.loan.customer_user) {
-        const customer = await User.findById(payment.loan.customer_user)
-          .select('first_name last_name email phone national_id_number');
+        const customer = await User.findById(payment.loan.customer_user).select(
+          "first_name last_name email phone national_id_number"
+        );
         payment.loan.customer_user = customer;
       }
 
       return {
         success: true,
         data: payment,
-        message: "Payment retrieved successfully"
+        message: "Payment retrieved successfully",
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -215,23 +350,30 @@ class PaymentService {
   /**
    * Get payments with pagination
    */
-  async getPaymentsPaginated(filters = {}, page = 1, limit = 10, sort = { created_at: -1 }) {
+  async getPaymentsPaginated(
+    filters = {},
+    page = 1,
+    limit = 10,
+    sort = { created_at: -1 }
+  ) {
     try {
       const skip = (page - 1) * limit;
-      
+
       // Build query
       const query = {};
-      
+
       if (filters.loan) query.loan = filters.loan;
       if (filters.customer_user) {
         // Find loans by customer user first
-        const loans = await Loan.find({ customer_user: filters.customer_user }).select('_id');
-        query.loan = { $in: loans.map(loan => loan._id) };
+        const loans = await Loan.find({
+          customer_user: filters.customer_user,
+        }).select("_id");
+        query.loan = { $in: loans.map((loan) => loan._id) };
       }
       if (filters.payment_status) query.payment_status = filters.payment_status;
       if (filters.provider) query.provider = filters.provider;
       if (filters.currency) query.currency = filters.currency;
-      
+
       // Date range filters
       if (filters.paid_from || filters.paid_to) {
         query.paid_at = {};
@@ -241,35 +383,39 @@ class PaymentService {
 
       if (filters.created_from || filters.created_to) {
         query.created_at = {};
-        if (filters.created_from) query.created_at.$gte = new Date(filters.created_from);
-        if (filters.created_to) query.created_at.$lte = new Date(filters.created_to);
+        if (filters.created_from)
+          query.created_at.$gte = new Date(filters.created_from);
+        if (filters.created_to)
+          query.created_at.$lte = new Date(filters.created_to);
       }
 
       // Amount range filters
       if (filters.min_amount || filters.max_amount) {
         query.amount = {};
-        if (filters.min_amount) query.amount.$gte = parseFloat(filters.min_amount);
-        if (filters.max_amount) query.amount.$lte = parseFloat(filters.max_amount);
+        if (filters.min_amount)
+          query.amount.$gte = parseFloat(filters.min_amount);
+        if (filters.max_amount)
+          query.amount.$lte = parseFloat(filters.max_amount);
       }
 
       // Execute query with pagination
       const [payments, total] = await Promise.all([
         Payment.find(query)
           .populate([
-            { 
-              path: 'loan', 
-              select: 'loan_no customer_user principal_amount currency' 
+            {
+              path: "loan",
+              select: "loan_no customer_user principal_amount currency",
             },
-            { 
-              path: 'received_by',
-              select: 'first_name last_name email'
-            }
+            {
+              path: "received_by",
+              select: "first_name last_name email",
+            },
           ])
           .sort(sort)
           .skip(skip)
           .limit(limit)
           .lean(),
-        Payment.countDocuments(query)
+        Payment.countDocuments(query),
       ]);
 
       // Populate customer details for each payment
@@ -277,7 +423,7 @@ class PaymentService {
         payments.map(async (payment) => {
           if (payment.loan && payment.loan.customer_user) {
             const customer = await User.findById(payment.loan.customer_user)
-              .select('first_name last_name email phone')
+              .select("first_name last_name email phone")
               .lean();
             payment.loan.customer_user = customer;
           }
@@ -299,10 +445,10 @@ class PaymentService {
             limit,
             totalPages,
             hasNextPage,
-            hasPrevPage
-          }
+            hasPrevPage,
+          },
         },
-        message: "Payments retrieved successfully"
+        message: "Payments retrieved successfully",
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -315,21 +461,21 @@ class PaymentService {
   async getAllPayments(filters = {}, sort = { created_at: -1 }) {
     try {
       const query = {};
-      
+
       if (filters.loan) query.loan = filters.loan;
       if (filters.payment_status) query.payment_status = filters.payment_status;
       if (filters.provider) query.provider = filters.provider;
 
       const payments = await Payment.find(query)
         .populate([
-          { 
-            path: 'loan', 
-            select: 'loan_no customer_user principal_amount currency' 
+          {
+            path: "loan",
+            select: "loan_no customer_user principal_amount currency",
           },
-          { 
-            path: 'received_by',
-            select: 'first_name last_name email'
-          }
+          {
+            path: "received_by",
+            select: "first_name last_name email",
+          },
         ])
         .sort(sort)
         .lean();
@@ -339,7 +485,7 @@ class PaymentService {
         payments.map(async (payment) => {
           if (payment.loan && payment.loan.customer_user) {
             const customer = await User.findById(payment.loan.customer_user)
-              .select('first_name last_name email phone')
+              .select("first_name last_name email phone")
               .lean();
             payment.loan.customer_user = customer;
           }
@@ -351,7 +497,7 @@ class PaymentService {
         success: true,
         data: populatedPayments,
         message: "All payments retrieved successfully",
-        count: populatedPayments.length
+        count: populatedPayments.length,
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -369,11 +515,23 @@ class PaymentService {
       }
 
       // Prevent updating certain fields if payment is already paid
-      if (payment.payment_status === 'paid') {
-        const restrictedFields = ['amount', 'currency', 'provider', 'loan', 'loan_term'];
+      if (payment.payment_status === "paid") {
+        const restrictedFields = [
+          "amount",
+          "currency",
+          "provider",
+          "loan",
+          "loan_term",
+        ];
         for (const field of restrictedFields) {
-          if (updateData[field] !== undefined && updateData[field] !== payment[field]) {
-            throw this.handleError(400, `Cannot update ${field} for a paid payment`);
+          if (
+            updateData[field] !== undefined &&
+            updateData[field] !== payment[field]
+          ) {
+            throw this.handleError(
+              400,
+              `Cannot update ${field} for a paid payment`
+            );
           }
         }
       }
@@ -384,16 +542,19 @@ class PaymentService {
         updateData,
         { new: true, runValidators: true }
       ).populate([
-        { 
-          path: 'loan', 
-          select: 'loan_no customer_user principal_amount' 
-        }
+        {
+          path: "loan",
+          select: "loan_no customer_user principal_amount",
+        },
       ]);
 
       // If status changed to paid, update loan balance
-      if (updateData.payment_status === 'paid' && payment.payment_status !== 'paid') {
+      if (
+        updateData.payment_status === "paid" &&
+        payment.payment_status !== "paid"
+      ) {
         await this.updateLoanBalance(updatedPayment);
-        
+
         // Send email notification
         await this.sendPaymentConfirmationEmail(updatedPayment);
       }
@@ -401,7 +562,7 @@ class PaymentService {
       return {
         success: true,
         data: updatedPayment,
-        message: "Payment updated successfully"
+        message: "Payment updated successfully",
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -418,16 +579,23 @@ class PaymentService {
         throw this.handleError(404, `Payment with ID ${paymentId} not found`);
       }
 
-      if (payment.provider !== 'paynow') {
-        throw this.handleError(400, "This payment is not a PayNow payment");
+      // Only check status for PayNow and mobile payments
+      const onlineMethods = ["paynow", "ecocash", "onemoney", "telecash"];
+      if (!onlineMethods.includes(payment.provider)) {
+        throw this.handleError(
+          400,
+          "This payment method does not support status checking"
+        );
       }
 
-      if (!payment.poll_url || payment.poll_url === 'not available') {
+      if (!payment.poll_url) {
         throw this.handleError(400, "No poll URL found for this payment");
       }
 
       // Check payment status from PayNow
-      const response = await this.paynowIntegration.pollTransaction(payment.poll_url);
+      const response = await this.paynowIntegration.pollTransaction(
+        payment.poll_url
+      );
 
       if (!response) {
         throw this.handleError(502, "Unable to reach PayNow");
@@ -436,7 +604,7 @@ class PaymentService {
       // Map PayNow status to your system's status
       const mapStatus = (status) => {
         const s = String(status || "").toLowerCase();
-        if (s.includes("paid")) return "paid";
+        if (s.includes("paid") || s.includes("completed")) return "paid";
         if (s.includes("awaiting delivery")) return "awaiting_delivery";
         if (s.includes("awaiting confirmation")) return "awaiting_confirmation";
         if (s.includes("sent") || s.includes("created")) return "sent";
@@ -449,13 +617,22 @@ class PaymentService {
 
       // Update payment status
       payment.payment_status = newStatus;
-      if (newStatus === 'paid' && !payment.captured_at) {
+      if (newStatus === "paid" && !payment.captured_at) {
         payment.captured_at = new Date();
       }
+
+      // Update meta with latest response
+      payment.meta = {
+        ...payment.meta,
+        last_status_check: new Date(),
+        paynow_status: response.status,
+        raw_response: response,
+      };
+
       await payment.save();
 
       // Update loan balance if paid
-      if (newStatus === 'paid') {
+      if (newStatus === "paid") {
         await this.updateLoanBalance(payment);
         await this.sendPaymentConfirmationEmail(payment);
       }
@@ -464,17 +641,21 @@ class PaymentService {
         success: true,
         data: {
           payment,
-          paynow_status: response.status,
+          poll_url: payment.poll_url,
+          gateway_status: response.status,
           status: newStatus,
-          paid: newStatus === 'paid',
+          paid: newStatus === "paid",
           amount: response.amount,
-          captured_at: newStatus === 'paid' ? new Date() : null
+          captured_at: newStatus === "paid" ? new Date() : null,
         },
-        message: `Payment status: ${newStatus}`
+        message: `Payment status: ${newStatus}`,
       };
     } catch (error) {
       console.error("PayNow status check error:", error);
-      throw this.handleError(500, "Failed to check payment status: " + error.message);
+      throw this.handleError(
+        500,
+        "Failed to check payment status: " + error.message
+      );
     }
   }
 
@@ -483,23 +664,26 @@ class PaymentService {
    */
   async processPayNowWebhook(webhookData) {
     try {
-      const { reference, status, pollUrl } = webhookData;
+      const { reference, status, pollUrl, method, amount } = webhookData;
 
       // Find payment by provider_ref or receipt_no
       const payment = await Payment.findOne({
         $or: [
           { provider_ref: reference },
           { receipt_no: reference },
-          { poll_url: pollUrl }
-        ]
+          { poll_url: pollUrl },
+        ],
       });
 
       if (!payment) {
-        throw this.handleError(404, `Payment with reference ${reference} not found`);
+        throw this.handleError(
+          404,
+          `Payment with reference ${reference} not found`
+        );
       }
 
       // If there's a poll URL, use it to get the latest status
-      if (payment.poll_url && payment.poll_url !== 'not available') {
+      if (payment.poll_url) {
         return await this.checkPayNowStatus(payment._id);
       }
 
@@ -507,9 +691,10 @@ class PaymentService {
       if (status) {
         const mapStatus = (s) => {
           const x = String(s || "").toLowerCase();
-          if (x.includes("paid")) return "paid";
+          if (x.includes("paid") || x.includes("completed")) return "paid";
           if (x.includes("awaiting delivery")) return "awaiting_delivery";
-          if (x.includes("awaiting confirmation")) return "awaiting_confirmation";
+          if (x.includes("awaiting confirmation"))
+            return "awaiting_confirmation";
           if (x.includes("cancel")) return "cancelled";
           if (x.includes("fail")) return "failed";
           return "pending";
@@ -517,28 +702,45 @@ class PaymentService {
 
         const newStatus = mapStatus(status);
         payment.payment_status = newStatus;
-        if (newStatus === 'paid' && !payment.captured_at) {
+        if (newStatus === "paid" && !payment.captured_at) {
           payment.captured_at = new Date();
         }
+
+        // Update method if provided
+        if (method) {
+          payment.method = method;
+        }
+
+        // Update amount if provided
+        if (amount) {
+          payment.amount = parseFloat(amount);
+        }
+
         await payment.save();
 
         // Update loan balance if paid
-        if (newStatus === 'paid') {
+        if (newStatus === "paid") {
           await this.updateLoanBalance(payment);
           await this.sendPaymentConfirmationEmail(payment);
         }
 
         return {
           success: true,
-          data: payment,
-          message: `Payment status updated to ${newStatus} via webhook`
+          data: {
+            payment,
+            poll_url: payment.poll_url,
+          },
+          message: `Payment status updated to ${newStatus} via webhook`,
         };
       }
 
       return {
         success: true,
-        data: payment,
-        message: "Webhook processed, no status change"
+        data: {
+          payment,
+          poll_url: payment.poll_url,
+        },
+        message: "Webhook processed, no status change",
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -555,13 +757,16 @@ class PaymentService {
         throw this.handleError(404, `Payment with ID ${paymentId} not found`);
       }
 
-      if (payment.payment_status !== 'paid') {
+      if (payment.payment_status !== "paid") {
         throw this.handleError(400, "Cannot refund a payment that is not paid");
       }
 
       const refundAmount = refundData.amount || payment.amount;
       if (refundAmount > payment.amount) {
-        throw this.handleError(400, "Refund amount cannot exceed original payment amount");
+        throw this.handleError(
+          400,
+          "Refund amount cannot exceed original payment amount"
+        );
       }
 
       // Add refund record
@@ -570,21 +775,31 @@ class PaymentService {
         amount: refundAmount,
         provider_ref: refundData.provider_ref || `REFUND-${Date.now()}`,
         at: new Date(),
-        refunded_by: userId
+        refunded_by: userId,
       });
 
       await payment.save();
 
-      // If PayNow payment, initiate refund through provider
-      if (payment.provider === 'paynow' && payment.provider_ref) {
-        // Implement PayNow refund logic here
-        console.log(`Processing PayNow refund for payment ${paymentId}`);
+      // If PayNow/mobile payment, initiate refund through provider
+      if (
+        ["paynow", "ecocash", "onemoney", "telecash"].includes(
+          payment.provider
+        ) &&
+        payment.provider_ref
+      ) {
+        console.log(
+          `Processing refund for ${payment.provider} payment ${paymentId}`
+        );
+        // Implement refund logic here for PayNow/mobile payments
       }
 
       return {
         success: true,
-        data: payment,
-        message: `Refund of ${refundAmount} processed successfully`
+        data: {
+          payment,
+          poll_url: payment.poll_url,
+        },
+        message: `Refund of ${refundAmount} processed successfully`,
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -601,7 +816,11 @@ class PaymentService {
         throw this.handleError(404, `Customer with ID ${customerId} not found`);
       }
 
-      return this.getPaymentsPaginated({ customer_user: customerId }, page, limit);
+      return this.getPaymentsPaginated(
+        { customer_user: customerId },
+        page,
+        limit
+      );
     } catch (error) {
       throw this.handleMongoError(error);
     }
@@ -629,59 +848,69 @@ class PaymentService {
   async getPaymentStats() {
     try {
       const total = await Payment.countDocuments();
-      
+
       const byStatus = await Payment.aggregate([
-        { $group: { _id: "$payment_status", count: { $sum: 1 } } }
+        { $group: { _id: "$payment_status", count: { $sum: 1 } } },
       ]);
-      
+
       const byProvider = await Payment.aggregate([
-        { $group: { _id: "$provider", count: { $sum: 1 } } }
+        { $group: { _id: "$provider", count: { $sum: 1 } } },
       ]);
-      
+
       const byCurrency = await Payment.aggregate([
-        { $group: { _id: "$currency", count: { $sum: 1 } } }
+        { $group: { _id: "$currency", count: { $sum: 1 } } },
       ]);
-      
+
       const totalAmount = await Payment.aggregate([
-        { $match: { payment_status: 'paid' } },
-        { $group: { _id: null, total: { $sum: "$amount" } } }
+        { $match: { payment_status: "paid" } },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
       ]);
-      
+
       const monthlyRevenue = await Payment.aggregate([
-        { 
-          $match: { 
-            payment_status: 'paid',
-            paid_at: { $exists: true }
-          } 
+        {
+          $match: {
+            payment_status: "paid",
+            paid_at: { $exists: true },
+          },
         },
         {
           $group: {
             _id: {
               year: { $year: "$paid_at" },
-              month: { $month: "$paid_at" }
+              month: { $month: "$paid_at" },
             },
             total: { $sum: "$amount" },
-            count: { $sum: 1 }
-          }
+            count: { $sum: 1 },
+          },
         },
         { $sort: { "_id.year": -1, "_id.month": -1 } },
-        { $limit: 12 }
+        { $limit: 12 },
       ]);
 
       // Convert aggregates to objects
       const statusStats = {};
-      byStatus.forEach(item => {
+      byStatus.forEach((item) => {
         statusStats[item._id] = item.count;
       });
-      
+
       const providerStats = {};
-      byProvider.forEach(item => {
+      byProvider.forEach((item) => {
         providerStats[item._id] = item.count;
       });
 
       const currencyStats = {};
-      byCurrency.forEach(item => {
+      byCurrency.forEach((item) => {
         currencyStats[item._id] = item.count;
+      });
+
+      // Get mobile payment stats
+      const mobilePayments = await Payment.countDocuments({
+        provider: { $in: ["ecocash", "onemoney", "telecash"] },
+      });
+
+      const pendingMobile = await Payment.countDocuments({
+        provider: { $in: ["paynow", "ecocash", "onemoney", "telecash"] },
+        payment_status: { $in: ["pending", "awaiting_confirmation"] },
       });
 
       return {
@@ -691,15 +920,17 @@ class PaymentService {
         by_currency: currencyStats,
         total_amount: totalAmount[0]?.total || 0,
         monthly_revenue: monthlyRevenue,
-        today_payments: await Payment.countDocuments({ 
-          paid_at: { 
-            $gte: new Date(new Date().setHours(0,0,0,0)),
-            $lt: new Date(new Date().setHours(23,59,59,999))
+        today_payments: await Payment.countDocuments({
+          paid_at: {
+            $gte: new Date(new Date().setHours(0, 0, 0, 0)),
+            $lt: new Date(new Date().setHours(23, 59, 59, 999)),
           },
-          payment_status: 'paid'
+          payment_status: "paid",
         }),
         pending_payments: statusStats.pending || 0,
-        failed_payments: statusStats.failed || 0
+        failed_payments: statusStats.failed || 0,
+        mobile_payments: mobilePayments,
+        pending_mobile: pendingMobile,
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -722,7 +953,7 @@ class PaymentService {
 
       // Update loan status if fully paid
       if (newBalance === 0) {
-        loan.status = 'redeemed';
+        loan.status = "redeemed";
       }
 
       // Add payment record to loan meta
@@ -732,7 +963,8 @@ class PaymentService {
         payment_id: payment._id,
         amount: payment.amount,
         date: payment.paid_at || new Date(),
-        receipt_no: payment.receipt_no
+        receipt_no: payment.receipt_no,
+        poll_url: payment.poll_url,
       });
 
       await loan.save();
@@ -741,9 +973,9 @@ class PaymentService {
       if (loan.asset) {
         const Asset = require("../models/asset_model");
         await Asset.findByIdAndUpdate(loan.asset, {
-          $set: { 
-            status: newBalance === 0 ? 'redeemed' : 'pawned'
-          }
+          $set: {
+            status: newBalance === 0 ? "redeemed" : "pawned",
+          },
         });
       }
     } catch (error) {
@@ -758,15 +990,14 @@ class PaymentService {
   async sendPaymentConfirmationEmail(payment) {
     try {
       // Get loan and customer details
-      const populatedPayment = await Payment.findById(payment._id)
-        .populate({
-          path: 'loan',
-          select: 'loan_no customer_user',
-          populate: {
-            path: 'customer_user',
-            select: 'first_name last_name email'
-          }
-        });
+      const populatedPayment = await Payment.findById(payment._id).populate({
+        path: "loan",
+        select: "loan_no customer_user",
+        populate: {
+          path: "customer_user",
+          select: "first_name last_name email",
+        },
+      });
 
       if (!populatedPayment.loan || !populatedPayment.loan.customer_user) {
         console.warn("No customer found for payment email");
@@ -788,11 +1019,14 @@ class PaymentService {
             "Loan Number": loan.loan_no,
             "Amount Paid": `${payment.currency} ${payment.amount}`,
             "Payment Method": payment.provider,
-            "Payment Date": payment.paid_at ? payment.paid_at.toLocaleDateString() : new Date().toLocaleDateString(),
+            "Payment Date": payment.paid_at
+              ? payment.paid_at.toLocaleDateString()
+              : new Date().toLocaleDateString(),
             "Transaction Status": "Completed",
-            "New Loan Balance": `${loan.currency} ${loan.current_balance}`
-          }
-        }
+            "New Loan Balance": `${loan.currency} ${loan.current_balance}`,
+            "Poll URL": payment.poll_url || "N/A",
+          },
+        },
       });
 
       console.log(`Payment confirmation email sent to ${customer.email}`);
@@ -808,24 +1042,26 @@ class PaymentService {
   async generatePaymentReport(filters = {}) {
     try {
       const query = {};
-      
-      if (filters.start_date) query.paid_at = { $gte: new Date(filters.start_date) };
+
+      if (filters.start_date)
+        query.paid_at = { $gte: new Date(filters.start_date) };
       if (filters.end_date) {
         query.paid_at = query.paid_at || {};
         query.paid_at.$lte = new Date(filters.end_date);
       }
       if (filters.payment_status) query.payment_status = filters.payment_status;
+      if (filters.provider) query.provider = filters.provider;
 
       const payments = await Payment.find(query)
         .populate([
-          { 
-            path: 'loan', 
-            select: 'loan_no customer_user',
+          {
+            path: "loan",
+            select: "loan_no customer_user",
             populate: {
-              path: 'customer_user',
-              select: 'first_name last_name email national_id_number'
-            }
-          }
+              path: "customer_user",
+              select: "first_name last_name email national_id_number",
+            },
+          },
         ])
         .sort({ paid_at: -1 })
         .lean();
@@ -836,13 +1072,24 @@ class PaymentService {
         total_amount: payments.reduce((sum, p) => sum + p.amount, 0),
         by_provider: {},
         by_status: {},
-        by_currency: {}
+        by_currency: {},
+        mobile_payments_count: 0,
+        mobile_payments_amount: 0,
       };
 
-      payments.forEach(payment => {
-        summary.by_provider[payment.provider] = (summary.by_provider[payment.provider] || 0) + 1;
-        summary.by_status[payment.payment_status] = (summary.by_status[payment.payment_status] || 0) + 1;
-        summary.by_currency[payment.currency] = (summary.by_currency[payment.currency] || 0) + payment.amount;
+      payments.forEach((payment) => {
+        summary.by_provider[payment.provider] =
+          (summary.by_provider[payment.provider] || 0) + 1;
+        summary.by_status[payment.payment_status] =
+          (summary.by_status[payment.payment_status] || 0) + 1;
+        summary.by_currency[payment.currency] =
+          (summary.by_currency[payment.currency] || 0) + payment.amount;
+
+        // Count mobile payments
+        if (["ecocash", "onemoney", "telecash"].includes(payment.provider)) {
+          summary.mobile_payments_count++;
+          summary.mobile_payments_amount += payment.amount;
+        }
       });
 
       return {
@@ -851,12 +1098,58 @@ class PaymentService {
           payments,
           summary,
           generated_at: new Date(),
-          filters
+          filters,
         },
-        message: "Payment report generated successfully"
+        message: "Payment report generated successfully",
       };
     } catch (error) {
       throw this.handleMongoError(error);
+    }
+  }
+
+  /**
+   * Get mobile payment methods
+   */
+  async getMobilePaymentMethods() {
+    try {
+      const methods = [
+        {
+          id: "ecocash",
+          name: "EcoCash",
+          description: "Zimbabwe's leading mobile money platform",
+          icon: "💰",
+          supported_countries: ["ZW"],
+          phone_format: "26377xxxxxxx or 26378xxxxxxx",
+          default: true,
+        },
+        {
+          id: "onemoney",
+          name: "OneMoney",
+          description: "NetOne mobile money service",
+          icon: "📱",
+          supported_countries: ["ZW"],
+          phone_format: "26371xxxxxxx or 26373xxxxxxx",
+          default: false,
+        },
+        {
+          id: "telecash",
+          name: "Telecash",
+          description: "Telecel mobile money service",
+          icon: "💳",
+          supported_countries: ["ZW"],
+          phone_format: "26373xxxxxxx",
+          default: false,
+        },
+      ];
+
+      return {
+        success: true,
+        data: methods,
+        message: "Mobile payment methods retrieved successfully",
+      };
+    } catch (error) {
+      console.error("Get mobile payment methods error:", error);
+      throw this.handleError(500, "Failed to fetch payment methods");
     }
   }
 
@@ -867,7 +1160,7 @@ class PaymentService {
     return {
       status,
       message,
-      timestamp: new Date()
+      timestamp: new Date(),
     };
   }
 
@@ -875,8 +1168,8 @@ class PaymentService {
    * Handle MongoDB errors
    */
   handleMongoError(error) {
-    console.error('Payment Service Error:', error);
-    
+    console.error("Payment Service Error:", error);
+
     // If it's already a custom error, return it
     if (error.status && error.message) {
       return error;
@@ -887,34 +1180,34 @@ class PaymentService {
       const field = Object.keys(error.keyPattern)[0];
       return {
         status: 409,
-        message: `Duplicate ${field.replace('_', ' ')}`,
-        field
+        message: `Duplicate ${field.replace("_", " ")}`,
+        field,
       };
     }
 
     // Handle validation errors
-    if (error.name === 'ValidationError') {
-      const errors = Object.values(error.errors).map(err => err.message);
+    if (error.name === "ValidationError") {
+      const errors = Object.values(error.errors).map((err) => err.message);
       return {
         status: 400,
-        message: 'Validation failed',
-        errors
+        message: "Validation failed",
+        errors,
       };
     }
 
     // Handle CastError (invalid ObjectId)
-    if (error.name === 'CastError') {
+    if (error.name === "CastError") {
       return {
         status: 400,
-        message: `Invalid ${error.path}: ${error.value}`
+        message: `Invalid ${error.path}: ${error.value}`,
       };
     }
 
     // Default error
     return {
       status: 500,
-      message: 'Internal server error',
-      detail: error.message
+      message: "Internal server error",
+      detail: error.message,
     };
   }
 }

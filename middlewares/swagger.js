@@ -2790,6 +2790,11 @@ const options = {
     "./routers/support_ticket_router.js",
     "./routers/auction_router.js",
     "./routers/bid_router.js",
+    "./routers/bid_payment_router.js",
+    "./routers/audit_log_router.js",
+    "./routers/inventory_transaction_router.js",
+    "./routers/ledger_entry_router.js",
+
   ],
 };
 
