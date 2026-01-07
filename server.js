@@ -18,6 +18,9 @@ const assetRouter = require("./routers/asset_router");
 const loanRouter = require("./routers/loan_router");
 const loanTermRouter = require("./routers/loan_term_router");
 const paymentRouter = require("./routers/payment_router");
+const supportTicketRouter = require("./routers/support_ticket_router");
+const auctionRouter = require("./routers/auction_router");
+const bidRouter = require("./routers/bid_router");
 
 // Load env
 dotenv.config();
@@ -45,6 +48,10 @@ app.use("/api/v1/assets", assetRouter);
 app.use("/api/v1/loans", loanRouter);
 app.use("/api/v1/loan-terms", loanTermRouter);
 app.use("/api/v1/payments", paymentRouter);
+app.use("/api/v1/support-tickets", supportTicketRouter);
+app.use("/api/v1/auctions", auctionRouter);
+app.use("/api/v1/bids", bidRouter);
+
 
 // Global error handler (REST)
 app.use((err, req, res, next) => {
