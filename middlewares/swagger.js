@@ -2794,7 +2794,7 @@ const options = {
     "./routers/audit_log_router.js",
     "./routers/inventory_transaction_router.js",
     "./routers/ledger_entry_router.js",
-
+    "./routers/asset_valuation_router.js",
   ],
 };
 
