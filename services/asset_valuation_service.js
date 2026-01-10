@@ -1,4 +1,4 @@
-const AssetValuation = require("../models/assetValuation.model");
+const AssetValuation = require("../models/asset-valuation.model");
 const Asset = require("../models/asset.model");
 const User = require("../models/user.model");
 const Attachment = require("../models/attachment.model");
