@@ -72,7 +72,7 @@ app.use((err, req, res, next) => {
 // initChatSocket(server);
 
 // Start server
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 7070;
 app.listen(PORT, () => {
   console.log(`🚗 Server running on port ${PORT}`);
   console.log(`📘 Swagger docs available at http://localhost:${PORT}/api-docs`);
