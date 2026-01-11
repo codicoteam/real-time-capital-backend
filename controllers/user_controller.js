@@ -9,14 +9,20 @@ class UserController {
     try {
       const userData = req.body;
       const createdByAdmin = req.user && !req.user.roles.includes("customer");
-      
+
       const user = await userService.registerUser(userData, createdByAdmin);
-      
+
       let message = "Registration successful";
       if (user.roles.includes("customer") && !createdByAdmin) {
-        message = "Registration successful. Please check your email for verification OTP.";
-      } else if (createdByAdmin && !user.roles.includes("customer") && !user.roles.includes("super_admin_vendor")) {
-        message = "User created successfully. Account details sent to their email.";
+        message =
+          "Registration successful. Please check your email for verification OTP.";
+      } else if (
+        createdByAdmin &&
+        !user.roles.includes("customer") &&
+        !user.roles.includes("super_admin_vendor")
+      ) {
+        message =
+          "User created successfully. Account details sent to their email.";
       }
 
       res.status(201).json({
@@ -32,7 +38,8 @@ class UserController {
             status: user.status,
             email_verified: user.email_verified,
           },
-          requiresVerification: user.roles.includes("customer") && !createdByAdmin,
+          requiresVerification:
+            user.roles.includes("customer") && !createdByAdmin,
         },
       });
     } catch (error) {
@@ -49,7 +56,7 @@ class UserController {
   async verifyEmail(req, res) {
     try {
       const { email, otp } = req.body;
-      
+
       if (!email || !otp) {
         return res.status(400).json({
           success: false,
@@ -57,8 +64,9 @@ class UserController {
         });
       }
 
-      const user = await userService.verifyEmail(email, otp);
-      
+      // Now verifyEmail returns { user, token }
+      const { user, token } = await userService.verifyEmail(email, otp);
+
       res.json({
         success: true,
         message: "Email verified successfully",
@@ -69,7 +77,9 @@ class UserController {
             first_name: user.first_name,
             last_name: user.last_name,
             status: user.status,
+            email_verified: user.email_verified,
           },
+          token: token, // Include the token in the response
         },
       });
     } catch (error) {
@@ -86,7 +96,7 @@ class UserController {
   async resendVerificationOtp(req, res) {
     try {
       const { email } = req.body;
-      
+
       if (!email) {
         return res.status(400).json({
           success: false,
@@ -95,7 +105,7 @@ class UserController {
       }
 
       await userService.resendVerificationOtp(email);
-      
+
       res.json({
         success: true,
         message: "Verification OTP resent successfully",
@@ -114,7 +124,7 @@ class UserController {
   async login(req, res) {
     try {
       const { email, password } = req.body;
-      
+
       if (!email || !password) {
         return res.status(400).json({
           success: false,
@@ -123,7 +133,7 @@ class UserController {
       }
 
       const result = await userService.loginUser(email, password);
-      
+
       res.json({
         success: true,
         message: "Login successful",
@@ -143,7 +153,7 @@ class UserController {
   async getProfile(req, res) {
     try {
       const user = await userService.getUserProfile(req.user._id);
-      
+
       res.json({
         success: true,
         data: user,
@@ -163,9 +173,9 @@ class UserController {
     try {
       const userId = req.user._id;
       const updateData = req.body;
-      
+
       const user = await userService.updateUserProfile(userId, updateData);
-      
+
       res.json({
         success: true,
         message: "Profile updated successfully",
@@ -185,7 +195,7 @@ class UserController {
   async forgotPassword(req, res) {
     try {
       const { email } = req.body;
-      
+
       if (!email) {
         return res.status(400).json({
           success: false,
@@ -194,7 +204,7 @@ class UserController {
       }
 
       const result = await userService.forgotPassword(email);
-      
+
       res.json({
         success: true,
         message: result.message,
@@ -213,7 +223,7 @@ class UserController {
   async resetPassword(req, res) {
     try {
       const { email, otp, newPassword } = req.body;
-      
+
       if (!email || !otp || !newPassword) {
         return res.status(400).json({
           success: false,
@@ -229,7 +239,7 @@ class UserController {
       }
 
       const result = await userService.resetPassword(email, otp, newPassword);
-      
+
       res.json({
         success: true,
         message: result.message,
@@ -248,7 +258,7 @@ class UserController {
   async requestAccountDeletion(req, res) {
     try {
       const { email } = req.body;
-      
+
       if (!email) {
         return res.status(400).json({
           success: false,
@@ -257,7 +267,7 @@ class UserController {
       }
 
       const result = await userService.requestAccountDeletion(email);
-      
+
       res.json({
         success: true,
         message: result.message,
@@ -276,7 +286,7 @@ class UserController {
   async confirmAccountDeletion(req, res) {
     try {
       const { email, otp } = req.body;
-      
+
       if (!email || !otp) {
         return res.status(400).json({
           success: false,
@@ -285,7 +295,7 @@ class UserController {
       }
 
       const result = await userService.confirmAccountDeletion(email, otp);
-      
+
       res.json({
         success: true,
         message: result.message,
@@ -304,7 +314,7 @@ class UserController {
   async getAllUsers(req, res) {
     try {
       const { page = 1, limit = 20, status, role, search } = req.query;
-      
+
       const filters = {};
       if (status) filters.status = status;
       if (role) filters.role = role;
@@ -315,7 +325,7 @@ class UserController {
         parseInt(page),
         parseInt(limit)
       );
-      
+
       res.json({
         success: true,
         data: result,
@@ -335,7 +345,7 @@ class UserController {
     try {
       const { userId } = req.params;
       const { status } = req.body;
-      
+
       if (!status) {
         return res.status(400).json({
           success: false,
@@ -348,7 +358,7 @@ class UserController {
         status,
         req.user._id
       );
-      
+
       res.json({
         success: true,
         message: "User status updated successfully",
@@ -369,7 +379,7 @@ class UserController {
     try {
       const userId = req.user._id;
       const documentData = req.body;
-      
+
       if (!documentData.type || !documentData.url) {
         return res.status(400).json({
           success: false,
@@ -378,7 +388,7 @@ class UserController {
       }
 
       const document = await userService.uploadDocument(userId, documentData);
-      
+
       res.status(201).json({
         success: true,
         message: "Document uploaded successfully",
@@ -399,7 +409,7 @@ class UserController {
     try {
       const userId = req.user._id;
       const { documentId } = req.params;
-      
+
       if (!documentId) {
         return res.status(400).json({
           success: false,
@@ -408,7 +418,7 @@ class UserController {
       }
 
       const result = await userService.removeDocument(userId, documentId);
-      
+
       res.json({
         success: true,
         message: result.message,
