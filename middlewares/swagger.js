@@ -2683,7 +2683,6 @@ const options = {
         },
       },
     },
-
     security: [
       {
         bearerAuth: [],
@@ -2801,9 +2800,7 @@ const options = {
     "./routers/asset_valuation_router.js",
   ],
 };
-
 const specs = swaggerJsdoc(options);
-
 module.exports = (app) => {
   app.use(
     "/api-docs",
