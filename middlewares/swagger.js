@@ -12,7 +12,7 @@ const options = {
     },
     servers: [
       {
-        url: "http://13.61.185.238:7070/",
+        url: "http://13.61.185.238:7070",
         description: "AWS Short term server",
       },
       {
