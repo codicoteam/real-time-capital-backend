@@ -2,12 +2,12 @@
 const User = require("../models/user.model");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { 
-  sendVerificationEmail, 
+const {
+  sendVerificationEmail,
   sendAdminCreatedAccountEmail,
   sendPasswordResetEmail,
   sendDeleteAccountEmail,
-  generateOTP 
+  generateOTP,
 } = require("../utils/emails_util");
 
 class UserService {
@@ -86,7 +86,9 @@ class UserService {
       // For self-registered customers: generate OTP and set pending
       user.status = "pending";
       user.email_verification_otp = generateOTP();
-      user.email_verification_expires_at = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+      user.email_verification_expires_at = new Date(
+        Date.now() + 15 * 60 * 1000
+      ); // 15 minutes
     } else if (createdByAdmin && !isCustomer && !isSuperAdmin) {
       // For admin-created staff: set active immediately
       user.status = "active";
@@ -120,11 +122,11 @@ class UserService {
   }
 
   /**
-   * Verify email with OTP
+   * Verify email with OTP and return token
    */
   async verifyEmail(email, otp) {
     const user = await User.findOne({ email });
-    
+
     if (!user) {
       throw { status: 404, message: "User not found" };
     }
@@ -150,9 +152,17 @@ class UserService {
     user.status = "active";
     user.email_verification_otp = null;
     user.email_verification_expires_at = null;
-    
+
     await user.save();
-    return user;
+
+    // Generate token after successful verification
+    const token = this.generateToken(user);
+
+    // Remove sensitive data
+    const userResponse = user.toObject();
+    delete userResponse.password_hash;
+
+    return { user: userResponse, token };
   }
 
   /**
@@ -160,7 +170,7 @@ class UserService {
    */
   async resendVerificationOtp(email) {
     const user = await User.findOne({ email });
-    
+
     if (!user) {
       throw { status: 404, message: "User not found" };
     }
@@ -172,7 +182,7 @@ class UserService {
     // Generate new OTP
     user.email_verification_otp = generateOTP();
     user.email_verification_expires_at = new Date(Date.now() + 15 * 60 * 1000);
-    
+
     await user.save();
 
     // Send email
@@ -190,21 +200,24 @@ class UserService {
    */
   async loginUser(email, password) {
     const user = await User.findOne({ email }).select("+password_hash");
-    
+
     if (!user) {
       throw { status: 401, message: "Invalid credentials" };
     }
 
     // Check if account is active
     if (user.status !== "active") {
-      throw { 
-        status: 403, 
-        message: `Account is ${user.status}. Please contact support.` 
+      throw {
+        status: 403,
+        message: `Account is ${user.status}. Please contact support.`,
       };
     }
 
     // Verify password
-    const isValidPassword = await this.comparePassword(password, user.password_hash);
+    const isValidPassword = await this.comparePassword(
+      password,
+      user.password_hash
+    );
     if (!isValidPassword) {
       throw { status: 401, message: "Invalid credentials" };
     }
@@ -224,7 +237,7 @@ class UserService {
    */
   async forgotPassword(email) {
     const user = await User.findOne({ email });
-    
+
     if (!user) {
       // Don't reveal if user exists or not for security
       return { message: "If your email exists, you will receive an OTP" };
@@ -233,7 +246,7 @@ class UserService {
     // Generate OTP
     user.reset_password_otp = generateOTP();
     user.reset_password_expires_at = new Date(Date.now() + 15 * 60 * 1000);
-    
+
     await user.save();
 
     // Send email
@@ -251,7 +264,7 @@ class UserService {
    */
   async resetPassword(email, otp, newPassword) {
     const user = await User.findOne({ email });
-    
+
     if (!user) {
       throw { status: 404, message: "User not found" };
     }
@@ -272,7 +285,7 @@ class UserService {
     user.password_hash = await this.hashPassword(newPassword);
     user.reset_password_otp = null;
     user.reset_password_expires_at = null;
-    
+
     await user.save();
 
     return { message: "Password reset successful" };
@@ -283,7 +296,7 @@ class UserService {
    */
   async getUserProfile(userId) {
     const user = await User.findById(userId);
-    
+
     if (!user) {
       throw { status: 404, message: "User not found" };
     }
@@ -296,7 +309,7 @@ class UserService {
    */
   async updateUserProfile(userId, updateData) {
     const user = await User.findById(userId);
-    
+
     if (!user) {
       throw { status: 404, message: "User not found" };
     }
@@ -309,11 +322,11 @@ class UserService {
       "date_of_birth",
       "address",
       "location",
-      "profile_pic_url"
+      "profile_pic_url",
     ];
 
     // Update allowed fields
-    allowedUpdates.forEach(field => {
+    allowedUpdates.forEach((field) => {
       if (updateData[field] !== undefined) {
         user[field] = updateData[field];
       }
@@ -333,7 +346,7 @@ class UserService {
    */
   async requestAccountDeletion(email) {
     const user = await User.findOne({ email });
-    
+
     if (!user) {
       throw { status: 404, message: "User not found" };
     }
@@ -341,7 +354,7 @@ class UserService {
     // Generate OTP
     user.delete_account_otp = generateOTP();
     user.delete_account_otp_expires_at = new Date(Date.now() + 15 * 60 * 1000);
-    
+
     await user.save();
 
     // Send email
@@ -359,7 +372,7 @@ class UserService {
    */
   async confirmAccountDeletion(email, otp) {
     const user = await User.findOne({ email });
-    
+
     if (!user) {
       throw { status: 404, message: "User not found" };
     }
@@ -383,7 +396,7 @@ class UserService {
     user.national_id_number = null;
     user.delete_account_otp = null;
     user.delete_account_otp_expires_at = null;
-    
+
     await user.save();
 
     return { message: "Account deleted successfully" };
@@ -410,10 +423,7 @@ class UserService {
     const skip = (page - 1) * limit;
 
     const [users, total] = await Promise.all([
-      User.find(query)
-        .sort({ created_at: -1 })
-        .skip(skip)
-        .limit(limit),
+      User.find(query).sort({ created_at: -1 }).skip(skip).limit(limit),
       User.countDocuments(query),
     ]);
 
@@ -433,13 +443,13 @@ class UserService {
    */
   async updateUserStatus(userId, status, updatedBy) {
     const validStatuses = ["pending", "active", "suspended", "deleted"];
-    
+
     if (!validStatuses.includes(status)) {
       throw { status: 400, message: "Invalid status" };
     }
 
     const user = await User.findById(userId);
-    
+
     if (!user) {
       throw { status: 404, message: "User not found" };
     }
@@ -455,7 +465,7 @@ class UserService {
    */
   async uploadDocument(userId, documentData) {
     const user = await User.findById(userId);
-    
+
     if (!user) {
       throw { status: 404, message: "User not found" };
     }
@@ -476,15 +486,15 @@ class UserService {
    */
   async removeDocument(userId, documentId) {
     const user = await User.findById(userId);
-    
+
     if (!user) {
       throw { status: 404, message: "User not found" };
     }
 
     user.documents = user.documents.filter(
-      doc => doc._id.toString() !== documentId
+      (doc) => doc._id.toString() !== documentId
     );
-    
+
     await user.save();
     return { message: "Document removed successfully" };
   }
