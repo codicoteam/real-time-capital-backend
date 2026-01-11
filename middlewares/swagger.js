@@ -1,6 +1,6 @@
 const swaggerJsdoc = require("swagger-jsdoc");
 const swaggerUi = require("swagger-ui-express");
-
+// 
 const options = {
   definition: {
     openapi: "3.0.0",
@@ -11,6 +11,10 @@ const options = {
         "API for managing a real-time pawn and collateral-based lending system, including user and role management, asset submission and valuation, loan applications, approvals, renewals, repayments, inventory tracking, auctions, bidding, financial ledger entries, profit and loss reporting, and document generation and signing, with full audit trail and role-based access control.",
     },
     servers: [
+      {
+        url: "http://13.61.185.238:7070/",
+        description: "AWS Short term server",
+      },
       {
         url: "https://real-time-capital-backend.onrender.com",
         description: "Render server",
