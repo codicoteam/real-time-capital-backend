@@ -1,11 +1,11 @@
-const LoanApplication = require('../models/loanApplication.model');
-const User = require('../models/user.model');
-const DebtorRecord = require('../models/debtorRecord.model');
-const mongoose = require('mongoose');
+const LoanApplication = require("../models/loanApplication.model");
+const User = require("../models/user.model");
+const DebtorRecord = require("../models/debtorRecord.model");
+const mongoose = require("mongoose");
 (async () => {
   ({ v4: uuidv4 } = await import("uuid"));
 })();
-const emailService = require('../utils/emails_util');
+const emailService = require("../utils/emails_util");
 
 class LoanApplicationService {
   /**
@@ -14,8 +14,10 @@ class LoanApplicationService {
   generateApplicationNo() {
     const date = new Date();
     const year = date.getFullYear().toString().slice(-2);
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+    const month = (date.getMonth() + 1).toString().padStart(2, "0");
+    const random = Math.floor(Math.random() * 1000)
+      .toString()
+      .padStart(3, "0");
     return `APP${year}${month}${random}`;
   }
 
@@ -30,22 +32,24 @@ class LoanApplicationService {
       try {
         // Validate required fields
         const requiredFields = [
-          'full_name', 
-          'national_id_number', 
-          'requested_loan_amount', 
-          'collateral_category'
+          "full_name",
+          "national_id_number",
+          "requested_loan_amount",
+          "collateral_category",
         ];
 
         for (const field of requiredFields) {
           if (!applicationData[field]) {
-            throw new Error(`${field.replace('_', ' ')} is required`);
+            throw new Error(`${field.replace("_", " ")} is required`);
           }
         }
 
         // Validate collateral category
-        const validCategories = ['small_loans', 'motor_vehicle', 'jewellery'];
+        const validCategories = ["small_loans", "motor_vehicle", "jewellery"];
         if (!validCategories.includes(applicationData.collateral_category)) {
-          throw new Error(`Invalid collateral category. Must be one of: ${validCategories.join(', ')}`);
+          throw new Error(
+            `Invalid collateral category. Must be one of: ${validCategories.join(", ")}`,
+          );
         }
 
         // Generate application number
@@ -56,9 +60,9 @@ class LoanApplicationService {
           ...applicationData,
           application_no: applicationNo,
           customer_user: userId,
-          status: 'draft',
+          status: "draft",
           created_at: new Date(),
-          updated_at: new Date()
+          updated_at: new Date(),
         });
 
         await loanApplication.save({ session });
@@ -67,12 +71,15 @@ class LoanApplicationService {
         session.endSession();
 
         // Populate customer info
-        await loanApplication.populate('customer_user', 'first_name last_name email phone');
+        await loanApplication.populate(
+          "customer_user",
+          "first_name last_name email phone",
+        );
 
         return {
           success: true,
           data: loanApplication,
-          message: 'Loan application draft created successfully'
+          message: "Loan application draft created successfully",
         };
       } catch (error) {
         await session.abortTransaction();
@@ -80,7 +87,7 @@ class LoanApplicationService {
         throw error;
       }
     } catch (error) {
-      console.error('Error creating loan application:', error);
+      console.error("Error creating loan application:", error);
       throw new Error(`Failed to create loan application: ${error.message}`);
     }
   }
@@ -97,42 +104,47 @@ class LoanApplicationService {
         const loanApplication = await LoanApplication.findOne({
           _id: applicationId,
           customer_user: userId,
-          status: 'draft'
+          status: "draft",
         }).session(session);
 
         if (!loanApplication) {
-          throw new Error('Loan application not found or cannot be submitted');
+          throw new Error("Loan application not found or cannot be submitted");
         }
 
         // Check if all required fields are filled
         const requiredFields = [
-          'full_name',
-          'national_id_number',
-          'date_of_birth',
-          'contact_details',
-          'home_address',
-          'employment.employment_type',
-          'employment.title',
-          'employment.duration',
-          'collateral_description',
-          'declaration_signed_at',
-          'declaration_signature_name'
+          "full_name",
+          "national_id_number",
+          "date_of_birth",
+          "contact_details",
+          "home_address",
+          "employment.employment_type",
+          "employment.title",
+          "employment.duration",
+          "collateral_description",
+          "declaration_signed_at",
+          "declaration_signature_name",
         ];
 
         for (const field of requiredFields) {
-          const value = field.split('.').reduce((obj, key) => obj && obj[key], loanApplication);
+          const value = field
+            .split(".")
+            .reduce((obj, key) => obj && obj[key], loanApplication);
           if (!value) {
             throw new Error(`Missing required field: ${field}`);
           }
         }
 
         // Update status to submitted
-        loanApplication.status = 'submitted';
+        loanApplication.status = "submitted";
         loanApplication.submitted_at = new Date();
         await loanApplication.save({ session });
 
         // Get customer details for email
-        await loanApplication.populate('customer_user', 'first_name last_name email');
+        await loanApplication.populate(
+          "customer_user",
+          "first_name last_name email",
+        );
 
         await session.commitTransaction();
         session.endSession();
@@ -143,7 +155,7 @@ class LoanApplicationService {
           await emailService.sendLoanApplicationSubmittedEmail({
             to: loanApplication.customer_user.email,
             fullName: loanApplication.full_name,
-            applicationNo: loanApplication.application_no
+            applicationNo: loanApplication.application_no,
           });
 
           // Send to admin team
@@ -151,17 +163,17 @@ class LoanApplicationService {
             applicationNo: loanApplication.application_no,
             customerName: loanApplication.full_name,
             requestedAmount: loanApplication.requested_loan_amount,
-            collateralCategory: loanApplication.collateral_category
+            collateralCategory: loanApplication.collateral_category,
           });
         } catch (emailError) {
-          console.error('Failed to send email notifications:', emailError);
+          console.error("Failed to send email notifications:", emailError);
           // Don't throw - email failure shouldn't break the application
         }
 
         return {
           success: true,
           data: loanApplication,
-          message: 'Loan application submitted successfully'
+          message: "Loan application submitted successfully",
         };
       } catch (error) {
         await session.abortTransaction();
@@ -169,7 +181,7 @@ class LoanApplicationService {
         throw error;
       }
     } catch (error) {
-      console.error('Error submitting loan application:', error);
+      console.error("Error submitting loan application:", error);
       throw new Error(`Failed to submit loan application: ${error.message}`);
     }
   }
@@ -182,99 +194,96 @@ class LoanApplicationService {
       const {
         page = 1,
         limit = 20,
-        sortBy = 'created_at',
-        sortOrder = 'desc',
-        status = '',
-        collateral_category = '',
-        search = '',
-        customer_user = '',
-        startDate = '',
-        endDate = '',
-        userRole = 'customer',
-        userId = null
+        sortBy = "created_at",
+        sortOrder = "desc",
+        status = "",
+        collateral_category = "",
+        search = "",
+        customer_user = "",
+        startDate = "",
+        endDate = "",
+        userRole = "customer",
+        userId = null,
       } = options;
 
-      // Build query
       const query = {};
 
+      // =========================
       // Role-based filtering
-      if (userRole === 'customer') {
+      // =========================
+      if (userRole === "customer") {
         query.customer_user = userId;
-      } else if (userRole === 'call_centre_support') {
-        // Can see all applications but limited fields
-        // No additional filtering
-      } else if (userRole === 'loan_officer_processor') {
-        // Can see submitted and processing applications
-        query.status = { $in: ['submitted', 'processing'] };
+      } else if (userRole === "loan_officer_processor") {
+        query.status = { $in: ["submitted", "processing"] };
       }
 
-      // Filter by status
-      if (status) {
-        query.status = status;
-      }
+      // =========================
+      // Filters
+      // =========================
+      if (status) query.status = status;
+      if (collateral_category) query.collateral_category = collateral_category;
+      if (customer_user) query.customer_user = customer_user;
 
-      // Filter by collateral category
-      if (collateral_category) {
-        query.collateral_category = collateral_category;
-      }
-
-      // Filter by customer
-      if (customer_user) {
-        query.customer_user = customer_user;
-      }
-
-      // Search across multiple fields
       if (search) {
         query.$or = [
-          { application_no: { $regex: search, $options: 'i' } },
-          { full_name: { $regex: search, $options: 'i' } },
-          { national_id_number: { $regex: search, $options: 'i' } },
-          { email_address: { $regex: search, $options: 'i' } }
+          { application_no: { $regex: search, $options: "i" } },
+          { full_name: { $regex: search, $options: "i" } },
+          { national_id_number: { $regex: search, $options: "i" } },
+          { email_address: { $regex: search, $options: "i" } },
         ];
       }
 
-      // Date range filter
       if (startDate || endDate) {
         query.created_at = {};
-        if (startDate) {
-          query.created_at.$gte = new Date(startDate);
-        }
-        if (endDate) {
-          query.created_at.$lte = new Date(endDate);
-        }
+        if (startDate) query.created_at.$gte = new Date(startDate);
+        if (endDate) query.created_at.$lte = new Date(endDate);
       }
 
-      // Calculate skip value for pagination
       const skip = (page - 1) * limit;
 
-      // Select fields based on role
-      const selectFields = userRole === 'call_centre_support' 
-        ? 'application_no full_name status collateral_category requested_loan_amount created_at' 
-        : '';
+      // =========================
+      // Field selection by role
+      // =========================
+      const selectFields =
+        userRole === "call_centre_support"
+          ? "application_no full_name status collateral_category requested_loan_amount created_at attachments"
+          : "";
 
-      // Execute query with pagination
+      // =========================
+      // Query execution
+      // =========================
       const [applications, total] = await Promise.all([
         LoanApplication.find(query)
-          .populate('customer_user', 'first_name last_name email phone')
-          .populate('debtor_check.checked_by', 'first_name last_name')
+          .populate("customer_user", "first_name last_name email phone")
+          .populate("debtor_check.checked_by", "first_name last_name")
+          .populate({
+            path: "attachments",
+            select: `
+            category filename mime_type storage url
+            signed signed_at
+            created_at
+          `,
+          })
           .select(selectFields)
-          .sort({ [sortBy]: sortOrder === 'desc' ? -1 : 1 })
+          .sort({ [sortBy]: sortOrder === "desc" ? -1 : 1 })
           .skip(skip)
           .limit(parseInt(limit))
           .lean(),
-        LoanApplication.countDocuments(query)
+        LoanApplication.countDocuments(query),
       ]);
 
-      // Calculate statistics
+      // =========================
+      // Statistics
+      // =========================
       const stats = await LoanApplication.aggregate([
         { $match: query },
         {
           $group: {
-            _id: '$status',
+            _id: "$status",
             count: { $sum: 1 },
-            totalAmount: { $sum: '$requested_loan_amount' }
-          }
-        }
+            totalAmount: { $sum: "$requested_loan_amount" },
+          },
+        },
       ]);
 
       return {
@@ -285,14 +294,14 @@ class LoanApplicationService {
             page: parseInt(page),
             limit: parseInt(limit),
             total,
-            pages: Math.ceil(total / limit)
+            pages: Math.ceil(total / limit),
           },
-          stats
+          stats,
         },
-        message: 'Loan applications retrieved successfully'
+        message: "Loan applications retrieved successfully",
       };
     } catch (error) {
-      console.error('Error fetching loan applications:', error);
+      console.error("Error fetching loan applications:", error);
       throw new Error(`Failed to fetch loan applications: ${error.message}`);
     }
   }
@@ -303,37 +312,40 @@ class LoanApplicationService {
   async getLoanApplicationById(id, userRole, userId) {
     try {
       if (!mongoose.Types.ObjectId.isValid(id)) {
-        throw new Error('Invalid application ID');
+        throw new Error("Invalid application ID");
       }
 
       const query = { _id: id };
 
       // Role-based access control
-      if (userRole === 'customer') {
+      if (userRole === "customer") {
         query.customer_user = userId;
       }
 
       const application = await LoanApplication.findOne(query)
-        .populate('customer_user', 'first_name last_name email phone national_id_number date_of_birth address')
-        .populate('debtor_check.checked_by', 'first_name last_name email')
-        .populate('debtor_check.matched_debtor_records')
+        .populate(
+          "customer_user",
+          "first_name last_name email phone national_id_number date_of_birth address",
+        )
+        .populate("debtor_check.checked_by", "first_name last_name email")
+        .populate("debtor_check.matched_debtor_records")
         .populate({
-          path: 'attachments',
-          select: 'filename mime_type url category signed signed_at'
+          path: "attachments",
+          select: "filename mime_type url category signed signed_at",
         })
         .lean();
 
       if (!application) {
-        throw new Error('Loan application not found');
+        throw new Error("Loan application not found");
       }
 
       return {
         success: true,
         data: application,
-        message: 'Loan application retrieved successfully'
+        message: "Loan application retrieved successfully",
       };
     } catch (error) {
-      console.error('Error fetching loan application:', error);
+      console.error("Error fetching loan application:", error);
       throw new Error(`Failed to fetch loan application: ${error.message}`);
     }
   }
@@ -341,16 +353,18 @@ class LoanApplicationService {
   /**
    * Update loan application status (for loan officers)
    */
-  async updateLoanApplicationStatus(id, status, user, notes = '') {
+  async updateLoanApplicationStatus(id, status, user, notes = "") {
     try {
       if (!mongoose.Types.ObjectId.isValid(id)) {
-        throw new Error('Invalid application ID');
+        throw new Error("Invalid application ID");
       }
 
       // Validate status transition
-      const validStatuses = ['processing', 'approved', 'rejected', 'cancelled'];
+      const validStatuses = ["processing", "approved", "rejected", "cancelled"];
       if (!validStatuses.includes(status)) {
-        throw new Error(`Invalid status. Must be one of: ${validStatuses.join(', ')}`);
+        throw new Error(
+          `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
+        );
       }
 
       const session = await mongoose.startSession();
@@ -360,27 +374,30 @@ class LoanApplicationService {
         const application = await LoanApplication.findById(id).session(session);
 
         if (!application) {
-          throw new Error('Loan application not found');
+          throw new Error("Loan application not found");
         }
 
         // Check permissions based on status
-        if (status === 'approved' || status === 'rejected') {
+        if (status === "approved" || status === "rejected") {
           // Only loan_officer_approval or higher can approve/reject
-          const canApprove = user.roles.includes('loan_officer_approval') || 
-                            user.roles.includes('super_admin_vendor') ||
-                            user.roles.includes('management');
-          
+          const canApprove =
+            user.roles.includes("loan_officer_approval") ||
+            user.roles.includes("super_admin_vendor") ||
+            user.roles.includes("management");
+
           if (!canApprove) {
-            throw new Error('You do not have permission to approve/reject applications');
+            throw new Error(
+              "You do not have permission to approve/reject applications",
+            );
           }
         }
 
         // Update application
         application.status = status;
         application.updated_at = new Date();
-        
+
         if (notes) {
-          application.internal_notes = application.internal_notes 
+          application.internal_notes = application.internal_notes
             ? `${application.internal_notes}\n[${new Date().toISOString()}] ${user.first_name}: ${notes}`
             : `[${new Date().toISOString()}] ${user.first_name}: ${notes}`;
         }
@@ -388,7 +405,10 @@ class LoanApplicationService {
         await application.save({ session });
 
         // Get customer details for email
-        await application.populate('customer_user', 'first_name last_name email');
+        await application.populate(
+          "customer_user",
+          "first_name last_name email",
+        );
 
         await session.commitTransaction();
         session.endSession();
@@ -402,16 +422,17 @@ class LoanApplicationService {
             status,
             notes,
             officerName: `${user.first_name} ${user.last_name}`,
-            contactDetails: 'Please contact our loan department at +263 xxx xxx xxx for any questions.'
+            contactDetails:
+              "Please contact our loan department at +263 xxx xxx xxx for any questions.",
           });
         } catch (emailError) {
-          console.error('Failed to send status update email:', emailError);
+          console.error("Failed to send status update email:", emailError);
         }
 
         return {
           success: true,
           data: application,
-          message: `Loan application status updated to ${status}`
+          message: `Loan application status updated to ${status}`,
         };
       } catch (error) {
         await session.abortTransaction();
@@ -419,8 +440,10 @@ class LoanApplicationService {
         throw error;
       }
     } catch (error) {
-      console.error('Error updating loan application status:', error);
-      throw new Error(`Failed to update loan application status: ${error.message}`);
+      console.error("Error updating loan application status:", error);
+      throw new Error(
+        `Failed to update loan application status: ${error.message}`,
+      );
     }
   }
 
@@ -430,38 +453,39 @@ class LoanApplicationService {
   async performDebtorCheck(applicationId, user) {
     try {
       if (!mongoose.Types.ObjectId.isValid(applicationId)) {
-        throw new Error('Invalid application ID');
+        throw new Error("Invalid application ID");
       }
 
       const session = await mongoose.startSession();
       session.startTransaction();
 
       try {
-        const application = await LoanApplication.findById(applicationId).session(session);
+        const application =
+          await LoanApplication.findById(applicationId).session(session);
 
         if (!application) {
-          throw new Error('Loan application not found');
+          throw new Error("Loan application not found");
         }
 
         // Check if debtor check already performed
         if (application.debtor_check.checked) {
-          throw new Error('Debtor check already performed on this application');
+          throw new Error("Debtor check already performed on this application");
         }
 
         // Search for matching debtor records
         const searchCriteria = [
-          { client_name: { $regex: application.full_name, $options: 'i' } },
-          { national_id_number: application.national_id_number }
-        ].filter(criteria => {
+          { client_name: { $regex: application.full_name, $options: "i" } },
+          { national_id_number: application.national_id_number },
+        ].filter((criteria) => {
           const value = Object.values(criteria)[0];
-          return value && value !== '';
+          return value && value !== "";
         });
 
         let matchedRecords = [];
         if (searchCriteria.length > 0) {
           matchedRecords = await DebtorRecord.find({
             $or: searchCriteria,
-            account_status: { $nin: ['Paid up', 'Sold', 'Current'] } // Exclude good statuses
+            account_status: { $nin: ["Paid up", "Sold", "Current"] }, // Exclude good statuses
           }).session(session);
         }
 
@@ -469,12 +493,13 @@ class LoanApplicationService {
         application.debtor_check = {
           checked: true,
           matched: matchedRecords.length > 0,
-          matched_debtor_records: matchedRecords.map(record => record._id),
+          matched_debtor_records: matchedRecords.map((record) => record._id),
           checked_at: new Date(),
           checked_by: user._id,
-          notes: matchedRecords.length > 0 
-            ? `Found ${matchedRecords.length} matching debtor record(s)`
-            : 'No matching debtor records found'
+          notes:
+            matchedRecords.length > 0
+              ? `Found ${matchedRecords.length} matching debtor record(s)`
+              : "No matching debtor records found",
         };
 
         await application.save({ session });
@@ -483,16 +508,16 @@ class LoanApplicationService {
         session.endSession();
 
         // Populate matched records
-        await application.populate('debtor_check.matched_debtor_records');
+        await application.populate("debtor_check.matched_debtor_records");
 
         return {
           success: true,
           data: {
             application,
             debtorCheck: application.debtor_check,
-            matchedCount: matchedRecords.length
+            matchedCount: matchedRecords.length,
           },
-          message: `Debtor check completed. ${matchedRecords.length} matching record(s) found.`
+          message: `Debtor check completed. ${matchedRecords.length} matching record(s) found.`,
         };
       } catch (error) {
         await session.abortTransaction();
@@ -500,7 +525,7 @@ class LoanApplicationService {
         throw error;
       }
     } catch (error) {
-      console.error('Error performing debtor check:', error);
+      console.error("Error performing debtor check:", error);
       throw new Error(`Failed to perform debtor check: ${error.message}`);
     }
   }
@@ -511,21 +536,21 @@ class LoanApplicationService {
   async updateLoanApplication(id, updateData, userRole, userId) {
     try {
       if (!mongoose.Types.ObjectId.isValid(id)) {
-        throw new Error('Invalid application ID');
+        throw new Error("Invalid application ID");
       }
 
       const query = { _id: id };
 
       // Role-based access control
-      if (userRole === 'customer') {
+      if (userRole === "customer") {
         query.customer_user = userId;
-        query.status = 'draft'; // Customers can only update drafts
+        query.status = "draft"; // Customers can only update drafts
       }
 
       const application = await LoanApplication.findOne(query);
 
       if (!application) {
-        throw new Error('Loan application not found or cannot be updated');
+        throw new Error("Loan application not found or cannot be updated");
       }
 
       // Remove fields that shouldn't be updated directly
@@ -543,10 +568,10 @@ class LoanApplicationService {
       return {
         success: true,
         data: application,
-        message: 'Loan application updated successfully'
+        message: "Loan application updated successfully",
       };
     } catch (error) {
-      console.error('Error updating loan application:', error);
+      console.error("Error updating loan application:", error);
       throw new Error(`Failed to update loan application: ${error.message}`);
     }
   }
@@ -556,27 +581,29 @@ class LoanApplicationService {
    */
   async addAttachment(applicationId, attachmentId, userRole, userId) {
     try {
-      if (!mongoose.Types.ObjectId.isValid(applicationId) || 
-          !mongoose.Types.ObjectId.isValid(attachmentId)) {
-        throw new Error('Invalid application or attachment ID');
+      if (
+        !mongoose.Types.ObjectId.isValid(applicationId) ||
+        !mongoose.Types.ObjectId.isValid(attachmentId)
+      ) {
+        throw new Error("Invalid application or attachment ID");
       }
 
       const query = { _id: applicationId };
 
       // Role-based access control
-      if (userRole === 'customer') {
+      if (userRole === "customer") {
         query.customer_user = userId;
       }
 
       const application = await LoanApplication.findOne(query);
 
       if (!application) {
-        throw new Error('Loan application not found');
+        throw new Error("Loan application not found");
       }
 
       // Check if attachment already added
       if (application.attachments.includes(attachmentId)) {
-        throw new Error('Attachment already added to this application');
+        throw new Error("Attachment already added to this application");
       }
 
       // Add attachment
@@ -588,10 +615,10 @@ class LoanApplicationService {
       return {
         success: true,
         data: application,
-        message: 'Attachment added to loan application successfully'
+        message: "Attachment added to loan application successfully",
       };
     } catch (error) {
-      console.error('Error adding attachment:', error);
+      console.error("Error adding attachment:", error);
       throw new Error(`Failed to add attachment: ${error.message}`);
     }
   }
@@ -601,29 +628,31 @@ class LoanApplicationService {
    */
   async removeAttachment(applicationId, attachmentId, userRole, userId) {
     try {
-      if (!mongoose.Types.ObjectId.isValid(applicationId) || 
-          !mongoose.Types.ObjectId.isValid(attachmentId)) {
-        throw new Error('Invalid application or attachment ID');
+      if (
+        !mongoose.Types.ObjectId.isValid(applicationId) ||
+        !mongoose.Types.ObjectId.isValid(attachmentId)
+      ) {
+        throw new Error("Invalid application or attachment ID");
       }
 
       const query = { _id: applicationId };
 
       // Role-based access control
-      if (userRole === 'customer') {
+      if (userRole === "customer") {
         query.customer_user = userId;
-        query.status = 'draft'; // Customers can only remove from drafts
+        query.status = "draft"; // Customers can only remove from drafts
       }
 
       const application = await LoanApplication.findOne(query);
 
       if (!application) {
-        throw new Error('Loan application not found or cannot be modified');
+        throw new Error("Loan application not found or cannot be modified");
       }
 
       // Check if attachment exists
       const attachmentIndex = application.attachments.indexOf(attachmentId);
       if (attachmentIndex === -1) {
-        throw new Error('Attachment not found in this application');
+        throw new Error("Attachment not found in this application");
       }
 
       // Remove attachment
@@ -635,10 +664,10 @@ class LoanApplicationService {
       return {
         success: true,
         data: application,
-        message: 'Attachment removed from loan application successfully'
+        message: "Attachment removed from loan application successfully",
       };
     } catch (error) {
-      console.error('Error removing attachment:', error);
+      console.error("Error removing attachment:", error);
       throw new Error(`Failed to remove attachment: ${error.message}`);
     }
   }
@@ -651,7 +680,7 @@ class LoanApplicationService {
       const query = {};
 
       // Role-based filtering
-      if (userRole === 'customer') {
+      if (userRole === "customer") {
         query.customer_user = userId;
       }
 
@@ -662,16 +691,28 @@ class LoanApplicationService {
           $group: {
             _id: null,
             totalApplications: { $sum: 1 },
-            totalRequestedAmount: { $sum: '$requested_loan_amount' },
-            avgRequestedAmount: { $avg: '$requested_loan_amount' },
-            draftCount: { $sum: { $cond: [{ $eq: ['$status', 'draft'] }, 1, 0] } },
-            submittedCount: { $sum: { $cond: [{ $eq: ['$status', 'submitted'] }, 1, 0] } },
-            processingCount: { $sum: { $cond: [{ $eq: ['$status', 'processing'] }, 1, 0] } },
-            approvedCount: { $sum: { $cond: [{ $eq: ['$status', 'approved'] }, 1, 0] } },
-            rejectedCount: { $sum: { $cond: [{ $eq: ['$status', 'rejected'] }, 1, 0] } },
-            cancelledCount: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] } }
-          }
-        }
+            totalRequestedAmount: { $sum: "$requested_loan_amount" },
+            avgRequestedAmount: { $avg: "$requested_loan_amount" },
+            draftCount: {
+              $sum: { $cond: [{ $eq: ["$status", "draft"] }, 1, 0] },
+            },
+            submittedCount: {
+              $sum: { $cond: [{ $eq: ["$status", "submitted"] }, 1, 0] },
+            },
+            processingCount: {
+              $sum: { $cond: [{ $eq: ["$status", "processing"] }, 1, 0] },
+            },
+            approvedCount: {
+              $sum: { $cond: [{ $eq: ["$status", "approved"] }, 1, 0] },
+            },
+            rejectedCount: {
+              $sum: { $cond: [{ $eq: ["$status", "rejected"] }, 1, 0] },
+            },
+            cancelledCount: {
+              $sum: { $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0] },
+            },
+          },
+        },
       ]);
 
       // Statistics by collateral category
@@ -679,13 +720,13 @@ class LoanApplicationService {
         { $match: query },
         {
           $group: {
-            _id: '$collateral_category',
+            _id: "$collateral_category",
             count: { $sum: 1 },
-            totalAmount: { $sum: '$requested_loan_amount' },
-            avgAmount: { $avg: '$requested_loan_amount' }
-          }
+            totalAmount: { $sum: "$requested_loan_amount" },
+            avgAmount: { $avg: "$requested_loan_amount" },
+          },
         },
-        { $sort: { count: -1 } }
+        { $sort: { count: -1 } },
       ]);
 
       // Monthly trend (last 6 months)
@@ -693,30 +734,30 @@ class LoanApplicationService {
       sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
       const monthlyStats = await LoanApplication.aggregate([
-        { 
-          $match: { 
+        {
+          $match: {
             ...query,
-            created_at: { $gte: sixMonthsAgo }
-          } 
+            created_at: { $gte: sixMonthsAgo },
+          },
         },
         {
           $group: {
             _id: {
-              year: { $year: '$created_at' },
-              month: { $month: '$created_at' }
+              year: { $year: "$created_at" },
+              month: { $month: "$created_at" },
             },
             count: { $sum: 1 },
-            totalAmount: { $sum: '$requested_loan_amount' }
-          }
+            totalAmount: { $sum: "$requested_loan_amount" },
+          },
         },
-        { $sort: { '_id.year': 1, '_id.month': 1 } }
+        { $sort: { "_id.year": 1, "_id.month": 1 } },
       ]);
 
       // Format monthly stats
-      const formattedMonthlyStats = monthlyStats.map(stat => ({
-        month: `${stat._id.year}-${stat._id.month.toString().padStart(2, '0')}`,
+      const formattedMonthlyStats = monthlyStats.map((stat) => ({
+        month: `${stat._id.year}-${stat._id.month.toString().padStart(2, "0")}`,
         count: stat.count,
-        totalAmount: stat.totalAmount
+        totalAmount: stat.totalAmount,
       }));
 
       return {
@@ -731,15 +772,15 @@ class LoanApplicationService {
             processingCount: 0,
             approvedCount: 0,
             rejectedCount: 0,
-            cancelledCount: 0
+            cancelledCount: 0,
           },
           byCollateral: collateralStats,
-          monthlyTrend: formattedMonthlyStats
+          monthlyTrend: formattedMonthlyStats,
         },
-        message: 'Statistics retrieved successfully'
+        message: "Statistics retrieved successfully",
       };
     } catch (error) {
-      console.error('Error fetching statistics:', error);
+      console.error("Error fetching statistics:", error);
       throw new Error(`Failed to fetch statistics: ${error.message}`);
     }
   }
@@ -750,24 +791,26 @@ class LoanApplicationService {
   async sendDocumentRequirement(applicationId, requiredDocuments, user) {
     try {
       if (!mongoose.Types.ObjectId.isValid(applicationId)) {
-        throw new Error('Invalid application ID');
+        throw new Error("Invalid application ID");
       }
 
-      const application = await LoanApplication.findById(applicationId)
-        .populate('customer_user', 'first_name last_name email');
+      const application = await LoanApplication.findById(
+        applicationId,
+      ).populate("customer_user", "first_name last_name email");
 
       if (!application) {
-        throw new Error('Loan application not found');
+        throw new Error("Loan application not found");
       }
 
       // Check if user has permission
-      const canRequestDocuments = user.roles.includes('loan_officer_processor') || 
-                                 user.roles.includes('loan_officer_approval') ||
-                                 user.roles.includes('super_admin_vendor') ||
-                                 user.roles.includes('management');
+      const canRequestDocuments =
+        user.roles.includes("loan_officer_processor") ||
+        user.roles.includes("loan_officer_approval") ||
+        user.roles.includes("super_admin_vendor") ||
+        user.roles.includes("management");
 
       if (!canRequestDocuments) {
-        throw new Error('You do not have permission to request documents');
+        throw new Error("You do not have permission to request documents");
       }
 
       // Send email to customer
@@ -775,22 +818,22 @@ class LoanApplicationService {
         to: application.customer_user.email,
         fullName: application.full_name,
         applicationNo: application.application_no,
-        requiredDocuments
+        requiredDocuments,
       });
 
       // Add note to application
-      application.internal_notes = application.internal_notes 
-        ? `${application.internal_notes}\n[${new Date().toISOString()}] ${user.first_name}: Requested additional documents: ${requiredDocuments.join(', ')}`
-        : `[${new Date().toISOString()}] ${user.first_name}: Requested additional documents: ${requiredDocuments.join(', ')}`;
+      application.internal_notes = application.internal_notes
+        ? `${application.internal_notes}\n[${new Date().toISOString()}] ${user.first_name}: Requested additional documents: ${requiredDocuments.join(", ")}`
+        : `[${new Date().toISOString()}] ${user.first_name}: Requested additional documents: ${requiredDocuments.join(", ")}`;
 
       await application.save();
 
       return {
         success: true,
-        message: 'Document requirement notification sent successfully'
+        message: "Document requirement notification sent successfully",
       };
     } catch (error) {
-      console.error('Error sending document requirement:', error);
+      console.error("Error sending document requirement:", error);
       throw new Error(`Failed to send document requirement: ${error.message}`);
     }
   }
