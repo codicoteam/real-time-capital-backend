@@ -48,19 +48,82 @@ const BidSchema = new mongoose.Schema(
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
 );
 
-// If dispute is active, cannot be marked paid
-BidSchema.pre("validate", function (next) {
+// Validate payment status against dispute status
+BidSchema.pre("validate", function(next) {
   const disputeStatus = this.dispute?.status || "none";
   const disputeActive = ["raised", "under_review", "resolved_invalid"].includes(disputeStatus);
 
   if (disputeActive && ["paid", "refunded"].includes(this.payment_status)) {
-    return next(new Error("Cannot set bid as paid/refunded while dispute is active or invalid."));
+    const error = new Error("Cannot set bid as paid/refunded while dispute is active or invalid.");
+    return next(error);
   }
   return next();
 });
 
+// Add validation for bid amount
+BidSchema.pre("save", async function(next) {
+  try {
+    // Only validate on new bid creation
+    if (this.isNew) {
+      const Auction = mongoose.model("Auction");
+      const auction = await Auction.findById(this.auction);
+      
+      if (!auction) {
+        return next(new Error("Auction not found"));
+      }
 
+      // Check if auction is open for bidding
+      if (auction.status !== "open") {
+        return next(new Error("Auction is not open for bidding"));
+      }
+
+      // Check if auction has started
+      if (new Date() < auction.starts_at) {
+        return next(new Error("Auction has not started yet"));
+      }
+
+      // Check if auction has ended
+      if (auction.ends_at && new Date() > auction.ends_at) {
+        return next(new Error("Auction has ended"));
+      }
+
+      // Get current highest bid for this auction
+      const Bid = mongoose.model("Bid");
+      const highestBid = await Bid.findOne({
+        auction: this.auction
+      }).sort({ amount: -1 });
+
+      // Validate bid amount
+      if (highestBid && this.amount <= highestBid.amount) {
+        return next(new Error(`Bid amount must be greater than current highest bid (${highestBid.amount})`));
+      }
+
+      // Check if starting bid exists
+      if (auction.starting_bid && this.amount < auction.starting_bid) {
+        return next(new Error(`Bid amount must be at least ${auction.starting_bid} (starting bid)`));
+      }
+
+      // Check if reserve price exists
+      if (auction.reserve_price && this.amount < auction.reserve_price) {
+        return next(new Error(`Bid amount must be at least ${auction.reserve_price} (reserve price)`));
+      }
+
+      // Check minimum increment
+      const minIncrement = auction.min_bid_increment || 1;
+      if (highestBid && this.amount < highestBid.amount + minIncrement) {
+        return next(new Error(`Bid must increase by at least ${minIncrement}`));
+      }
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Indexes
 BidSchema.index({ auction: 1, amount: -1 });
 BidSchema.index({ auction: 1, bidder_user: 1 });
+BidSchema.index({ "dispute.status": 1 });
+BidSchema.index({ payment_status: 1 });
 
 module.exports = mongoose.model("Bid", BidSchema);
