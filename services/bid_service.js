@@ -40,7 +40,7 @@ class BidService {
         }
 
         // Check auction status
-        if (auction.status !== "open") {
+        if (auction.status !== "live") {
           throw new Error(
             `Cannot bid on auction with status: ${auction.status}`,
           );
@@ -176,7 +176,7 @@ class BidService {
       })
         .populate({
           path: "auction",
-          match: { status: "open" },
+          match: { status: "live" },
           select: "auction_no status starts_at ends_at",
           populate: {
             path: "asset",
@@ -212,7 +212,7 @@ class BidService {
       // Get all auctions where user is current highest bidder
       const auctions = await Auction.find({
         current_highest_bidder: user._id,
-        status: "open",
+        status: "live",
       }).select("_id");
 
       const auctionIds = auctions.map((auction) => auction._id);
