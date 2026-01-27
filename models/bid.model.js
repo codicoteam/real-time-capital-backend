@@ -73,8 +73,8 @@ BidSchema.pre("save", async function(next) {
       }
 
       // Check if auction is open for bidding
-      if (auction.status !== "open") {
-        return next(new Error("Auction is not open for bidding"));
+      if (auction.status !== "live") {
+        return next(new Error("Auction is not live for bidding"));
       }
 
       // Check if auction has started
