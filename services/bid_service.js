@@ -13,9 +13,6 @@ class BidService {
    * Create a new bid (already implemented in auction service)
    * This is kept for consistency but bid creation is handled in auction service
    */
-  /**
-   * Create a new bid
-   */
   static async createBid(bidData, user) {
     try {
       const session = await mongoose.startSession();
@@ -40,7 +37,7 @@ class BidService {
         }
 
         // Check auction status
-        if (auction.status !== "live") {
+        if (auction.status !== "open") {
           throw new Error(
             `Cannot bid on auction with status: ${auction.status}`,
           );
@@ -176,7 +173,7 @@ class BidService {
       })
         .populate({
           path: "auction",
-          match: { status: "live" },
+          match: { status: "open" },
           select: "auction_no status starts_at ends_at",
           populate: {
             path: "asset",
@@ -212,7 +209,7 @@ class BidService {
       // Get all auctions where user is current highest bidder
       const auctions = await Auction.find({
         current_highest_bidder: user._id,
-        status: "live",
+        status: "open",
       }).select("_id");
 
       const auctionIds = auctions.map((auction) => auction._id);
@@ -247,6 +244,7 @@ class BidService {
       throw new Error(error.message || "Failed to fetch winning bids");
     }
   }
+
   /**
    * Get bids with pagination and filters
    */
