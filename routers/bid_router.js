@@ -297,6 +297,109 @@ router.get("/", BidController.getBids);
 
 /**
  * @swagger
+ * /api/v1/bids:
+ *   post:
+ *     summary: Create a new bid
+ *     tags: [Bids]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - auction
+ *               - amount
+ *             properties:
+ *               auction:
+ *                 type: string
+ *                 description: Auction ID
+ *               amount:
+ *                 type: number
+ *                 description: Bid amount
+ *               currency:
+ *                 type: string
+ *                 default: USD
+ *                 description: Currency code
+ *     responses:
+ *       201:
+ *         description: Bid created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   $ref: '#/components/schemas/Bid'
+ *                 message:
+ *                   type: string
+ *       400:
+ *         description: Invalid bid data or auction not open
+ *       401:
+ *         description: Unauthorized
+ */
+router.post("/", BidController.createBid);
+
+/**
+ * @swagger
+ * /api/v1/bids/active:
+ *   get:
+ *     summary: Get user's active bids (in open auctions)
+ *     tags: [Bids]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Active bids retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Bid'
+ *       401:
+ *         description: Unauthorized
+ */
+router.get("/active", BidController.getActiveBids);
+
+/**
+ * @swagger
+ * /api/v1/bids/winning:
+ *   get:
+ *     summary: Get user's winning bids (user is current highest bidder)
+ *     tags: [Bids]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Winning bids retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Bid'
+ *       401:
+ *         description: Unauthorized
+ */
+router.get("/winning", BidController.getWinningBids);
+
+/**
+ * @swagger
  * /api/v1/bids/all:
  *   get:
  *     summary: Get all bids without pagination
@@ -430,9 +533,9 @@ router.put(
     "loan_officer_approval",
     "admin_pawn_limited",
     "management",
-    "super_admin_vendor"
+    "super_admin_vendor",
   ),
-  BidController.updateBid
+  BidController.updateBid,
 );
 
 /**
@@ -475,9 +578,9 @@ router.put(
     "loan_officer_approval",
     "admin_pawn_limited",
     "management",
-    "super_admin_vendor"
+    "super_admin_vendor",
   ),
-  BidController.updateBidPaymentStatus
+  BidController.updateBidPaymentStatus,
 );
 
 /**
@@ -554,9 +657,9 @@ router.put(
     "loan_officer_approval",
     "admin_pawn_limited",
     "management",
-    "super_admin_vendor"
+    "super_admin_vendor",
   ),
-  BidController.resolveDispute
+  BidController.resolveDispute,
 );
 
 /**
@@ -589,7 +692,7 @@ router.put(
 router.delete(
   "/:id",
   requireRoles("admin_pawn_limited", "management", "super_admin_vendor"),
-  BidController.deleteBid
+  BidController.deleteBid,
 );
 
 /**

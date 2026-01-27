@@ -42,7 +42,7 @@ const BaseAssetSchema = new mongoose.Schema(
   },
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" }, discriminatorKey: "asset_type" }
 );
-
+mavhu-website
 // Helpful indexes for asset tracking & reporting
 BaseAssetSchema.index({ category: 1, status: 1, created_at: -1 });
 BaseAssetSchema.index({ storage_location: 1, status: 1 });
