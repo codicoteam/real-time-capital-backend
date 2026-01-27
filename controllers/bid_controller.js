@@ -6,6 +6,83 @@ const BidService = require("../services/bid_service");
  */
 class BidController {
   /**
+   * Create a new bid
+   */
+  static async createBid(req, res) {
+    try {
+      const { auction, amount, currency } = req.body;
+      const user = req.user;
+
+      if (!auction || !amount) {
+        return res.status(400).json({
+          success: false,
+          message: "Auction ID and amount are required",
+        });
+      }
+
+      if (typeof amount !== "number" || amount <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Amount must be a positive number",
+        });
+      }
+
+      const result = await BidService.createBid(
+        { auction, amount, currency },
+        user,
+      );
+
+      if (!result.success) {
+        return res.status(400).json(result);
+      }
+
+      return res.status(201).json(result);
+    } catch (error) {
+      console.error("Create bid controller error:", error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Internal server error",
+        error: process.env.NODE_ENV === "development" ? error.stack : undefined,
+      });
+    }
+  }
+
+  /**
+   * Get user's active bids
+   */
+  static async getActiveBids(req, res) {
+    try {
+      const result = await BidService.getActiveBids(req.user);
+
+      return res.status(200).json(result);
+    } catch (error) {
+      console.error("Get active bids controller error:", error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Internal server error",
+        error: process.env.NODE_ENV === "development" ? error.stack : undefined,
+      });
+    }
+  }
+
+  /**
+   * Get user's winning bids
+   */
+  static async getWinningBids(req, res) {
+    try {
+      const result = await BidService.getWinningBids(req.user);
+
+      return res.status(200).json(result);
+    } catch (error) {
+      console.error("Get winning bids controller error:", error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Internal server error",
+        error: process.env.NODE_ENV === "development" ? error.stack : undefined,
+      });
+    }
+  }
+  /**
    * Get bids with pagination and filters
    */
   static async getBids(req, res) {
@@ -168,7 +245,7 @@ class BidController {
         return res.status(400).json({
           success: false,
           message: `Invalid payment status. Must be one of: ${validStatuses.join(
-            ", "
+            ", ",
           )}`,
         });
       }
@@ -180,7 +257,7 @@ class BidController {
           payment_reference,
           paid_amount: paid_amount ? parseFloat(paid_amount) : undefined,
         },
-        req.user
+        req.user,
       );
 
       if (!result.success) {
@@ -223,7 +300,7 @@ class BidController {
       const result = await BidService.raiseDispute(
         id,
         { reason: reason.trim() },
-        req.user
+        req.user,
       );
 
       if (!result.success) {
@@ -268,7 +345,7 @@ class BidController {
         return res.status(400).json({
           success: false,
           message: `Invalid resolution status. Must be one of: ${validStatuses.join(
-            ", "
+            ", ",
           )}`,
         });
       }
@@ -286,7 +363,7 @@ class BidController {
           status,
           resolution_notes: resolution_notes.trim(),
         },
-        req.user
+        req.user,
       );
 
       if (!result.success) {

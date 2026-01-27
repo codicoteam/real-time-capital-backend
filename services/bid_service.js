@@ -13,17 +13,240 @@ class BidService {
    * Create a new bid (already implemented in auction service)
    * This is kept for consistency but bid creation is handled in auction service
    */
+  /**
+   * Create a new bid
+   */
   static async createBid(bidData, user) {
     try {
-      // This method is maintained for API consistency
-      // Actual bid creation happens through auction service
-      throw new Error("Use auction service to place bids");
+      const session = await mongoose.startSession();
+      session.startTransaction();
+
+      try {
+        const { auction: auctionId, amount, currency = "USD" } = bidData;
+
+        // Validate input
+        if (!auctionId || !amount) {
+          throw new Error("Auction ID and amount are required");
+        }
+
+        if (typeof amount !== "number" || amount <= 0) {
+          throw new Error("Amount must be a positive number");
+        }
+
+        // Check if auction exists and is open
+        const auction = await Auction.findById(auctionId).session(session);
+        if (!auction) {
+          throw new Error("Auction not found");
+        }
+
+        // Check auction status
+        if (auction.status !== "open") {
+          throw new Error(
+            `Cannot bid on auction with status: ${auction.status}`,
+          );
+        }
+
+        // Check auction dates
+        const now = new Date();
+        if (now < auction.starts_at) {
+          throw new Error("Auction has not started yet");
+        }
+
+        if (auction.ends_at && now > auction.ends_at) {
+          throw new Error("Auction has ended");
+        }
+
+        // Check if user is the auction owner (cannot bid on own auction)
+        const asset = await Asset.findById(auction.asset).session(session);
+        if (asset && asset.owner_user && asset.owner_user.equals(user._id)) {
+          throw new Error("You cannot bid on your own auction");
+        }
+
+        // Get current highest bid
+        const highestBid = await Bid.findOne({
+          auction: auctionId,
+        })
+          .sort({ amount: -1 })
+          .session(session);
+
+        // Validate bid amount
+        if (highestBid && amount <= highestBid.amount) {
+          throw new Error(
+            `Bid amount must be greater than current highest bid (${highestBid.amount})`,
+          );
+        }
+
+        // Check minimum bid increment
+        const minIncrement = auction.min_bid_increment || 1;
+        if (highestBid && amount < highestBid.amount + minIncrement) {
+          throw new Error(`Bid must increase by at least ${minIncrement}`);
+        }
+
+        // Check reserve price
+        if (auction.reserve_price && amount < auction.reserve_price) {
+          throw new Error(
+            `Bid amount must be at least ${auction.reserve_price} (reserve price)`,
+          );
+        }
+
+        // Check starting bid
+        if (auction.starting_bid && amount < auction.starting_bid) {
+          throw new Error(
+            `Bid amount must be at least ${auction.starting_bid} (starting bid)`,
+          );
+        }
+
+        // Check if user has existing bid in this auction
+        const existingBid = await Bid.findOne({
+          auction: auctionId,
+          bidder_user: user._id,
+        }).session(session);
+
+        if (existingBid) {
+          // Optional: Allow users to update their bid instead of creating multiple
+          // For now, we'll prevent multiple bids from same user
+          throw new Error("You have already placed a bid in this auction");
+        }
+
+        // Create new bid
+        const bid = new Bid({
+          auction: auctionId,
+          bidder_user: user._id,
+          amount,
+          currency,
+          placed_at: new Date(),
+          payment_status: "unpaid",
+          dispute: { status: "none" },
+        });
+
+        await bid.save({ session });
+
+        // Update auction with new highest bid
+        auction.current_highest_bid = amount;
+        auction.current_highest_bidder = user._id;
+        auction.bid_count = (auction.bid_count || 0) + 1;
+        auction.updated_at = new Date();
+
+        await auction.save({ session });
+
+        await session.commitTransaction();
+        session.endSession();
+
+        // Populate for response
+        await bid.populate({
+          path: "auction",
+          select: "auction_no status starts_at ends_at",
+          populate: {
+            path: "asset",
+            select: "title category evaluated_value",
+            populate: {
+              path: "attachments",
+              select: "filename url",
+              match: { category: "asset_photos" },
+              limit: 1,
+            },
+          },
+        });
+        await bid.populate("bidder_user", "name email");
+
+        return {
+          success: true,
+          data: bid,
+          message: "Bid placed successfully",
+        };
+      } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        throw error;
+      }
     } catch (error) {
       console.error("Create bid error:", error);
-      throw new Error(error.message || "Failed to create bid");
+      throw new Error(error.message || "Failed to place bid");
     }
   }
 
+  /**
+   * Get user's active bids (bids in open auctions)
+   */
+  static async getActiveBids(user) {
+    try {
+      const bids = await Bid.find({
+        bidder_user: user._id,
+        payment_status: { $in: ["unpaid", "pending"] },
+      })
+        .populate({
+          path: "auction",
+          match: { status: "open" },
+          select: "auction_no status starts_at ends_at",
+          populate: {
+            path: "asset",
+            select: "title category evaluated_value",
+            populate: {
+              path: "attachments",
+              select: "filename url",
+              match: { category: "asset_photos" },
+              limit: 1,
+            },
+          },
+        })
+        .sort({ placed_at: -1 });
+
+      // Filter out bids where auction is null (auction might be closed)
+      const activeBids = bids.filter((bid) => bid.auction);
+
+      return {
+        success: true,
+        data: activeBids,
+      };
+    } catch (error) {
+      console.error("Get active bids error:", error);
+      throw new Error(error.message || "Failed to fetch active bids");
+    }
+  }
+
+  /**
+   * Get winning bids (user is current highest bidder)
+   */
+  static async getWinningBids(user) {
+    try {
+      // Get all auctions where user is current highest bidder
+      const auctions = await Auction.find({
+        current_highest_bidder: user._id,
+        status: "open",
+      }).select("_id");
+
+      const auctionIds = auctions.map((auction) => auction._id);
+
+      // Get bids for these auctions
+      const bids = await Bid.find({
+        auction: { $in: auctionIds },
+        bidder_user: user._id,
+      })
+        .populate({
+          path: "auction",
+          select: "auction_no status ends_at",
+          populate: {
+            path: "asset",
+            select: "title category evaluated_value",
+            populate: {
+              path: "attachments",
+              select: "filename url",
+              match: { category: "asset_photos" },
+              limit: 1,
+            },
+          },
+        })
+        .sort({ placed_at: -1 });
+
+      return {
+        success: true,
+        data: bids,
+      };
+    } catch (error) {
+      console.error("Get winning bids error:", error);
+      throw new Error(error.message || "Failed to fetch winning bids");
+    }
+  }
   /**
    * Get bids with pagination and filters
    */
@@ -34,7 +257,7 @@ class BidService {
         limit = 10,
         sort_by = "placed_at",
         sort_order = "desc",
-        search
+        search,
       } = pagination;
 
       const {
@@ -47,7 +270,7 @@ class BidService {
         placed_from,
         placed_to,
         created_from,
-        created_to
+        created_to,
       } = filters;
 
       // Build query
@@ -84,9 +307,7 @@ class BidService {
 
       // Search functionality (by payment reference)
       if (search && search.length >= 2) {
-        query.$or = [
-          { payment_reference: { $regex: search, $options: "i" } }
-        ];
+        query.$or = [{ payment_reference: { $regex: search, $options: "i" } }];
       }
 
       // Calculate skip
@@ -105,9 +326,9 @@ class BidService {
                 path: "attachments",
                 select: "filename url",
                 match: { category: "asset_photos" },
-                limit: 1
-              }
-            }
+                limit: 1,
+              },
+            },
           })
           .populate("bidder_user", "name email phone")
           .populate("dispute.raised_by", "name email")
@@ -115,7 +336,7 @@ class BidService {
           .sort({ [sort_by]: sort_order === "asc" ? 1 : -1 })
           .skip(skip)
           .limit(parseInt(limit)),
-        Bid.countDocuments(query)
+        Bid.countDocuments(query),
       ]);
 
       return {
@@ -126,9 +347,9 @@ class BidService {
             page: parseInt(page),
             limit: parseInt(limit),
             total,
-            pages: Math.ceil(total / limit)
-          }
-        }
+            pages: Math.ceil(total / limit),
+          },
+        },
       };
     } catch (error) {
       console.error("Get bids error:", error);
@@ -147,7 +368,7 @@ class BidService {
         payment_status,
         dispute_status,
         min_amount,
-        max_amount
+        max_amount,
       } = filters;
 
       // Build query
@@ -181,9 +402,9 @@ class BidService {
               path: "attachments",
               select: "filename url",
               match: { category: "asset_photos" },
-              limit: 1
-            }
-          }
+              limit: 1,
+            },
+          },
         })
         .populate("bidder_user", "name email")
         .populate("dispute.raised_by", "name")
@@ -191,7 +412,7 @@ class BidService {
 
       return {
         success: true,
-        data: bids
+        data: bids,
       };
     } catch (error) {
       console.error("Get all bids error:", error);
@@ -213,20 +434,20 @@ class BidService {
               populate: [
                 {
                   path: "owner_user",
-                  select: "name email phone"
+                  select: "name email phone",
                 },
                 {
                   path: "attachments",
                   select: "filename url mime_type",
-                  match: { category: "asset_photos" }
-                }
-              ]
+                  match: { category: "asset_photos" },
+                },
+              ],
             },
             {
               path: "winner_user",
-              select: "name email"
-            }
-          ]
+              select: "name email",
+            },
+          ],
         })
         .populate("bidder_user", "name email phone address")
         .populate("dispute.raised_by", "name email")
@@ -236,23 +457,25 @@ class BidService {
         return {
           success: false,
           message: "Bid not found",
-          statusCode: 404
+          statusCode: 404,
         };
       }
 
       // Check permission
-      if (user.roles.includes("customer") && 
-          !bid.bidder_user._id.equals(user._id)) {
+      if (
+        user.roles.includes("customer") &&
+        !bid.bidder_user._id.equals(user._id)
+      ) {
         return {
           success: false,
           message: "Access denied to this bid",
-          statusCode: 403
+          statusCode: 403,
         };
       }
 
       return {
         success: true,
-        data: bid
+        data: bid,
       };
     } catch (error) {
       console.error("Get bid error:", error);
@@ -266,45 +489,54 @@ class BidService {
   static async updateBid(id, updateData, user) {
     try {
       const bid = await Bid.findById(id);
-      
+
       if (!bid) {
         return {
           success: false,
           message: "Bid not found",
-          statusCode: 404
+          statusCode: 404,
         };
       }
 
       // Check if user can update this bid
-      const canUpdate = user.roles.some(role => 
-        ["loan_officer_approval", "admin_pawn_limited", "management", "super_admin_vendor"].includes(role)
+      const canUpdate = user.roles.some((role) =>
+        [
+          "loan_officer_approval",
+          "admin_pawn_limited",
+          "management",
+          "super_admin_vendor",
+        ].includes(role),
       );
 
       if (!canUpdate) {
         return {
           success: false,
           message: "Insufficient permissions to update bid",
-          statusCode: 403
+          statusCode: 403,
         };
       }
 
       // Validate payment status update
       if (updateData.payment_status) {
         const validTransitions = {
-          "unpaid": ["pending", "cancelled"],
-          "pending": ["paid", "failed", "cancelled"],
-          "paid": ["refunded"],
-          "failed": ["pending", "cancelled"],
-          "refunded": [],
-          "cancelled": []
+          unpaid: ["pending", "cancelled"],
+          pending: ["paid", "failed", "cancelled"],
+          paid: ["refunded"],
+          failed: ["pending", "cancelled"],
+          refunded: [],
+          cancelled: [],
         };
 
-        if (validTransitions[bid.payment_status] && 
-            !validTransitions[bid.payment_status].includes(updateData.payment_status)) {
+        if (
+          validTransitions[bid.payment_status] &&
+          !validTransitions[bid.payment_status].includes(
+            updateData.payment_status,
+          )
+        ) {
           return {
             success: false,
             message: `Invalid payment status transition from ${bid.payment_status} to ${updateData.payment_status}`,
-            statusCode: 400
+            statusCode: 400,
           };
         }
 
@@ -320,14 +552,23 @@ class BidService {
       // Validate dispute update
       if (updateData.dispute) {
         // Only staff can update dispute
-        if (!user.roles.some(role => 
-          ["loan_officer_approval", "admin_pawn_limited", "management", "super_admin_vendor"].includes(role)
-        )) {
+        if (
+          !user.roles.some((role) =>
+            [
+              "loan_officer_approval",
+              "admin_pawn_limited",
+              "management",
+              "super_admin_vendor",
+            ].includes(role),
+          )
+        ) {
           delete updateData.dispute;
         } else {
           // If resolving dispute, set resolved_by and resolved_at
-          if (updateData.dispute.status === "resolved_valid" || 
-              updateData.dispute.status === "resolved_invalid") {
+          if (
+            updateData.dispute.status === "resolved_valid" ||
+            updateData.dispute.status === "resolved_invalid"
+          ) {
             updateData.dispute.resolved_by = user._id;
             updateData.dispute.resolved_at = new Date();
           }
@@ -343,15 +584,15 @@ class BidService {
         path: "auction",
         populate: {
           path: "asset",
-          select: "title"
-        }
+          select: "title",
+        },
       });
       await bid.populate("bidder_user", "name email");
 
       return {
         success: true,
         data: bid,
-        message: "Bid updated successfully"
+        message: "Bid updated successfully",
       };
     } catch (error) {
       console.error("Update bid error:", error);
@@ -365,56 +606,74 @@ class BidService {
   static async updateBidPaymentStatus(id, paymentData, user) {
     try {
       const bid = await Bid.findById(id);
-      
+
       if (!bid) {
         return {
           success: false,
           message: "Bid not found",
-          statusCode: 404
+          statusCode: 404,
         };
       }
 
       // Check permission
-      const canUpdatePayment = user.roles.some(role => 
-        ["loan_officer_processor", "loan_officer_approval", "admin_pawn_limited", "management", "super_admin_vendor"].includes(role)
+      const canUpdatePayment = user.roles.some((role) =>
+        [
+          "loan_officer_processor",
+          "loan_officer_approval",
+          "admin_pawn_limited",
+          "management",
+          "super_admin_vendor",
+        ].includes(role),
       );
 
       if (!canUpdatePayment) {
         return {
           success: false,
           message: "Insufficient permissions to update payment status",
-          statusCode: 403
+          statusCode: 403,
         };
       }
 
       // Validate payment status transition
       const validTransitions = {
-        "unpaid": ["pending", "cancelled"],
-        "pending": ["paid", "failed", "cancelled"],
-        "paid": ["refunded"],
-        "failed": ["pending", "cancelled"],
-        "refunded": [],
-        "cancelled": []
+        unpaid: ["pending", "cancelled"],
+        pending: ["paid", "failed", "cancelled"],
+        paid: ["refunded"],
+        failed: ["pending", "cancelled"],
+        refunded: [],
+        cancelled: [],
       };
 
-      if (validTransitions[bid.payment_status] && 
-          !validTransitions[bid.payment_status].includes(paymentData.payment_status)) {
+      if (
+        validTransitions[bid.payment_status] &&
+        !validTransitions[bid.payment_status].includes(
+          paymentData.payment_status,
+        )
+      ) {
         return {
           success: false,
           message: `Invalid payment status transition from ${bid.payment_status} to ${paymentData.payment_status}`,
-          statusCode: 400
+          statusCode: 400,
         };
       }
 
       // Check dispute status
       const disputeStatus = bid.dispute?.status || "none";
-      const disputeActive = ["raised", "under_review", "resolved_invalid"].includes(disputeStatus);
+      const disputeActive = [
+        "raised",
+        "under_review",
+        "resolved_invalid",
+      ].includes(disputeStatus);
 
-      if (disputeActive && ["paid", "refunded"].includes(paymentData.payment_status)) {
+      if (
+        disputeActive &&
+        ["paid", "refunded"].includes(paymentData.payment_status)
+      ) {
         return {
           success: false,
-          message: "Cannot set bid as paid/refunded while dispute is active or invalid",
-          statusCode: 400
+          message:
+            "Cannot set bid as paid/refunded while dispute is active or invalid",
+          statusCode: 400,
         };
       }
 
@@ -440,7 +699,7 @@ class BidService {
       return {
         success: true,
         data: bid,
-        message: `Bid payment status updated to ${paymentData.payment_status}`
+        message: `Bid payment status updated to ${paymentData.payment_status}`,
       };
     } catch (error) {
       console.error("Update payment status error:", error);
@@ -454,12 +713,12 @@ class BidService {
   static async raiseDispute(bidId, disputeData, user) {
     try {
       const bid = await Bid.findById(bidId);
-      
+
       if (!bid) {
         return {
           success: false,
           message: "Bid not found",
-          statusCode: 404
+          statusCode: 404,
         };
       }
 
@@ -468,7 +727,7 @@ class BidService {
         return {
           success: false,
           message: "Only the bidder can raise a dispute",
-          statusCode: 403
+          statusCode: 403,
         };
       }
 
@@ -477,7 +736,7 @@ class BidService {
         return {
           success: false,
           message: "Dispute already exists for this bid",
-          statusCode: 400
+          statusCode: 400,
         };
       }
 
@@ -487,7 +746,7 @@ class BidService {
         return {
           success: false,
           message: "Cannot raise dispute for closed or cancelled auction",
-          statusCode: 400
+          statusCode: 400,
         };
       }
 
@@ -496,7 +755,7 @@ class BidService {
         status: "raised",
         reason: disputeData.reason,
         raised_by: user._id,
-        raised_at: new Date()
+        raised_at: new Date(),
       };
 
       await bid.save();
@@ -506,7 +765,7 @@ class BidService {
       return {
         success: true,
         data: bid,
-        message: "Dispute raised successfully"
+        message: "Dispute raised successfully",
       };
     } catch (error) {
       console.error("Raise dispute error:", error);
@@ -520,25 +779,30 @@ class BidService {
   static async resolveDispute(bidId, resolutionData, user) {
     try {
       const bid = await Bid.findById(bidId);
-      
+
       if (!bid) {
         return {
           success: false,
           message: "Bid not found",
-          statusCode: 404
+          statusCode: 404,
         };
       }
 
       // Check permission (staff only)
-      const canResolve = user.roles.some(role => 
-        ["loan_officer_approval", "admin_pawn_limited", "management", "super_admin_vendor"].includes(role)
+      const canResolve = user.roles.some((role) =>
+        [
+          "loan_officer_approval",
+          "admin_pawn_limited",
+          "management",
+          "super_admin_vendor",
+        ].includes(role),
       );
 
       if (!canResolve) {
         return {
           success: false,
           message: "Insufficient permissions to resolve disputes",
-          statusCode: 403
+          statusCode: 403,
         };
       }
 
@@ -547,16 +811,19 @@ class BidService {
         return {
           success: false,
           message: "No active dispute found for this bid",
-          statusCode: 400
+          statusCode: 400,
         };
       }
 
       // Check if dispute is already resolved
-      if (bid.dispute.status === "resolved_valid" || bid.dispute.status === "resolved_invalid") {
+      if (
+        bid.dispute.status === "resolved_valid" ||
+        bid.dispute.status === "resolved_invalid"
+      ) {
         return {
           success: false,
           message: "Dispute already resolved",
-          statusCode: 400
+          statusCode: 400,
         };
       }
 
@@ -567,7 +834,10 @@ class BidService {
       bid.dispute.resolved_at = new Date();
 
       // If dispute resolved as invalid, update payment status if needed
-      if (resolutionData.status === "resolved_invalid" && bid.payment_status === "paid") {
+      if (
+        resolutionData.status === "resolved_invalid" &&
+        bid.payment_status === "paid"
+      ) {
         bid.payment_status = "refunded";
       }
 
@@ -578,7 +848,7 @@ class BidService {
       return {
         success: true,
         data: bid,
-        message: "Dispute resolved successfully"
+        message: "Dispute resolved successfully",
       };
     } catch (error) {
       console.error("Resolve dispute error:", error);
@@ -592,25 +862,27 @@ class BidService {
   static async deleteBid(id, user) {
     try {
       const bid = await Bid.findById(id);
-      
+
       if (!bid) {
         return {
           success: false,
           message: "Bid not found",
-          statusCode: 404
+          statusCode: 404,
         };
       }
 
       // Check permission (admin only)
-      const canDelete = user.roles.some(role => 
-        ["admin_pawn_limited", "management", "super_admin_vendor"].includes(role)
+      const canDelete = user.roles.some((role) =>
+        ["admin_pawn_limited", "management", "super_admin_vendor"].includes(
+          role,
+        ),
       );
 
       if (!canDelete) {
         return {
           success: false,
           message: "Insufficient permissions to delete bid",
-          statusCode: 403
+          statusCode: 403,
         };
       }
 
@@ -619,7 +891,7 @@ class BidService {
         return {
           success: false,
           message: "Cannot delete bid with completed payment",
-          statusCode: 400
+          statusCode: 400,
         };
       }
 
@@ -629,7 +901,7 @@ class BidService {
         return {
           success: false,
           message: "Cannot delete bid with active dispute",
-          statusCode: 400
+          statusCode: 400,
         };
       }
 
@@ -637,7 +909,7 @@ class BidService {
 
       return {
         success: true,
-        message: "Bid deleted successfully"
+        message: "Bid deleted successfully",
       };
     } catch (error) {
       console.error("Delete bid error:", error);
@@ -672,17 +944,17 @@ class BidService {
             by_payment_status: {
               $push: {
                 status: "$payment_status",
-                amount: "$amount"
-              }
+                amount: "$amount",
+              },
             },
             by_dispute_status: {
               $push: {
                 status: "$dispute.status",
-                amount: "$amount"
-              }
-            }
-          }
-        }
+                amount: "$amount",
+              },
+            },
+          },
+        },
       ]);
 
       // Format stats
@@ -691,7 +963,7 @@ class BidService {
         total_amount: 0,
         total_paid_amount: 0,
         by_payment_status: [],
-        by_dispute_status: []
+        by_dispute_status: [],
       };
 
       // Calculate payment status breakdown
@@ -701,10 +973,10 @@ class BidService {
         paid: { count: 0, amount: 0 },
         failed: { count: 0, amount: 0 },
         refunded: { count: 0, amount: 0 },
-        cancelled: { count: 0, amount: 0 }
+        cancelled: { count: 0, amount: 0 },
       };
 
-      result.by_payment_status.forEach(item => {
+      result.by_payment_status.forEach((item) => {
         if (paymentStats[item.status]) {
           paymentStats[item.status].count++;
           paymentStats[item.status].amount += item.amount || 0;
@@ -717,10 +989,10 @@ class BidService {
         raised: { count: 0, amount: 0 },
         under_review: { count: 0, amount: 0 },
         resolved_valid: { count: 0, amount: 0 },
-        resolved_invalid: { count: 0, amount: 0 }
+        resolved_invalid: { count: 0, amount: 0 },
       };
 
-      result.by_dispute_status.forEach(item => {
+      result.by_dispute_status.forEach((item) => {
         const status = item.status || "none";
         if (disputeStats[status]) {
           disputeStats[status].count++;
@@ -736,8 +1008,8 @@ class BidService {
         data: {
           ...result,
           payment_status: paymentStats,
-          dispute_status: disputeStats
-        }
+          dispute_status: disputeStats,
+        },
       };
     } catch (error) {
       console.error("Get bid stats error:", error);
@@ -751,12 +1023,12 @@ class BidService {
   static async getBidsByAuction(auctionId, user) {
     try {
       const auction = await Auction.findById(auctionId);
-      
+
       if (!auction) {
         return {
           success: false,
           message: "Auction not found",
-          statusCode: 404
+          statusCode: 404,
         };
       }
 
@@ -769,16 +1041,16 @@ class BidService {
             populate: {
               path: "attachments",
               select: "filename url",
-              match: { category: "asset_photos" }
-            }
-          }
+              match: { category: "asset_photos" },
+            },
+          },
         })
         .populate("bidder_user", "name email phone")
         .sort({ amount: -1 });
 
       return {
         success: true,
-        data: bids
+        data: bids,
       };
     } catch (error) {
       console.error("Get bids by auction error:", error);
@@ -792,12 +1064,14 @@ class BidService {
   static async getBidsByUser(userId, requestingUser) {
     try {
       // Check permission
-      if (requestingUser.roles.includes("customer") && 
-          !requestingUser._id.equals(userId)) {
+      if (
+        requestingUser.roles.includes("customer") &&
+        !requestingUser._id.equals(userId)
+      ) {
         return {
           success: false,
           message: "Cannot view other users' bids",
-          statusCode: 403
+          statusCode: 403,
         };
       }
 
@@ -812,15 +1086,15 @@ class BidService {
               path: "attachments",
               select: "filename url",
               match: { category: "asset_photos" },
-              limit: 1
-            }
-          }
+              limit: 1,
+            },
+          },
         })
         .sort({ placed_at: -1 });
 
       return {
         success: true,
-        data: bids
+        data: bids,
       };
     } catch (error) {
       console.error("Get bids by user error:", error);
@@ -837,14 +1111,12 @@ class BidService {
         return {
           success: false,
           message: "Search term must be at least 2 characters",
-          statusCode: 400
+          statusCode: 400,
         };
       }
 
       let query = {
-        $or: [
-          { payment_reference: { $regex: searchTerm, $options: "i" } }
-        ]
+        $or: [{ payment_reference: { $regex: searchTerm, $options: "i" } }],
       };
 
       // Apply additional filters
@@ -868,16 +1140,16 @@ class BidService {
               path: "attachments",
               select: "filename url",
               match: { category: "asset_photos" },
-              limit: 1
-            }
-          }
+              limit: 1,
+            },
+          },
         })
         .populate("bidder_user", "name")
         .limit(20);
 
       return {
         success: true,
-        data: bids
+        data: bids,
       };
     } catch (error) {
       console.error("Search bids error:", error);

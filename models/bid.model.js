@@ -59,6 +59,7 @@ BidSchema.pre("validate", function (next) {
   return next();
 });
 
+
 BidSchema.index({ auction: 1, amount: -1 });
 BidSchema.index({ auction: 1, bidder_user: 1 });
 
