@@ -67,7 +67,6 @@ const { authMiddleware, requireRoles } = require('../middlewares/auth_middleware
 router.post(
   '/upload-csv',
   authMiddleware,
-  requireRoles('admin', 'manager'),
   debtorRecordController.uploadCSV
 );
 
@@ -150,7 +149,6 @@ router.post(
 router.post(
   '/',
   authMiddleware,
-  requireRoles('admin', 'manager', 'user'),
   debtorRecordController.createRecord
 );
 
@@ -226,7 +224,6 @@ router.post(
 router.post(
   '/bulk',
   authMiddleware,
-  requireRoles('admin', 'manager'),
   debtorRecordController.createMultipleRecords
 );
 
@@ -322,7 +319,6 @@ router.post(
 router.get(
   '/',
   authMiddleware,
-  requireRoles('admin', 'manager', 'user'),
   debtorRecordController.getAllRecords
 );
 
@@ -356,7 +352,6 @@ router.get(
 router.get(
   '/:id',
   authMiddleware,
-  requireRoles('admin', 'manager', 'user'),
   debtorRecordController.getRecordById
 );
 
@@ -435,7 +430,6 @@ router.get(
 router.put(
   '/:id',
   authMiddleware,
-  requireRoles('admin', 'manager'),
   debtorRecordController.updateRecord
 );
 
@@ -469,7 +463,6 @@ router.put(
 router.delete(
   '/:id',
   authMiddleware,
-  requireRoles('admin'),
   debtorRecordController.deleteRecord
 );
 
@@ -510,7 +503,6 @@ router.delete(
 router.get(
   '/stats',
   authMiddleware,
-  requireRoles('admin', 'manager'),
   debtorRecordController.getStatistics
 );
 
@@ -560,7 +552,6 @@ router.get(
 router.get(
   '/export',
   authMiddleware,
-  requireRoles('admin', 'manager'),
   async (req, res) => {
     try {
       // Export functionality would go here
