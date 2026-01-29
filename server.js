@@ -58,7 +58,7 @@ app.use("/api/v1/auctions", auctionRouter);
 app.use("/api/v1/bids", bidRouter);
 app.use("/api/v1/bid-payments", bidPaymentRouter);
 app.use("/api/v1/audit-logs", auditLogRouter);
-app.use("/api/v1/inventory", inventoryRouter);
+app.use("/api/v1/transactions", inventoryRouter);
 app.use("/api/v1/ledger-entries", ledgerEntryRouter);
 app.use("/api/v1/asset-valuations", assetValuationRouter);
 
