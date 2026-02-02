@@ -87,9 +87,12 @@ class BidService {
         }
 
         // Check starting bid
-        if (auction.starting_bid && amount < auction.starting_bid) {
+        if (
+          auction.starting_bid_amount &&
+          amount < auction.starting_bid_amount
+        ) {
           throw new Error(
-            `Bid amount must be at least ${auction.starting_bid} (starting bid)`,
+            `Bid amount must be at least ${auction.starting_bid_amount} (starting bid)`,
           );
         }
 
@@ -119,10 +122,15 @@ class BidService {
         await bid.save({ session });
 
         // Update auction with new highest bid
-        auction.current_highest_bid = amount;
-        auction.current_highest_bidder = user._id;
-        auction.bid_count = (auction.bid_count || 0) + 1;
-        auction.updated_at = new Date();
+        // Note: In your Auction schema, you don't have current_highest_bid and current_highest_bidder
+        // Instead, you have winning_bid_amount and winner_user
+        // We'll update these as the current highest bid during the auction
+        auction.winning_bid_amount = amount;
+        auction.winner_user = user._id;
+
+        // If you need to track the number of bids, you might want to add a bid_count field to your schema
+        // For now, I'll comment this out since it's not in your schema
+        // auction.bid_count = (auction.bid_count || 0) + 1;
 
         await auction.save({ session });
 
