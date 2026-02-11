@@ -26,10 +26,9 @@ class PaymentService {
 
       this.paynowIntegration = new this.Paynow(
         String(PAYNOW_ID),
-        String(PAYNOW_KEY)
+        String(PAYNOW_KEY),
       );
 
-      // Set URLs if they exist
       if (PAYNOW_RESULT_URL)
         this.paynowIntegration.resultUrl = PAYNOW_RESULT_URL;
       if (PAYNOW_RETURN_URL)
@@ -43,42 +42,48 @@ class PaymentService {
   }
 
   /**
-   * Validate phone number for mobile payments
+   * Validate and format phone number for mobile payments
+   * Accepts: 077... or 26377...
+   * Returns: local format starting with 0 (e.g. 0777123456)
    */
   static validatePhoneNumber(phone, method) {
     if (!phone) {
       throw new Error(`Phone number is required for ${method} payment`);
     }
 
-    // Remove any non-digit characters
-    const cleanPhone = phone.replace(/\D/g, "");
+    // Remove all non-digits
+    const digits = phone.replace(/\D/g, "");
 
-    // Validate based on payment method
-    switch (method) {
-      case "ecocash":
-        if (!cleanPhone.match(/^(26377|26378|26371|26373)\d{7}$/)) {
-          throw new Error(
-            "Invalid Ecocash phone number. Must be a valid Zimbabwean number starting with 077, 078, 071, or 073"
-          );
-        }
-        break;
-      case "onemoney":
-        if (!cleanPhone.match(/^(26377|26378|26371|26373)\d{7}$/)) {
-          throw new Error(
-            "Invalid OneMoney phone number. Must be a valid Zimbabwean number"
-          );
-        }
-        break;
-      case "telecash":
-        if (!cleanPhone.match(/^(26377|26378|26371|26373)\d{7}$/)) {
-          throw new Error(
-            "Invalid Telecash phone number. Must be a valid Zimbabwean number"
-          );
-        }
-        break;
+    // Zimbabwe mobile prefixes (Econet, NetOne, Telecel)
+    const validPrefixes = ["77", "78", "71", "73"];
+
+    // Check if it starts with 26377... or 077...
+    let localNumber;
+    if (digits.startsWith("263")) {
+      const afterCountry = digits.slice(3);
+      if (
+        afterCountry.length === 9 &&
+        validPrefixes.includes(afterCountry.slice(0, 2))
+      ) {
+        localNumber = "0" + afterCountry;
+      } else {
+        throw new Error(
+          `Invalid ${method} number. Must be a valid Zimbabwean mobile number.`,
+        );
+      }
+    } else if (digits.startsWith("0")) {
+      if (digits.length === 10 && validPrefixes.includes(digits.slice(1, 3))) {
+        localNumber = digits;
+      } else {
+        throw new Error(
+          `Invalid ${method} number. Must be a valid Zimbabwean mobile number.`,
+        );
+      }
+    } else {
+      throw new Error(`Invalid ${method} number. Must start with 0 or 263.`);
     }
 
-    return `+${cleanPhone}`;
+    return localNumber; // e.g. "0777123456"
   }
 
   /**
@@ -91,7 +96,7 @@ class PaymentService {
       if (!loan) {
         throw this.handleError(
           404,
-          `Loan with ID ${paymentData.loan} not found`
+          `Loan with ID ${paymentData.loan} not found`,
         );
       }
 
@@ -118,14 +123,14 @@ class PaymentService {
       // For PayNow and mobile payments, initiate payment
       if (
         ["paynow", "ecocash", "onemoney", "telecash"].includes(
-          paymentData.provider
+          paymentData.provider,
         )
       ) {
         return await this.initiatePayNowPayment(
           paymentData,
           loan,
           customer,
-          userId
+          userId,
         );
       }
 
@@ -170,7 +175,7 @@ class PaymentService {
   }
 
   /**
-   * Initiate PayNow or mobile payment
+   * Initiate PayNow or mobile payment (UPDATED)
    */
   async initiatePayNowPayment(paymentData, loan, customer, userId) {
     try {
@@ -181,52 +186,58 @@ class PaymentService {
       });
       await payment.save();
 
-      // Create PayNow payment
+      // Create PayNow payment object
       const paynowPayment = this.paynowIntegration.createPayment(
         paymentData.receipt_no,
-        customer.email || "customer@example.com"
+        customer.email || "customer@example.com",
       );
 
       paynowPayment.add(
         `Loan Payment - ${loan.loan_no}`,
-        parseFloat(paymentData.amount)
+        parseFloat(paymentData.amount),
       );
 
-      // Set mobile payment method if applicable
+      let response;
+
+      // ---------- MOBILE MONEY FLOW (Ecocash, OneMoney, Telecash) ----------
       if (["ecocash", "onemoney", "telecash"].includes(paymentData.provider)) {
-        // Validate and format phone number
         if (!paymentData.payer_phone) {
           throw this.handleError(
             400,
-            `Phone number is required for ${paymentData.provider} payment`
+            `Phone number is required for ${paymentData.provider} payment`,
           );
         }
 
-        const validatedPhone = this.constructor.validatePhoneNumber(
+        // Validate and convert to local format (e.g. 0777123456)
+        const localPhone = this.constructor.validatePhoneNumber(
           paymentData.payer_phone,
-          paymentData.provider
+          paymentData.provider,
         );
 
-        // Set auth email to phone number for mobile payments
-        const phoneEmail = `${validatedPhone.replace("+", "")}@${
-          paymentData.provider
-        }.com`;
-        paynowPayment.authEmail = phoneEmail;
-
-        // Update payment with phone number
+        // Update payment record with mobile details
+        payment.method = paymentData.provider; // set the exact method
         payment.meta = {
           ...payment.meta,
           mobile_method: paymentData.provider,
-          phone_number: validatedPhone,
+          phone_number: localPhone, // store raw digits
         };
         await payment.save();
+
+        // Send mobile payment request to Paynow
+        response = await this.paynowIntegration.sendMobile(
+          paynowPayment,
+          localPhone, // local format required by Paynow
+          paymentData.provider, // 'ecocash', 'onemoney', 'telecash'
+        );
+
+        // ---------- WEB REDIRECT FLOW (PayNow) ----------
+      } else if (paymentData.provider === "paynow") {
+        response = await this.paynowIntegration.send(paynowPayment);
       }
 
-      // Send payment to PayNow
-      const response = await this.paynowIntegration.send(paynowPayment);
-
-      if (response.success) {
-        // Update payment with PayNow response
+      // ---------- PROCESS RESPONSE ----------
+      if (response && response.success) {
+        // Update payment with Paynow response
         payment.poll_url = response.pollUrl || response.pollurl || null;
         payment.provider_ref = response.reference || null;
         payment.paynow_invoice_id = paymentData.receipt_no;
@@ -237,14 +248,9 @@ class PaymentService {
         payment.meta = {
           ...payment.meta,
           paynow_response: response,
-          redirect_url: response.redirectUrl,
-          instructions: response.instructions,
+          redirect_url: response.redirectUrl, // present for web, null for mobile
+          instructions: response.instructions, // mobile payment instructions
         };
-
-        // If redirect URL is provided in response, update it
-        if (response.redirectUrl) {
-          payment.meta.redirect_url = response.redirectUrl;
-        }
 
         await payment.save();
 
@@ -267,9 +273,9 @@ class PaymentService {
             poll_url: payment.poll_url,
             redirect_url: payment.meta.redirect_url || null,
             paynow_response: {
-              payment_url: response.redirectUrl,
+              payment_url: response.redirectUrl, // only for web
               poll_url: response.pollUrl || response.pollurl,
-              instructions: response.instructions,
+              instructions: response.instructions, // important for mobile
               method: response.method || paymentData.provider,
               success: true,
               reference: response.reference,
@@ -281,24 +287,24 @@ class PaymentService {
           } payment initiated successfully`,
         };
       } else {
-        // If PayNow fails, update payment status
+        // Payment initiation failed
         payment.payment_status = "failed";
         payment.meta = {
           ...payment.meta,
-          paynow_error: response.error || "Unknown error",
+          paynow_error: response?.error || "Unknown error",
         };
         await payment.save();
 
         throw this.handleError(
           400,
-          `Payment initiation failed: ${response.error || "Unknown error"}`
+          `Payment initiation failed: ${response?.error || "Unknown error"}`,
         );
       }
     } catch (error) {
       console.error("Payment initiation error:", error);
       throw this.handleError(
         500,
-        `Failed to initiate payment: ${error.message}`
+        `Failed to initiate payment: ${error.message}`,
       );
     }
   }
@@ -332,7 +338,7 @@ class PaymentService {
       // Populate customer details if loan exists
       if (payment.loan && payment.loan.customer_user) {
         const customer = await User.findById(payment.loan.customer_user).select(
-          "first_name last_name email phone national_id_number"
+          "first_name last_name email phone national_id_number",
         );
         payment.loan.customer_user = customer;
       }
@@ -354,7 +360,7 @@ class PaymentService {
     filters = {},
     page = 1,
     limit = 10,
-    sort = { created_at: -1 }
+    sort = { created_at: -1 },
   ) {
     try {
       const skip = (page - 1) * limit;
@@ -428,7 +434,7 @@ class PaymentService {
             payment.loan.customer_user = customer;
           }
           return payment;
-        })
+        }),
       );
 
       const totalPages = Math.ceil(total / limit);
@@ -490,7 +496,7 @@ class PaymentService {
             payment.loan.customer_user = customer;
           }
           return payment;
-        })
+        }),
       );
 
       return {
@@ -530,7 +536,7 @@ class PaymentService {
           ) {
             throw this.handleError(
               400,
-              `Cannot update ${field} for a paid payment`
+              `Cannot update ${field} for a paid payment`,
             );
           }
         }
@@ -540,7 +546,7 @@ class PaymentService {
       const updatedPayment = await Payment.findByIdAndUpdate(
         paymentId,
         updateData,
-        { new: true, runValidators: true }
+        { new: true, runValidators: true },
       ).populate([
         {
           path: "loan",
@@ -584,7 +590,7 @@ class PaymentService {
       if (!onlineMethods.includes(payment.provider)) {
         throw this.handleError(
           400,
-          "This payment method does not support status checking"
+          "This payment method does not support status checking",
         );
       }
 
@@ -594,7 +600,7 @@ class PaymentService {
 
       // Check payment status from PayNow
       const response = await this.paynowIntegration.pollTransaction(
-        payment.poll_url
+        payment.poll_url,
       );
 
       if (!response) {
@@ -654,7 +660,7 @@ class PaymentService {
       console.error("PayNow status check error:", error);
       throw this.handleError(
         500,
-        "Failed to check payment status: " + error.message
+        "Failed to check payment status: " + error.message,
       );
     }
   }
@@ -678,7 +684,7 @@ class PaymentService {
       if (!payment) {
         throw this.handleError(
           404,
-          `Payment with reference ${reference} not found`
+          `Payment with reference ${reference} not found`,
         );
       }
 
@@ -765,7 +771,7 @@ class PaymentService {
       if (refundAmount > payment.amount) {
         throw this.handleError(
           400,
-          "Refund amount cannot exceed original payment amount"
+          "Refund amount cannot exceed original payment amount",
         );
       }
 
@@ -783,12 +789,12 @@ class PaymentService {
       // If PayNow/mobile payment, initiate refund through provider
       if (
         ["paynow", "ecocash", "onemoney", "telecash"].includes(
-          payment.provider
+          payment.provider,
         ) &&
         payment.provider_ref
       ) {
         console.log(
-          `Processing refund for ${payment.provider} payment ${paymentId}`
+          `Processing refund for ${payment.provider} payment ${paymentId}`,
         );
         // Implement refund logic here for PayNow/mobile payments
       }
@@ -819,7 +825,7 @@ class PaymentService {
       return this.getPaymentsPaginated(
         { customer_user: customerId },
         page,
-        limit
+        limit,
       );
     } catch (error) {
       throw this.handleMongoError(error);
