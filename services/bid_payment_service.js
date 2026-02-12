@@ -112,8 +112,8 @@ class BidPaymentService {
       const {
         bid_id,
         amount,
-        method, // cash, bank, ecocash, onemoney, telecash, card, paynow
-        provider, // optional, but for mobile we will set to the method
+        method,
+        provider,
         payer_phone,
         redirect_url,
         notes,
@@ -200,7 +200,7 @@ class BidPaymentService {
       // Generate receipt number
       const receiptNo = await BidPaymentService.generateReceiptNumber();
 
-      // Create payment object (save first to get _id)
+      // Create payment object
       const payment = new BidPayment({
         bid: bid_id,
         auction: bid.auction._id,
@@ -209,8 +209,8 @@ class BidPaymentService {
         currency: "USD",
         status: "initiated", // will be updated after PayNow initiation
         method: method,
-        provider: provider || method, // for mobile, set provider to the network
-        payer_phone: null, // will set for mobile
+        provider: provider || method,
+        payer_phone: null,
         redirect_url,
         receipt_no: receiptNo,
         notes,
@@ -226,8 +226,6 @@ class BidPaymentService {
         payment.payer_phone = localPhone;
       }
 
-      // For PayNow web redirect, no phone needed
-
       // Save payment first
       await payment.save();
 
@@ -240,7 +238,6 @@ class BidPaymentService {
       }
 
       // For other payment methods (cash, bank, card), just return the saved payment
-      // For cash/bank/card, status should be 'pending' until confirmation
       payment.status = "pending";
       await payment.save();
 
@@ -288,11 +285,10 @@ class BidPaymentService {
           );
         }
 
-        // Send mobile payment request to Paynow
         response = await this.paynowIntegration.sendMobile(
           paynowPayment,
-          payment.payer_phone, // local format e.g. 0777123456
-          payment.method, // 'ecocash', 'onemoney', 'telecash'
+          payment.payer_phone,
+          payment.method,
         );
 
         // ---------- WEB REDIRECT FLOW (PayNow) ----------
@@ -304,16 +300,15 @@ class BidPaymentService {
 
       // ---------- PROCESS RESPONSE ----------
       if (response && response.success) {
-        // Update payment with Paynow response
-        payment.status = "pending"; // awaiting confirmation
+        payment.status = "pending";
         payment.poll_url = response.pollUrl || response.pollurl || null;
         payment.provider_txn_id = response.reference || null;
         payment.meta = {
           ...payment.meta,
           paynow_response: response,
-          redirect_url: response.redirectUrl, // present for web, null for mobile
-          instructions: response.instructions, // mobile payment instructions
-          mobile_method: payment.method, // store original mobile method
+          redirect_url: response.redirectUrl,
+          instructions: response.instructions,
+          mobile_method: payment.method,
         };
 
         await payment.save();
@@ -327,9 +322,9 @@ class BidPaymentService {
             poll_url: payment.poll_url,
             redirect_url: payment.meta.redirect_url || null,
             paynow_response: {
-              payment_url: response.redirectUrl, // only for web
+              payment_url: response.redirectUrl,
               poll_url: response.pollUrl || response.pollurl,
-              instructions: response.instructions, // important for mobile
+              instructions: response.instructions,
               method: response.method || payment.method,
               success: true,
               reference: response.reference,
@@ -340,7 +335,6 @@ class BidPaymentService {
           } payment initiated successfully`,
         };
       } else {
-        // Payment initiation failed
         payment.status = "failed";
         payment.meta = {
           ...payment.meta,
@@ -354,7 +348,6 @@ class BidPaymentService {
         );
       }
     } catch (error) {
-      // Update payment status to failed in case of error
       payment.status = "failed";
       payment.meta = {
         ...payment.meta,
@@ -454,14 +447,12 @@ class BidPaymentService {
       if (method) query.method = method;
       if (provider) query.provider = provider;
 
-      // Amount filters
       if (min_amount || max_amount) {
         query.amount = {};
         if (min_amount) query.amount.$gte = parseFloat(min_amount);
         if (max_amount) query.amount.$lte = parseFloat(max_amount);
       }
 
-      // Date filters
       if (paid_from || paid_to) {
         query.paid_at = {};
         if (paid_from) query.paid_at.$gte = new Date(paid_from);
@@ -474,12 +465,10 @@ class BidPaymentService {
         if (created_to) query.created_at.$lte = new Date(created_to);
       }
 
-      // Role-based filtering
       if (user.roles.includes("customer")) {
         query.payer_user = user._id;
       }
 
-      // Search functionality
       if (search && search.length >= 2) {
         query.$or = [
           { receipt_no: { $regex: search, $options: "i" } },
@@ -488,10 +477,8 @@ class BidPaymentService {
         ];
       }
 
-      // Calculate skip
       const skip = (page - 1) * limit;
 
-      // Execute query
       const [payments, total] = await Promise.all([
         BidPayment.find(query)
           .populate({
@@ -746,7 +733,6 @@ class BidPaymentService {
         throw this.handleError(502, "Unable to reach payment gateway");
       }
 
-      // Map PayNow status to our status
       const mapStatus = (status) => {
         const s = String(status || "").toLowerCase();
         if (s.includes("paid") || s.includes("completed")) return "success";
@@ -1344,7 +1330,7 @@ class BidPaymentService {
   }
 
   /**
-   * Handle custom errors
+   * Create a custom error object
    */
   handleError(status, message) {
     const error = new Error(message);
@@ -1354,34 +1340,53 @@ class BidPaymentService {
   }
 
   /**
-   * Handle MongoDB errors
+   * Handle MongoDB and custom errors – **IMPROVED VERSION**
    */
   handleMongoError(error) {
     console.error("Bid Payment Service Error:", error);
 
-    // If it's already a custom error with status, return it
+    // 1. Already a custom error from our service
     if (error.status && error.message) {
       return error;
     }
 
-    // Handle duplicate key errors
+    // 2. Mongoose validation error (includes schema validation)
+    if (error.name === "ValidationError") {
+      const messages = Object.values(error.errors).map((err) => err.message);
+      return this.handleError(400, `Validation failed: ${messages.join(", ")}`);
+    }
+
+    // 3. Mongoose CastError (invalid ObjectId)
+    if (error.name === "CastError") {
+      return this.handleError(
+        400,
+        `Invalid ${error.path}: ${error.value}`,
+      );
+    }
+
+    // 4. Duplicate key error (MongoDB code 11000)
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
-      return this.handleError(409, `Duplicate ${field.replace("_", " ")}`);
+      return this.handleError(
+        409,
+        `Duplicate ${field.replace("_", " ")}`,
+      );
     }
 
-    // Handle validation errors
-    if (error.name === "ValidationError") {
-      const errors = Object.values(error.errors).map((err) => err.message);
-      return this.handleError(400, `Validation failed: ${errors.join(", ")}`);
+    // 5. Common pre-hook validation errors from the BidPayment model
+    //    (these are plain Errors, but we want to expose them as 400)
+    if (error.message && (
+      error.message.includes("Bid not found for payment") ||
+      error.message.includes("Cannot mark payment success while bid dispute is active") ||
+      error.message.includes("Phone number is required") ||
+      error.message.includes("Invalid Ecocash") ||
+      error.message.includes("Invalid OneMoney") ||
+      error.message.includes("Invalid Telecash")
+    )) {
+      return this.handleError(400, error.message);
     }
 
-    // Handle CastError (invalid ObjectId)
-    if (error.name === "CastError") {
-      return this.handleError(400, `Invalid ${error.path}: ${error.value}`);
-    }
-
-    // Default error
+    // 6. Default – internal server error
     return this.handleError(500, "Internal server error");
   }
 }
