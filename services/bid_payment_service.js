@@ -13,7 +13,6 @@ require("dotenv").config();
  */
 class BidPaymentService {
   constructor() {
-    // Initialize PayNow
     this.Paynow = Paynow;
     this.paynowIntegration = null;
     this.initializePayNow();
@@ -28,10 +27,7 @@ class BidPaymentService {
         process.env;
 
       if (!PAYNOW_ID || !PAYNOW_KEY) {
-        console.warn(
-          "Paynow credentials are not configured. Cash payments only.",
-        );
-        return;
+        throw new Error("Paynow credentials are not configured.");
       }
 
       this.paynowIntegration = new this.Paynow(
@@ -39,7 +35,6 @@ class BidPaymentService {
         String(PAYNOW_KEY),
       );
 
-      // Set URLs if they exist
       if (PAYNOW_RESULT_URL)
         this.paynowIntegration.resultUrl = PAYNOW_RESULT_URL;
       if (PAYNOW_RETURN_URL)
@@ -50,6 +45,51 @@ class BidPaymentService {
       console.error("Failed to initialize PayNow:", error);
       throw this.handleError(500, "Payment gateway initialization failed");
     }
+  }
+
+  /**
+   * Validate and format phone number for mobile payments
+   * Accepts: 077... or 26377...
+   * Returns: local format starting with 0 (e.g. 0777123456)
+   */
+  static validatePhoneNumber(phone, method) {
+    if (!phone) {
+      throw new Error(`Phone number is required for ${method} payment`);
+    }
+
+    // Remove all non-digits
+    const digits = phone.replace(/\D/g, "");
+
+    // Zimbabwe mobile prefixes (Econet, NetOne, Telecel)
+    const validPrefixes = ["77", "78", "71", "73"];
+
+    // Check if it starts with 26377... or 077...
+    let localNumber;
+    if (digits.startsWith("263")) {
+      const afterCountry = digits.slice(3);
+      if (
+        afterCountry.length === 9 &&
+        validPrefixes.includes(afterCountry.slice(0, 2))
+      ) {
+        localNumber = "0" + afterCountry;
+      } else {
+        throw new Error(
+          `Invalid ${method} number. Must be a valid Zimbabwean mobile number.`,
+        );
+      }
+    } else if (digits.startsWith("0")) {
+      if (digits.length === 10 && validPrefixes.includes(digits.slice(1, 3))) {
+        localNumber = digits;
+      } else {
+        throw new Error(
+          `Invalid ${method} number. Must be a valid Zimbabwean mobile number.`,
+        );
+      }
+    } else {
+      throw new Error(`Invalid ${method} number. Must start with 0 or 263.`);
+    }
+
+    return localNumber; // e.g. "0777123456"
   }
 
   /**
@@ -65,54 +105,15 @@ class BidPaymentService {
   }
 
   /**
-   * Validate phone number for mobile payments
-   */
-  static validatePhoneNumber(phone, method) {
-    if (!phone) {
-      throw new Error(`Phone number is required for ${method} payment`);
-    }
-
-    // Remove any non-digit characters
-    const cleanPhone = phone.replace(/\D/g, "");
-
-    // Validate based on payment method
-    switch (method) {
-      case "ecocash":
-        if (!cleanPhone.match(/^(26377|26378|26371|26373)\d{7}$/)) {
-          throw new Error(
-            "Invalid Ecocash phone number. Must be a valid Zimbabwean number starting with 077, 078, 071, or 073",
-          );
-        }
-        break;
-      case "onemoney":
-        if (!cleanPhone.match(/^(26377|26378|26371|26373)\d{7}$/)) {
-          throw new Error(
-            "Invalid OneMoney phone number. Must be a valid Zimbabwean number",
-          );
-        }
-        break;
-      case "telecash":
-        if (!cleanPhone.match(/^(26377|26378|26371|26373)\d{7}$/)) {
-          throw new Error(
-            "Invalid Telecash phone number. Must be a valid Zimbabwean number",
-          );
-        }
-        break;
-    }
-
-    return `+${cleanPhone}`;
-  }
-
-  /**
    * Create a new bid payment
    */
-  async createBidPayment(paymentData, user) {
+  async createBidPayment(paymentData, userId) {
     try {
       const {
         bid_id,
         amount,
-        method,
-        provider,
+        method, // cash, bank, ecocash, onemoney, telecash, card, paynow
+        provider, // optional, but for mobile we will set to the method
         payer_phone,
         redirect_url,
         notes,
@@ -129,7 +130,7 @@ class BidPaymentService {
       // Get bid details
       const bid = await Bid.findById(bid_id).populate({
         path: "auction",
-        select: "auction_no status",
+        select: "auction_no status winner_user",
       });
 
       if (!bid) {
@@ -175,7 +176,7 @@ class BidPaymentService {
         );
       }
 
-      // Check dispute status
+      // Check dispute status (already handled by pre-save hook, but we validate early)
       const disputeStatus = bid.dispute?.status || "none";
       const disputeActive = [
         "raised",
@@ -190,55 +191,59 @@ class BidPaymentService {
         );
       }
 
-      // Validate phone number for mobile payments
-      let validatedPhone = null;
-      const mobileMethods = ["ecocash", "onemoney", "telecash"];
-
-      if (mobileMethods.includes(method)) {
-        validatedPhone = this.constructor.validatePhoneNumber(
-          payer_phone || user.phone,
-          method,
-        );
-
-        // Set default provider if not specified
-        if (!provider) {
-          paymentData.provider = method; // ecocash, onemoney, or telecash
-        }
+      // Get payer details
+      const payer = await User.findById(userId);
+      if (!payer) {
+        throw this.handleError(404, "Payer not found");
       }
 
       // Generate receipt number
       const receiptNo = await BidPaymentService.generateReceiptNumber();
 
-      // Create payment object
+      // Create payment object (save first to get _id)
       const payment = new BidPayment({
         bid: bid_id,
         auction: bid.auction._id,
-        payer_user: user._id,
+        payer_user: userId,
         amount: parseFloat(amount),
         currency: "USD",
-        status: ["paynow", "ecocash", "onemoney", "telecash"].includes(method)
-          ? "initiated"
-          : "pending",
-        method,
-        provider: provider || method,
-        payer_phone: validatedPhone,
+        status: "initiated", // will be updated after PayNow initiation
+        method: method,
+        provider: provider || method, // for mobile, set provider to the network
+        payer_phone: null, // will set for mobile
         redirect_url,
         receipt_no: receiptNo,
         notes,
       });
 
-      // Save the payment first to get the _id
+      // For mobile payments, validate and set phone number
+      const mobileMethods = ["ecocash", "onemoney", "telecash"];
+      if (mobileMethods.includes(method)) {
+        const localPhone = BidPaymentService.validatePhoneNumber(
+          payer_phone || payer.phone,
+          method,
+        );
+        payment.payer_phone = localPhone;
+      }
+
+      // For PayNow web redirect, no phone needed
+
+      // Save payment first
       await payment.save();
 
-      // If PayNow payment (including mobile), initiate payment
+      // If PayNow or mobile payment, initiate payment
       if (
         ["paynow", "ecocash", "onemoney", "telecash"].includes(method) &&
         this.paynowIntegration
       ) {
-        return await this.initiatePayNowPayment(payment, bid, user);
+        return await this.initiatePayNowPayment(payment, bid, payer);
       }
 
       // For other payment methods (cash, bank, card), just return the saved payment
+      // For cash/bank/card, status should be 'pending' until confirmation
+      payment.status = "pending";
+      await payment.save();
+
       const populatedPayment = await this.getPaymentWithDetails(payment._id);
 
       return {
@@ -257,17 +262,11 @@ class BidPaymentService {
   }
 
   /**
-   * Initiate PayNow payment (including mobile payments)
+   * Initiate PayNow payment (web redirect or mobile)
    */
-  async initiatePayNowPayment(payment, bid, user) {
+  async initiatePayNowPayment(payment, bid, payer) {
     try {
-      // Get payer details
-      const payer = await User.findById(user._id);
-      if (!payer) {
-        throw this.handleError(404, "Payer not found");
-      }
-
-      // Create PayNow payment
+      // Prepare PayNow payment object
       const paynowPayment = this.paynowIntegration.createPayment(
         payment.receipt_no,
         payer.email || "customer@example.com",
@@ -278,51 +277,46 @@ class BidPaymentService {
         parseFloat(payment.amount),
       );
 
-      // For mobile payments, set the auth email to phone number format
-      if (["ecocash", "onemoney", "telecash"].includes(payment.method)) {
-        // PayNow requires the phone number in the auth email field for mobile payments
-        const phoneEmail = `${payment.payer_phone.replace("+", "")}@${
-          payment.method
-        }.com`;
-        paynowPayment.authEmail = phoneEmail;
+      let response;
 
-        // Set mobile payment method in meta
-        payment.meta = {
-          ...payment.meta,
-          mobile_method: payment.method,
-          phone_number: payment.payer_phone,
-        };
+      // ---------- MOBILE MONEY FLOW (Ecocash, OneMoney, Telecash) ----------
+      if (["ecocash", "onemoney", "telecash"].includes(payment.method)) {
+        if (!payment.payer_phone) {
+          throw this.handleError(
+            400,
+            `Phone number is required for ${payment.method} payment`,
+          );
+        }
+
+        // Send mobile payment request to Paynow
+        response = await this.paynowIntegration.sendMobile(
+          paynowPayment,
+          payment.payer_phone, // local format e.g. 0777123456
+          payment.method, // 'ecocash', 'onemoney', 'telecash'
+        );
+
+        // ---------- WEB REDIRECT FLOW (PayNow) ----------
+      } else if (payment.method === "paynow") {
+        response = await this.paynowIntegration.send(paynowPayment);
+      } else {
+        throw this.handleError(400, "Unsupported PayNow payment method");
       }
 
-      // Send payment to PayNow
-      const response = await this.paynowIntegration.send(paynowPayment);
-
-      if (response.success) {
-        // Save poll URL and provider reference
+      // ---------- PROCESS RESPONSE ----------
+      if (response && response.success) {
+        // Update payment with Paynow response
+        payment.status = "pending"; // awaiting confirmation
         payment.poll_url = response.pollUrl || response.pollurl || null;
-        payment.provider_txn_id =
-          response.reference || response.pollUrl
-            ? response.pollUrl.split("/").pop()
-            : null;
+        payment.provider_txn_id = response.reference || null;
         payment.meta = {
           ...payment.meta,
           paynow_response: response,
-          redirect_url: response.redirectUrl || payment.redirect_url,
-          instructions: response.instructions,
-          payment_method: response.method || payment.method,
+          redirect_url: response.redirectUrl, // present for web, null for mobile
+          instructions: response.instructions, // mobile payment instructions
+          mobile_method: payment.method, // store original mobile method
         };
 
-        // If redirect URL is provided in response, save it
-        if (response.redirectUrl) {
-          payment.redirect_url = response.redirectUrl;
-        }
-
         await payment.save();
-
-        // Update bid payment status
-        await Bid.findByIdAndUpdate(payment.bid, {
-          payment_status: "pending",
-        });
 
         const populatedPayment = await this.getPaymentWithDetails(payment._id);
 
@@ -331,11 +325,11 @@ class BidPaymentService {
           data: {
             payment: populatedPayment,
             poll_url: payment.poll_url,
-            redirect_url: payment.redirect_url,
+            redirect_url: payment.meta.redirect_url || null,
             paynow_response: {
-              payment_url: response.redirectUrl,
+              payment_url: response.redirectUrl, // only for web
               poll_url: response.pollUrl || response.pollurl,
-              instructions: response.instructions,
+              instructions: response.instructions, // important for mobile
               method: response.method || payment.method,
               success: true,
               reference: response.reference,
@@ -346,17 +340,17 @@ class BidPaymentService {
           } payment initiated successfully`,
         };
       } else {
-        // If PayNow fails, update payment status
+        // Payment initiation failed
         payment.status = "failed";
         payment.meta = {
           ...payment.meta,
-          paynow_error: response.error,
+          paynow_error: response?.error || "Unknown error",
         };
         await payment.save();
 
         throw this.handleError(
           400,
-          `Payment initiation failed: ${response.error || "Unknown error"}`,
+          `Payment initiation failed: ${response?.error || "Unknown error"}`,
         );
       }
     } catch (error) {
@@ -453,7 +447,6 @@ class BidPaymentService {
       // Build query
       let query = {};
 
-      // Apply filters
       if (bid_id) query.bid = bid_id;
       if (auction_id) query.auction = auction_id;
       if (payer_user) query.payer_user = payer_user;
@@ -541,7 +534,7 @@ class BidPaymentService {
       };
     } catch (error) {
       console.error("Get bid payments error:", error);
-      throw new Error(error.message || "Failed to fetch bid payments");
+      throw this.handleMongoError(error);
     }
   }
 
@@ -553,10 +546,8 @@ class BidPaymentService {
       const { bid_id, auction_id, payer_user, status, method, provider } =
         filters;
 
-      // Build query
       let query = {};
 
-      // Apply filters
       if (bid_id) query.bid = bid_id;
       if (auction_id) query.auction = auction_id;
       if (payer_user) query.payer_user = payer_user;
@@ -564,12 +555,10 @@ class BidPaymentService {
       if (method) query.method = method;
       if (provider) query.provider = provider;
 
-      // Role-based filtering
       if (user.roles.includes("customer")) {
         query.payer_user = user._id;
       }
 
-      // Execute query
       const payments = await BidPayment.find(query)
         .populate({
           path: "bid",
@@ -592,7 +581,7 @@ class BidPaymentService {
       };
     } catch (error) {
       console.error("Get all bid payments error:", error);
-      throw new Error(error.message || "Failed to fetch bid payments");
+      throw this.handleMongoError(error);
     }
   }
 
@@ -603,7 +592,6 @@ class BidPaymentService {
     try {
       const payment = await this.getPaymentWithDetails(paymentId);
 
-      // Check permission
       if (
         user.roles.includes("customer") &&
         !payment.payer_user._id.equals(user._id)
@@ -631,7 +619,6 @@ class BidPaymentService {
         throw this.handleError(404, "Payment not found");
       }
 
-      // Check permission (staff/admin only)
       const canUpdate = user.roles.some((role) =>
         [
           "loan_officer_processor",
@@ -649,7 +636,6 @@ class BidPaymentService {
         );
       }
 
-      // Prevent updating certain fields if payment is already successful
       if (payment.status === "success") {
         const restrictedFields = [
           "amount",
@@ -673,7 +659,6 @@ class BidPaymentService {
         }
       }
 
-      // Validate status transition
       if (updateData.status) {
         const validTransitions = {
           initiated: ["pending", "cancelled"],
@@ -694,17 +679,14 @@ class BidPaymentService {
           );
         }
 
-        // Auto set paid_at if status becomes success
         if (updateData.status === "success") {
           updateData.paid_at = new Date();
         }
       }
 
-      // Update payment
       Object.assign(payment, updateData);
       await payment.save();
 
-      // Update bid payment status if payment is successful
       if (updateData.status === "success") {
         await Bid.findByIdAndUpdate(payment.bid, {
           payment_status: "paid",
@@ -712,7 +694,6 @@ class BidPaymentService {
           paid_at: new Date(),
         });
 
-        // Update auction winner payment status
         await Auction.findByIdAndUpdate(payment.auction, {
           $set: { "meta.payment_received": true },
         });
@@ -742,7 +723,6 @@ class BidPaymentService {
         throw this.handleError(404, "Payment not found");
       }
 
-      // Only check status for PayNow and mobile payments
       const onlineMethods = ["paynow", "ecocash", "onemoney", "telecash"];
       if (!onlineMethods.includes(payment.method)) {
         throw this.handleError(
@@ -758,7 +738,6 @@ class BidPaymentService {
         );
       }
 
-      // Check payment status from PayNow
       const response = await this.paynowIntegration.pollTransaction(
         payment.poll_url,
       );
@@ -779,7 +758,6 @@ class BidPaymentService {
 
       const newStatus = mapStatus(response.status);
 
-      // Update payment status
       payment.status = newStatus;
       if (newStatus === "success" && !payment.paid_at) {
         payment.paid_at = new Date();
@@ -789,7 +767,6 @@ class BidPaymentService {
         payment.amount = parseFloat(response.amount);
       }
 
-      // Update meta with latest response
       payment.meta = {
         ...payment.meta,
         last_status_check: new Date(),
@@ -799,12 +776,15 @@ class BidPaymentService {
 
       await payment.save();
 
-      // Update bid payment status if successful
       if (newStatus === "success") {
         await Bid.findByIdAndUpdate(payment.bid, {
           payment_status: "paid",
           paid_amount: payment.amount,
           paid_at: new Date(),
+        });
+
+        await Auction.findByIdAndUpdate(payment.auction, {
+          $set: { "meta.payment_received": true },
         });
       }
 
@@ -837,7 +817,6 @@ class BidPaymentService {
     try {
       const { reference, status, pollUrl, method, amount } = webhookData;
 
-      // Find payment by provider_txn_id or receipt_no or poll_url
       const payment = await BidPayment.findOne({
         $or: [
           { provider_txn_id: reference },
@@ -853,12 +832,10 @@ class BidPaymentService {
         );
       }
 
-      // If there's a poll URL, use it to get the latest status
       if (payment.poll_url && this.paynowIntegration) {
         return await this.checkPayNowStatus(payment._id);
       }
 
-      // Otherwise, update based on webhook status
       if (status) {
         const mapStatus = (s) => {
           const x = String(s || "").toLowerCase();
@@ -875,24 +852,25 @@ class BidPaymentService {
           payment.paid_at = new Date();
         }
 
-        // Update method if provided
         if (method) {
           payment.method = method;
         }
 
-        // Update amount if provided
         if (amount) {
           payment.amount = parseFloat(amount);
         }
 
         await payment.save();
 
-        // Update bid payment status if successful
         if (newStatus === "success") {
           await Bid.findByIdAndUpdate(payment.bid, {
             payment_status: "paid",
             paid_amount: payment.amount,
             paid_at: new Date(),
+          });
+
+          await Auction.findByIdAndUpdate(payment.auction, {
+            $set: { "meta.payment_received": true },
           });
         }
 
@@ -937,7 +915,6 @@ class BidPaymentService {
         );
       }
 
-      // Check permission (admin only)
       const canRefund = user.roles.some((role) =>
         ["admin_pawn_limited", "management", "super_admin_vendor"].includes(
           role,
@@ -951,12 +928,10 @@ class BidPaymentService {
         );
       }
 
-      // Check if already refunded
       if (payment.status === "refunded") {
         throw this.handleError(400, "Payment already refunded");
       }
 
-      // Update payment status to refunded
       payment.status = "refunded";
       payment.notes = refundData.notes
         ? `${payment.notes || ""}\nRefund: ${refundData.notes}`
@@ -964,12 +939,10 @@ class BidPaymentService {
 
       await payment.save();
 
-      // Update bid payment status
       await Bid.findByIdAndUpdate(payment.bid, {
         payment_status: "refunded",
       });
 
-      // If PayNow/mobile payment, initiate refund through provider
       if (
         ["paynow", "ecocash", "onemoney", "telecash"].includes(
           payment.method,
@@ -979,7 +952,7 @@ class BidPaymentService {
         console.log(
           `Processing refund for ${payment.method} payment ${paymentId}`,
         );
-        // Implement refund logic here for mobile payments
+        // Implement refund logic via PayNow if available
       }
 
       return {
@@ -1007,7 +980,6 @@ class BidPaymentService {
         throw this.handleError(404, "Payment not found");
       }
 
-      // Check permission (admin only)
       const canDelete = user.roles.some((role) =>
         ["admin_pawn_limited", "management", "super_admin_vendor"].includes(
           role,
@@ -1021,7 +993,6 @@ class BidPaymentService {
         );
       }
 
-      // Cannot delete successful payments
       if (payment.status === "success" || payment.status === "refunded") {
         throw this.handleError(
           400,
@@ -1048,12 +1019,10 @@ class BidPaymentService {
     try {
       let query = {};
 
-      // Apply filters
       if (filters.auction_id) query.auction = filters.auction_id;
       if (filters.payer_user) query.payer_user = filters.payer_user;
       if (filters.method) query.method = filters.method;
 
-      // Role-based filtering
       if (user.roles.includes("customer")) {
         query.payer_user = user._id;
       }
@@ -1065,30 +1034,15 @@ class BidPaymentService {
             _id: null,
             total: { $sum: 1 },
             total_amount: { $sum: "$amount" },
-            by_status: {
-              $push: {
-                status: "$status",
-                amount: "$amount",
-              },
-            },
-            by_method: {
-              $push: {
-                method: "$method",
-                amount: "$amount",
-              },
-            },
+            by_status: { $push: { status: "$status", amount: "$amount" } },
+            by_method: { $push: { method: "$method", amount: "$amount" } },
             by_mobile_provider: {
-              $push: {
-                provider: "$provider",
-                amount: "$amount",
-                method: "$method",
-              },
+              $push: { provider: "$provider", amount: "$amount" },
             },
           },
         },
       ]);
 
-      // Format stats
       const result = stats[0] || {
         total: 0,
         total_amount: 0,
@@ -1097,7 +1051,6 @@ class BidPaymentService {
         by_mobile_provider: [],
       };
 
-      // Calculate status breakdown
       const statusStats = {
         initiated: { count: 0, amount: 0 },
         pending: { count: 0, amount: 0 },
@@ -1114,7 +1067,6 @@ class BidPaymentService {
         }
       });
 
-      // Calculate method breakdown
       const methodStats = {
         cash: { count: 0, amount: 0 },
         bank: { count: 0, amount: 0 },
@@ -1133,7 +1085,6 @@ class BidPaymentService {
         }
       });
 
-      // Calculate mobile provider breakdown
       const mobileStats = {
         ecocash: { count: 0, amount: 0 },
         onemoney: { count: 0, amount: 0 },
@@ -1151,7 +1102,6 @@ class BidPaymentService {
       delete result.by_method;
       delete result.by_mobile_provider;
 
-      // Get today's payments
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       const tomorrow = new Date(today);
@@ -1162,14 +1112,12 @@ class BidPaymentService {
         created_at: { $gte: today, $lt: tomorrow },
       });
 
-      // Get pending mobile payments
       const pendingMobile = await BidPayment.countDocuments({
         ...query,
         method: { $in: ["ecocash", "onemoney", "telecash", "paynow"] },
         status: { $in: ["initiated", "pending"] },
       });
 
-      // Get successful mobile payments amount
       const successfulMobile = await BidPayment.aggregate([
         {
           $match: {
@@ -1204,7 +1152,7 @@ class BidPaymentService {
       };
     } catch (error) {
       console.error("Get bid payment stats error:", error);
-      throw new Error(error.message || "Failed to fetch payment statistics");
+      throw this.handleMongoError(error);
     }
   }
 
@@ -1237,7 +1185,7 @@ class BidPaymentService {
       };
     } catch (error) {
       console.error("Get payments by auction error:", error);
-      throw new Error(error.message || "Failed to fetch auction payments");
+      throw this.handleMongoError(error);
     }
   }
 
@@ -1246,7 +1194,6 @@ class BidPaymentService {
    */
   async getPaymentsByPayer(payerId, requestingUser) {
     try {
-      // Check permission
       if (
         requestingUser.roles.includes("customer") &&
         !requestingUser._id.equals(payerId)
@@ -1282,7 +1229,7 @@ class BidPaymentService {
       };
     } catch (error) {
       console.error("Get payments by payer error:", error);
-      throw new Error(error.message || "Failed to fetch payer payments");
+      throw this.handleMongoError(error);
     }
   }
 
@@ -1306,13 +1253,11 @@ class BidPaymentService {
         ],
       };
 
-      // Apply additional filters
       if (filters.auction_id) query.auction = filters.auction_id;
       if (filters.payer_user) query.payer_user = filters.payer_user;
       if (filters.status) query.status = filters.status;
       if (filters.method) query.method = filters.method;
 
-      // Role-based filtering
       if (user.roles.includes("customer")) {
         query.payer_user = user._id;
       }
@@ -1339,7 +1284,7 @@ class BidPaymentService {
       };
     } catch (error) {
       console.error("Search bid payments error:", error);
-      throw new Error(error.message || "Failed to search payments");
+      throw this.handleMongoError(error);
     }
   }
 
@@ -1355,7 +1300,7 @@ class BidPaymentService {
           description: "Zimbabwe's leading mobile money platform",
           icon: "💰",
           supported_countries: ["ZW"],
-          phone_format: "26377xxxxxxx or 26378xxxxxxx",
+          phone_format: "077... or 26377...",
           default: true,
         },
         {
@@ -1364,7 +1309,7 @@ class BidPaymentService {
           description: "NetOne mobile money service",
           icon: "📱",
           supported_countries: ["ZW"],
-          phone_format: "26371xxxxxxx or 26373xxxxxxx",
+          phone_format: "071... or 26371... / 073... or 26373...",
           default: false,
         },
         {
@@ -1373,7 +1318,7 @@ class BidPaymentService {
           description: "Telecel mobile money service",
           icon: "💳",
           supported_countries: ["ZW"],
-          phone_format: "26373xxxxxxx",
+          phone_format: "073... or 26373...",
           default: false,
         },
         {
@@ -1382,7 +1327,7 @@ class BidPaymentService {
           description: "Online payment gateway",
           icon: "🌐",
           supported_countries: ["ZW"],
-          phone_format: "Optional for mobile payments",
+          phone_format: "Not required for web payments",
           default: false,
         },
       ];
@@ -1394,7 +1339,7 @@ class BidPaymentService {
       };
     } catch (error) {
       console.error("Get mobile payment methods error:", error);
-      throw new Error(error.message || "Failed to fetch payment methods");
+      throw this.handleError(500, "Failed to fetch payment methods");
     }
   }
 
@@ -1402,11 +1347,10 @@ class BidPaymentService {
    * Handle custom errors
    */
   handleError(status, message) {
-    return {
-      status,
-      message,
-      timestamp: new Date(),
-    };
+    const error = new Error(message);
+    error.status = status;
+    error.timestamp = new Date();
+    return error;
   }
 
   /**
@@ -1415,7 +1359,7 @@ class BidPaymentService {
   handleMongoError(error) {
     console.error("Bid Payment Service Error:", error);
 
-    // If it's already a custom error, return it
+    // If it's already a custom error with status, return it
     if (error.status && error.message) {
       return error;
     }
@@ -1423,37 +1367,22 @@ class BidPaymentService {
     // Handle duplicate key errors
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
-      return {
-        status: 409,
-        message: `Duplicate ${field.replace("_", " ")}`,
-        field,
-      };
+      return this.handleError(409, `Duplicate ${field.replace("_", " ")}`);
     }
 
     // Handle validation errors
     if (error.name === "ValidationError") {
       const errors = Object.values(error.errors).map((err) => err.message);
-      return {
-        status: 400,
-        message: "Validation failed",
-        errors,
-      };
+      return this.handleError(400, `Validation failed: ${errors.join(", ")}`);
     }
 
     // Handle CastError (invalid ObjectId)
     if (error.name === "CastError") {
-      return {
-        status: 400,
-        message: `Invalid ${error.path}: ${error.value}`,
-      };
+      return this.handleError(400, `Invalid ${error.path}: ${error.value}`);
     }
 
     // Default error
-    return {
-      status: 500,
-      message: "Internal server error",
-      detail: error.message,
-    };
+    return this.handleError(500, "Internal server error");
   }
 }
 
