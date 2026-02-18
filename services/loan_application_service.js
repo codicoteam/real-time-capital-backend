@@ -134,7 +134,6 @@ class LoanApplicationService {
 
         // Update status to submitted
         loanApplication.status = "submitted";
-        loanApplication.submitted_at = new Date();
         await loanApplication.save({ session });
 
         // Get customer details for email
@@ -373,8 +372,6 @@ class LoanApplicationService {
         if (!application) {
           throw new Error("Loan application not found");
         }
-
-  
 
         // Update application
         application.status = status;

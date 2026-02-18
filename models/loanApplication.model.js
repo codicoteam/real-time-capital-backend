@@ -87,6 +87,13 @@ const LoanApplicationSchema = new mongoose.Schema(
     email_address: { type: String, trim: true, lowercase: true },
     home_address: { type: String, trim: true },
 
+    // Document URLs (direct links to uploaded files)
+    national_id_url: { type: String, trim: true },
+    passport_url: { type: String, trim: true }, // if user has passport
+    proof_of_resident_url: { type: String, trim: true },
+    proof_of_employment_url: { type: String, trim: true },
+    
+
     // NEXT OF KIN
     next_of_kin: { type: NextOfKinSchema, default: {} },
 
@@ -142,7 +149,7 @@ const LoanApplicationSchema = new mongoose.Schema(
       checked_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     },
 
-    // Attachments: ID scans, signed loan request form, etc.
+    // Attachments: ID scans, signed loan request form, etc. (references to Attachment documents)
     attachments: [{ type: mongoose.Schema.Types.ObjectId, ref: "Attachment" }],
 
     // Optional internal notes
