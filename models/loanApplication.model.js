@@ -8,18 +8,76 @@ const EmploymentSchema = new mongoose.Schema(
     location: { type: String, trim: true },
     contacts: { type: String, trim: true },
   },
-  { _id: false }
+  { _id: false },
+);
+
+// Next of Kin subdocument
+const NextOfKinSchema = new mongoose.Schema(
+  {
+    full_name: { type: String, trim: true },
+    relationship: { type: String, trim: true },
+    phone_number: { type: String, trim: true },
+    email: { type: String, trim: true, lowercase: true },
+    address: { type: String, trim: true },
+  },
+  { _id: false },
+);
+
+// Small loan collateral details
+const SmallLoanDetailsSchema = new mongoose.Schema(
+  {
+    type: { type: String, trim: true },
+    model: { type: String, trim: true },
+    serial_no: { type: String, trim: true },
+  },
+  { _id: false },
+);
+
+// Motor vehicle collateral details
+const MotorVehicleDetailsSchema = new mongoose.Schema(
+  {
+    make: { type: String, trim: true },
+    model: { type: String, trim: true },
+    registration_no: { type: String, trim: true },
+    cc_serial_no: { type: String, trim: true },
+    engine_no: { type: String, trim: true },
+    chassis_no: { type: String, trim: true },
+    year: { type: Number },
+  },
+  { _id: false },
+);
+
+// Jewellery collateral details
+const JewelleryDetailsSchema = new mongoose.Schema(
+  {
+    type: { type: String, trim: true }, // e.g., ring, necklace, bracelet
+    description: { type: String, trim: true },
+    weight: { type: Number }, // in grams or appropriate unit
+    purity: { type: String, trim: true }, // e.g., 18k, 22k, platinum
+    estimated_value: { type: Number, min: 0 },
+  },
+  { _id: false },
 );
 
 const LoanApplicationSchema = new mongoose.Schema(
   {
     application_no: { type: String, unique: true, index: true },
 
-    customer_user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    customer_user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
 
     // PERSONAL DETAILS (from form)
     full_name: { type: String, required: true, trim: true },
-    national_id_number: { type: String, required: true, trim: true, index: true },
+    national_id_number: {
+      type: String,
+      required: true,
+      trim: true,
+      index: true,
+    },
     gender: { type: String, trim: true },
     date_of_birth: { type: Date },
     marital_status: { type: String, trim: true },
@@ -28,6 +86,9 @@ const LoanApplicationSchema = new mongoose.Schema(
     alternative_number: { type: String, trim: true },
     email_address: { type: String, trim: true, lowercase: true },
     home_address: { type: String, trim: true },
+
+    // NEXT OF KIN
+    next_of_kin: { type: NextOfKinSchema, default: {} },
 
     // EMPLOYMENT DETAILS (from form)
     employment: { type: EmploymentSchema, default: {} },
@@ -44,6 +105,11 @@ const LoanApplicationSchema = new mongoose.Schema(
     surety_description: { type: String, trim: true },
     declared_asset_value: { type: Number, min: 0 },
 
+    // Collateral-specific details based on category
+    small_loan_details: { type: SmallLoanDetailsSchema, default: {} },
+    motor_vehicle_details: { type: MotorVehicleDetailsSchema, default: {} },
+    jewellery_details: { type: JewelleryDetailsSchema, default: {} },
+
     // DECLARATION
     declaration_text: { type: String, trim: true },
     declaration_signed_at: { type: Date },
@@ -52,7 +118,14 @@ const LoanApplicationSchema = new mongoose.Schema(
     // Workflow
     status: {
       type: String,
-      enum: ["draft", "submitted", "processing", "approved", "rejected", "cancelled"],
+      enum: [
+        "draft",
+        "submitted",
+        "processing",
+        "approved",
+        "rejected",
+        "cancelled",
+      ],
       default: "draft",
       index: true,
     },
@@ -61,7 +134,9 @@ const LoanApplicationSchema = new mongoose.Schema(
     debtor_check: {
       checked: { type: Boolean, default: false },
       matched: { type: Boolean, default: false },
-      matched_debtor_records: [{ type: mongoose.Schema.Types.ObjectId, ref: "DebtorRecord" }],
+      matched_debtor_records: [
+        { type: mongoose.Schema.Types.ObjectId, ref: "DebtorRecord" },
+      ],
       notes: { type: String, trim: true },
       checked_at: { type: Date },
       checked_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -73,9 +148,10 @@ const LoanApplicationSchema = new mongoose.Schema(
     // Optional internal notes
     internal_notes: { type: String },
   },
-  { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
+  { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } },
 );
 
+// Indexes for common queries
 LoanApplicationSchema.index({ customer_user: 1, created_at: -1 });
 LoanApplicationSchema.index({ national_id_number: 1, created_at: -1 });
 

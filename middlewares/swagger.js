@@ -20,9 +20,9 @@ const options = {
         description: "Render server",
       },
       {
-        url: "http://localhost:5050",
+        url: "http://localhost:7070",
         description: "Local server",
-      },
+      }
     ],
     components: {
       schemas: {

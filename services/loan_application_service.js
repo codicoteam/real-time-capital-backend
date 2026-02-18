@@ -2,9 +2,6 @@ const LoanApplication = require("../models/loanApplication.model");
 const User = require("../models/user.model");
 const DebtorRecord = require("../models/debtorRecord.model");
 const mongoose = require("mongoose");
-(async () => {
-  ({ v4: uuidv4 } = await import("uuid"));
-})();
 const emailService = require("../utils/emails_util");
 
 class LoanApplicationService {
@@ -558,6 +555,8 @@ class LoanApplicationService {
       delete updateData.customer_user;
       delete updateData.status;
       delete updateData.debtor_check;
+      delete updateData.attachments;
+      delete updateData.internal_notes;
 
       // Update application
       Object.assign(application, updateData);

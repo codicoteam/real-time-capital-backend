@@ -11,7 +11,7 @@ class LoanApplicationController {
 
       const result = await loanApplicationService.createLoanApplication(
         applicationData,
-        userId
+        userId,
       );
 
       res.status(201).json({
@@ -37,7 +37,7 @@ class LoanApplicationController {
 
       const result = await loanApplicationService.submitLoanApplication(
         id,
-        userId
+        userId,
       );
 
       res.status(200).json({
@@ -114,7 +114,7 @@ class LoanApplicationController {
       const result = await loanApplicationService.getLoanApplicationById(
         id,
         userRole,
-        userId
+        userId,
       );
 
       res.status(200).json({
@@ -162,7 +162,7 @@ class LoanApplicationController {
         id,
         status,
         user,
-        notes
+        notes,
       );
 
       res.status(200).json({
@@ -242,7 +242,7 @@ class LoanApplicationController {
         id,
         updateData,
         userRole,
-        userId
+        userId,
       );
 
       res.status(200).json({
@@ -291,7 +291,7 @@ class LoanApplicationController {
         id,
         attachmentId,
         userRole,
-        userId
+        userId,
       );
 
       res.status(200).json({
@@ -332,7 +332,7 @@ class LoanApplicationController {
         id,
         attachmentId,
         userRole,
-        userId
+        userId,
       );
 
       res.status(200).json({
@@ -372,7 +372,7 @@ class LoanApplicationController {
 
       const result = await loanApplicationService.getStatistics(
         userRole,
-        userId
+        userId,
       );
 
       res.status(200).json({
@@ -411,7 +411,7 @@ class LoanApplicationController {
       const result = await loanApplicationService.sendDocumentRequirement(
         id,
         requiredDocuments,
-        user
+        user,
       );
 
       res.status(200).json({
