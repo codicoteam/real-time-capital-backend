@@ -374,20 +374,7 @@ class LoanApplicationService {
           throw new Error("Loan application not found");
         }
 
-        // Check permissions based on status
-        if (status === "approved" || status === "rejected") {
-          // Only loan_officer_approval or higher can approve/reject
-          const canApprove =
-            user.roles.includes("loan_officer_approval") ||
-            user.roles.includes("super_admin_vendor") ||
-            user.roles.includes("management");
-
-          if (!canApprove) {
-            throw new Error(
-              "You do not have permission to approve/reject applications",
-            );
-          }
-        }
+  
 
         // Update application
         application.status = status;
