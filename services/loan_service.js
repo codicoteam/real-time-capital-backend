@@ -190,9 +190,7 @@ class LoanService {
               select: "asset_no title category evaluated_value",
             },
             {
-              path: "application",
-              select: "application_no requested_loan_amount",
-            },
+              path: "application"            },
           ])
           .sort(sort)
           .skip(skip)
@@ -248,9 +246,7 @@ class LoanService {
             select: "asset_no title category evaluated_value",
           },
           {
-            path: "application",
-            select: "application_no requested_loan_amount",
-          },
+            path: "application"          },
         ])
         .sort(sort)
         .lean();
