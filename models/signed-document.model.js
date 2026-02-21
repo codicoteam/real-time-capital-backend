@@ -13,7 +13,7 @@ const SignedDocumentSchema = new mongoose.Schema(
     file_url: { type: String, required: true, trim: true },
     mime_type: { type: String, trim: true },
 
-    signed_by_name: { type: String, trim: true },
+     signed_by_name: { type: String, trim: true },
     signed_by_user_id: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     signed_at: { type: Date, default: Date.now, index: true },
 

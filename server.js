@@ -26,6 +26,7 @@ const auditLogRouter = require("./routers/audit_log_router");
 const inventoryRouter = require("./routers/inventory_transaction_router");
 const ledgerEntryRouter = require("./routers/ledger_entry_router");
 const assetValuationRouter = require("./routers/asset_valuation_router");
+const signedDocumentRouter = require("./routers/signed_document_router");
 
 // Load env
 dotenv.config();
@@ -61,6 +62,7 @@ app.use("/api/v1/audit-logs", auditLogRouter);
 app.use("/api/v1/transactions", inventoryRouter);
 app.use("/api/v1/ledger-entries", ledgerEntryRouter);
 app.use("/api/v1/asset-valuations", assetValuationRouter);
+app.use("/api/v1/signed-documents", signedDocumentRouter);
 
 // Global error handler (REST)
 app.use((err, req, res, next) => {
@@ -74,6 +76,6 @@ app.use((err, req, res, next) => {
 // Start server
 const PORT = process.env.PORT || 7070;
 app.listen(PORT, () => {
-  console.log(`🚗 Server running on port ${PORT}`);
-  console.log(`📘 Swagger docs available at http://localhost:${PORT}/api-docs`);
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Learn more: http://localhost:${PORT}/api-docs`);
 });

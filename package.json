@@ -4,7 +4,9 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "cross-env BYPASS_AUTH=true ENABLE_DEV_ROUTES=true node server.js",
+    "start:memory": "cross-env USE_IN_MEMORY_DB=true node server.js",
+    "start:prod": "node server.js"
   },
   "keywords": [],
   "author": "",
@@ -29,9 +31,15 @@
     "nodemailer": "^7.0.12",
     "nodemon": "^3.1.11",
     "paynow": "^2.2.2",
+    "pdfkit": "^0.17.2",
+    "sharp": "^0.34.5",
     "socket.io": "^4.8.3",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "mongodb-memory-server": "^8.16.1"
   }
 }

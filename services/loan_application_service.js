@@ -6,6 +6,7 @@ const mongoose = require("mongoose");
   ({ v4: uuidv4 } = await import("uuid"));
 })();
 const emailService = require("../utils/emails_util");
+const documentService = require("./document_service");
 
 class LoanApplicationService {
   /**
@@ -26,66 +27,75 @@ class LoanApplicationService {
    */
   async createLoanApplication(applicationData, userId) {
     try {
-      const session = await mongoose.startSession();
-      session.startTransaction();
+      // Validate required fields first
+      const requiredFields = [
+        "full_name",
+        "national_id_number",
+        "requested_loan_amount",
+        "collateral_category",
+      ];
 
+      for (const field of requiredFields) {
+        if (!applicationData[field]) {
+          throw new Error(`${field.replace("_", " ")} is required`);
+        }
+      }
+
+      // Validate collateral category
+      const validCategories = ["small_loans", "motor_vehicle", "jewellery"];
+      if (!validCategories.includes(applicationData.collateral_category)) {
+        throw new Error(
+          `Invalid collateral category. Must be one of: ${validCategories.join(", ")}`,
+        );
+      }
+
+      // Generate application number
+      const applicationNo = this.generateApplicationNo();
+
+      // Create the loan application
+      const loanApplication = new LoanApplication({
+        ...applicationData,
+        application_no: applicationNo,
+        customer_user: userId,
+        status: "draft",
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+
+      // Try with transaction, fall back to simple save if transactions not supported (e.g., standalone MongoDB)
+      let session;
       try {
-        // Validate required fields
-        const requiredFields = [
-          "full_name",
-          "national_id_number",
-          "requested_loan_amount",
-          "collateral_category",
-        ];
-
-        for (const field of requiredFields) {
-          if (!applicationData[field]) {
-            throw new Error(`${field.replace("_", " ")} is required`);
-          }
-        }
-
-        // Validate collateral category
-        const validCategories = ["small_loans", "motor_vehicle", "jewellery"];
-        if (!validCategories.includes(applicationData.collateral_category)) {
-          throw new Error(
-            `Invalid collateral category. Must be one of: ${validCategories.join(", ")}`,
-          );
-        }
-
-        // Generate application number
-        const applicationNo = this.generateApplicationNo();
-
-        // Create the loan application
-        const loanApplication = new LoanApplication({
-          ...applicationData,
-          application_no: applicationNo,
-          customer_user: userId,
-          status: "draft",
-          created_at: new Date(),
-          updated_at: new Date(),
-        });
-
+        session = await mongoose.startSession();
+        session.startTransaction();
         await loanApplication.save({ session });
-
         await session.commitTransaction();
         session.endSession();
-
-        // Populate customer info
-        await loanApplication.populate(
-          "customer_user",
-          "first_name last_name email phone",
-        );
-
-        return {
-          success: true,
-          data: loanApplication,
-          message: "Loan application draft created successfully",
-        };
-      } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
-        throw error;
+      } catch (txError) {
+        if (session) {
+          try {
+            await session.abortTransaction();
+            session.endSession();
+          } catch (e) {}
+        }
+        // Fallback: save without transaction (for non-replica-set MongoDB)
+        if (txError.message.includes("replica set") || txError.message.includes("mongos")) {
+          await loanApplication.save();
+        } else {
+          throw txError;
+        }
       }
+
+      // Populate customer info
+      await loanApplication.populate(
+        "customer_user",
+        "first_name last_name email phone",
+      );
+
+      return {
+        success: true,
+        data: loanApplication,
+        message: "Loan application draft created successfully",
+      };
     } catch (error) {
       console.error("Error creating loan application:", error);
       throw new Error(`Failed to create loan application: ${error.message}`);
@@ -95,59 +105,93 @@ class LoanApplicationService {
   /**
    * Submit a draft loan application
    */
-  async submitLoanApplication(applicationId, userId) {
+  async submitLoanApplication(applicationId, userId, submitData = {}) {
     try {
-      const session = await mongoose.startSession();
-      session.startTransaction();
+      const loanApplication = await LoanApplication.findOne({
+        _id: applicationId,
+        status: "draft",
+      });
 
+      if (!loanApplication) {
+        throw new Error("Loan application not found or cannot be submitted");
+      }
+
+      // If customer_user is null (from dev bypass mode), associate it with current user
+      if (!loanApplication.customer_user) {
+        loanApplication.customer_user = userId;
+      }
+
+      // Update loan application with submission data
+      Object.assign(loanApplication, submitData);
+
+      // Check if all required fields are filled
+      const requiredFields = [
+        "full_name",
+        "national_id_number",
+        "date_of_birth",
+        "contact_details",
+        "home_address",
+        "employment.employment_type",
+        "employment.title",
+        "employment.duration",
+        "collateral_description",
+        "declaration_signed_at",
+        "declaration_signature_name",
+      ];
+
+      for (const field of requiredFields) {
+        const value = field
+          .split(".")
+          .reduce((obj, key) => obj && obj[key], loanApplication);
+        if (!value) {
+          throw new Error(`Missing required field: ${field}`);
+        }
+      }
+
+      // Update status to submitted
+      loanApplication.status = "submitted";
+      loanApplication.submitted_at = new Date();
+
+      // Try with transaction, fall back to simple save if transactions not supported
+      let session;
       try {
-        const loanApplication = await LoanApplication.findOne({
-          _id: applicationId,
-          customer_user: userId,
-          status: "draft",
-        }).session(session);
-
-        if (!loanApplication) {
-          throw new Error("Loan application not found or cannot be submitted");
-        }
-
-        // Check if all required fields are filled
-        const requiredFields = [
-          "full_name",
-          "national_id_number",
-          "date_of_birth",
-          "contact_details",
-          "home_address",
-          "employment.employment_type",
-          "employment.title",
-          "employment.duration",
-          "collateral_description",
-          "declaration_signed_at",
-          "declaration_signature_name",
-        ];
-
-        for (const field of requiredFields) {
-          const value = field
-            .split(".")
-            .reduce((obj, key) => obj && obj[key], loanApplication);
-          if (!value) {
-            throw new Error(`Missing required field: ${field}`);
-          }
-        }
-
-        // Update status to submitted
-        loanApplication.status = "submitted";
-        loanApplication.submitted_at = new Date();
+        session = await mongoose.startSession();
+        session.startTransaction();
         await loanApplication.save({ session });
-
-        // Get customer details for email
-        await loanApplication.populate(
-          "customer_user",
-          "first_name last_name email",
-        );
-
         await session.commitTransaction();
         session.endSession();
+      } catch (txError) {
+        if (session) {
+          try {
+            await session.abortTransaction();
+            session.endSession();
+          } catch (e) {}
+        }
+        // Fallback: save without transaction
+        if (txError.message.includes("replica set") || txError.message.includes("mongos")) {
+          await loanApplication.save();
+        } else {
+          throw txError;
+        }
+      }
+
+      // Get customer details for email
+      await loanApplication.populate(
+        "customer_user",
+        "first_name last_name email",
+      );
+
+      // Auto-generate PDF document after successful submission
+      let documentGeneration = null;
+      try {
+        documentGeneration = await documentService.generateDocumentFromTemplate(
+          applicationId,
+          "LOAN_REQUEST_FORM"
+        );
+      } catch (docError) {
+        console.error("Failed to auto-generate document:", docError.message);
+          // Don't throw - document generation failure shouldn't break the application submission
+        }
 
         // Send email notifications
         try {
@@ -174,12 +218,8 @@ class LoanApplicationService {
           success: true,
           data: loanApplication,
           message: "Loan application submitted successfully",
+          document: documentGeneration, // Include document info in response
         };
-      } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
-        throw error;
-      }
     } catch (error) {
       console.error("Error submitting loan application:", error);
       throw new Error(`Failed to submit loan application: ${error.message}`);

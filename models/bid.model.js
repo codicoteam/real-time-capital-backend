@@ -55,7 +55,5 @@ const BidSchema = new mongoose.Schema(
 // Indexes
 BidSchema.index({ auction: 1, amount: -1 });
 BidSchema.index({ auction: 1, bidder_user: 1 });
-BidSchema.index({ "dispute.status": 1 });
-BidSchema.index({ payment_status: 1 });
 
 module.exports = mongoose.model("Bid", BidSchema);

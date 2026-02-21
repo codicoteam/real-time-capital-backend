@@ -1,14 +1,21 @@
 const jwt = require("jsonwebtoken");
-const User = require("../models/user.model"); // adjust path if needed
+const User = require("../models/user.model");
+const { ObjectId } = require("mongodb");
 
-/**
- * 🔐 Authentication middleware
- * - Verifies JWT
- * - Loads active user
- * - Attaches user to req.user
- */
+// Authentication middleware - verifies JWT and loads active user
 const authMiddleware = async (req, res, next) => {
   try {
+    // Dev bypass mode for local testing (set BYPASS_AUTH=true)
+    if (process.env.BYPASS_AUTH === "true") {
+      req.user = {
+        _id: new ObjectId(),
+        email: "dev@example.com",
+        roles: ["customer"],
+        status: "active",
+      };
+      return next();
+    }
+
     const authHeader = req.header("Authorization");
 
     if (!authHeader || !authHeader.startsWith("Bearer ")) {

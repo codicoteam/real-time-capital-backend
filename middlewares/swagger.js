@@ -11,6 +11,11 @@ const options = {
         "API for managing a real-time pawn and collateral-based lending system, including user and role management, asset submission and valuation, loan applications, approvals, renewals, repayments, inventory tracking, auctions, bidding, financial ledger entries, profit and loss reporting, and document generation and signing, with full audit trail and role-based access control.",
     },
     servers: [
+      // Default to the current local port so Swagger UI points to the running instance first
+      {
+        url: `http://localhost:${process.env.PORT || 7070}`,
+        description: "Local server (auto)",
+      },
       {
         url: "http://13.61.185.238:7070",
         description: "AWS Short term server",
@@ -18,10 +23,6 @@ const options = {
       {
         url: "https://real-time-capital-backend.onrender.com",
         description: "Render server",
-      },
-      {
-        url: "http://localhost:5050",
-        description: "Local server",
       },
     ],
     components: {

@@ -27,7 +27,10 @@ class BidPaymentService {
         process.env;
 
       if (!PAYNOW_ID || !PAYNOW_KEY) {
-        throw new Error("Paynow credentials are not configured.");
+        console.warn("⚠️ Paynow credentials are not configured. Payment features will be unavailable.");
+        // Don't throw - allow server to start without payment credentials
+        this.paynowIntegration = null;
+        return;
       }
 
       this.paynowIntegration = new this.Paynow(
@@ -40,10 +43,11 @@ class BidPaymentService {
       if (PAYNOW_RETURN_URL)
         this.paynowIntegration.returnUrl = PAYNOW_RETURN_URL;
 
-      console.log("PayNow integration initialized successfully");
+      console.log("✅ PayNow integration initialized successfully");
     } catch (error) {
       console.error("Failed to initialize PayNow:", error);
-      throw this.handleError(500, "Payment gateway initialization failed");
+      // Don't throw - allow server to start
+      this.paynowIntegration = null;
     }
   }
 

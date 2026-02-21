@@ -368,6 +368,45 @@ class UserService {
   }
 
   /**
+   * Create (or return) an active test user and a JWT for testing purposes
+   * If a user with the email exists it will be updated to active and password reset.
+   */
+  async createActiveTestUser({ email = 'test.customer@example.com', password = 'Test1234', first_name = 'Test', last_name = 'Customer', roles = ['customer'] } = {}) {
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      user = new User({
+        email,
+        first_name,
+        last_name,
+        roles,
+        full_name: `${first_name} ${last_name}`.trim(),
+        status: 'active',
+        email_verified: true,
+      });
+    } else {
+      user.first_name = first_name;
+      user.last_name = last_name;
+      user.full_name = `${first_name} ${last_name}`.trim();
+      user.roles = Array.isArray(user.roles) ? Array.from(new Set([...user.roles, ...roles])) : roles;
+      user.status = 'active';
+      user.email_verified = true;
+    }
+
+    // Set password
+    user.password_hash = await this.hashPassword(password);
+
+    await user.save();
+
+    const token = this.generateToken(user);
+
+    const userResponse = user.toObject();
+    delete userResponse.password_hash;
+
+    return { user: userResponse, token };
+  }
+
+  /**
    * Confirm account deletion with OTP
    */
   async confirmAccountDeletion(email, otp) {
@@ -497,6 +536,84 @@ class UserService {
 
     await user.save();
     return { message: "Document removed successfully" };
+  }
+
+  /**
+   * Dev helper: Create an active test user with long-lived token (for Swagger testing)
+   */
+  async createActiveTestUser(opts = {}) {
+    const {
+      email = `test_${Date.now()}@example.com`,
+      password = "password123",
+      first_name = "Test",
+      last_name = "User",
+      roles = ["customer"],
+    } = opts;
+
+    // Check if user exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      // Return token for existing user instead of error (helpful for dev/testing)
+      const token = jwt.sign(
+        {
+          userId: existingUser._id,
+          email: existingUser.email,
+          roles: existingUser.roles,
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: "30d" } // Long expiry for dev testing
+      );
+      return {
+        user: {
+          id: existingUser._id,
+          email: existingUser.email,
+          first_name: existingUser.first_name,
+          last_name: existingUser.last_name,
+          status: existingUser.status,
+        },
+        token,
+      };
+    }
+
+    // Create new active user
+    const user = new User({
+      email,
+      first_name,
+      last_name,
+      roles,
+      status: "active",
+      email_verified: true,
+      full_name: `${first_name} ${last_name}`.trim(),
+    });
+
+    // Hash password
+    if (password) {
+      user.password_hash = await this.hashPassword(password);
+    }
+
+    await user.save();
+
+    // Generate token with 30-day expiry (good for dev testing)
+    const token = jwt.sign(
+      {
+        userId: user._id,
+        email: user.email,
+        roles: user.roles,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "30d" }
+    );
+
+    return {
+      user: {
+        id: user._id,
+        email: user.email,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        status: user.status,
+      },
+      token,
+    };
   }
 }
 

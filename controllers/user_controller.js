@@ -8,6 +8,10 @@ class UserController {
   async register(req, res) {
     try {
       const userData = req.body;
+      // Sanitize client payload: do not allow client-supplied _id or timestamps
+      if (userData._id) delete userData._id;
+      if (userData.created_at) delete userData.created_at;
+      if (userData.updated_at) delete userData.updated_at;
       const createdByAdmin = req.user && !req.user.roles.includes("customer");
 
       const user = await userService.registerUser(userData, createdByAdmin);
@@ -144,6 +148,38 @@ class UserController {
         success: false,
         message: error.message || "Login failed",
       });
+    }
+  }
+
+  /**
+   * Dev helper: create an active test user and return JWT (for Swagger testing)
+   * Public on purpose for local development only.
+   */
+  async createTestUser(req, res) {
+    try {
+      const { email, password, first_name, last_name, roles } = req.body || {};
+
+      // Log dev route requests (helpful when troubleshooting Swagger/CORS)
+      try {
+        // eslint-disable-next-line no-console
+        console.log(`[dev-route] Received request to create-test-user from ${req.ip} body=${JSON.stringify(req.body || {})}`);
+      } catch (e) {}
+
+      const result = await userService.createActiveTestUser({
+        email,
+        password,
+        first_name,
+        last_name,
+        roles,
+      });
+
+      res.status(201).json({
+        success: true,
+        message: 'Test user created',
+        data: result,
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message || 'Failed to create test user' });
     }
   }
 

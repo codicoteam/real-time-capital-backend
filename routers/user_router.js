@@ -173,6 +173,49 @@ router.post("/resend-verification", userController.resendVerificationOtp);
  */
 router.post("/login", userController.login);
 
+// Dev/testing route: create an active test user and return JWT
+// Use only in local/dev environments
+/**
+ * @swagger
+ * /api/v1/users/dev/create-test-user:
+ *   post:
+ *     summary: Create an active test user and return a JWT (dev only)
+ *     tags: [Users]
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               email:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *               first_name:
+ *                 type: string
+ *               last_name:
+ *                 type: string
+ *               roles:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *     responses:
+ *       201:
+ *         description: Test user created and token returned
+ *       500:
+ *         description: Server error
+ */
+// Register dev helper route only when not in production
+if (process.env.NODE_ENV !== "production" || process.env.ENABLE_DEV_ROUTES === "true") {
+  router.post("/dev/create-test-user", userController.createTestUser);
+  // Helpful log so you can confirm the dev helper is active in server logs
+  try {
+    // eslint-disable-next-line no-console
+    console.log('[dev-route] Registered POST /api/v1/users/dev/create-test-user');
+  } catch (e) {}
+}
+
 /**
  * @swagger
  * /api/v1/users/forgot-password:

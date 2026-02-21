@@ -37,12 +37,15 @@ class LoanApplicationController {
 
       const result = await loanApplicationService.submitLoanApplication(
         id,
-        userId
+        userId,
+        req.body
       );
 
+      // Include generated document info (if any) in the response
       res.status(200).json({
         success: true,
         data: result.data,
+        document: result.document || null,
         message: result.message,
       });
     } catch (error) {
