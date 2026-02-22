@@ -548,9 +548,23 @@ class LoanApplicationService {
 
       await application.save();
 
+      // Fetch updated application with populated fields (same as getLoanApplicationById)
+      const updatedApplication = await LoanApplication.findOne(query)
+        .populate(
+          "customer_user",
+          "first_name last_name email phone national_id_number date_of_birth address",
+        )
+        .populate("debtor_check.checked_by", "first_name last_name email")
+        .populate("debtor_check.matched_debtor_records")
+        .populate({
+          path: "attachments",
+          select: "filename mime_type url category signed signed_at",
+        })
+        .lean();
+
       return {
         success: true,
-        data: application,
+        data: updatedApplication,
         message: "Loan application updated successfully",
       };
     } catch (error) {
