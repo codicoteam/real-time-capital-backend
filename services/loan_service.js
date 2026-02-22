@@ -91,9 +91,7 @@ class LoanService {
             "asset_no title category evaluated_value declared_value status storage_location attachments",
         },
         {
-          path: "application",
-          select:
-            "application_no requested_loan_amount collateral_description surety_description status created_at",
+          path: "application"
         },
         {
           path: "attachments",
