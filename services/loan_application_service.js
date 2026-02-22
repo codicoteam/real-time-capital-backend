@@ -323,12 +323,6 @@ class LoanApplicationService {
           "customer_user",
           "first_name last_name email phone national_id_number date_of_birth address",
         )
-        .populate("debtor_check.checked_by", "first_name last_name email")
-        .populate("debtor_check.matched_debtor_records")
-        .populate({
-          path: "attachments",
-          select: "filename mime_type url category signed signed_at",
-        })
         .lean();
 
       if (!application) {
@@ -548,17 +542,14 @@ class LoanApplicationService {
 
       await application.save();
 
-      // Fetch updated application with populated fields (same as getLoanApplicationById)
+      // Fetch updated application with populated fields (aligned with list function)
       const updatedApplication = await LoanApplication.findOne(query)
-        .populate(
-          "customer_user",
-          "first_name last_name email phone national_id_number date_of_birth address",
-        )
-        .populate("debtor_check.checked_by", "first_name last_name email")
-        .populate("debtor_check.matched_debtor_records")
+        .populate("customer_user", "first_name last_name email phone")
+        .populate("debtor_check.checked_by", "first_name last_name")
         .populate({
           path: "attachments",
-          select: "filename mime_type url category signed signed_at",
+          select:
+            "category filename mime_type storage url signed signed_at created_at",
         })
         .lean();
 
@@ -572,7 +563,6 @@ class LoanApplicationService {
       throw new Error(`Failed to update loan application: ${error.message}`);
     }
   }
-
   /**
    * Add attachment to loan application
    */
