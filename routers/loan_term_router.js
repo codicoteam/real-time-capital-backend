@@ -148,7 +148,7 @@ router.post("/",
  *         description: Unauthorized
  */
 router.get("/", 
-  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management'),
+  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management', 'customer'),
   loanTermController.getLoanTerms
 );
 
@@ -192,7 +192,7 @@ router.get("/",
  *         description: Unauthorized
  */
 router.get("/all", 
-  requireRoles('admin_pawn_limited', 'management'),
+  requireRoles('admin_pawn_limited','super_admin_vendor', 'management'),
   loanTermController.getAllLoanTerms
 );
 
@@ -219,7 +219,7 @@ router.get("/all",
  *         description: Unauthorized
  */
 router.get("/:id", 
-  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management'),
+  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'super_admin_vendor', 'management'),
   loanTermController.getLoanTerm
 );
 
@@ -271,7 +271,7 @@ router.get("/:id",
  *         description: Unauthorized
  */
 router.put("/:id", 
-  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited'),
+  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'super_admin_vendor'),
   loanTermController.updateLoanTerm
 );
 
@@ -308,7 +308,7 @@ router.put("/:id",
  *         description: Unauthorized
  */
 router.post("/:id/approve", 
-  requireRoles('loan_officer_approval', 'admin_pawn_limited'),
+  requireRoles('loan_officer_approval', 'admin_pawn_limited', 'super_admin_vendor'),
   loanTermController.approveLoanTerm
 );
 
@@ -337,7 +337,7 @@ router.post("/:id/approve",
  *         description: Unauthorized
  */
 router.delete("/:id", 
-  requireRoles('admin_pawn_limited'),
+  requireRoles('admin_pawn_limited', 'super_admin_vendor'),
   loanTermController.deleteLoanTerm
 );
 
@@ -374,7 +374,7 @@ router.delete("/:id",
  *         description: Unauthorized
  */
 router.get("/loan/:loanId", 
-  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management'),
+  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management', 'super_admin_vendor'),
   loanTermController.getLoanTermsByLoan
 );
 
@@ -401,7 +401,7 @@ router.get("/loan/:loanId",
  *         description: Unauthorized
  */
 router.get("/loan/:loanId/current", 
-  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management'),
+  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management', 'super_admin_vendor'),
   loanTermController.getCurrentTerm
 );
 
@@ -455,7 +455,7 @@ router.get("/loan/:loanId/timeline",
  *         description: Unauthorized
  */
 router.get("/loan/:loanId/next-term", 
-  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited'),
+  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'super_admin_vendor'),
   loanTermController.getNextTermNumber
 );
 
