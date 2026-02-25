@@ -70,9 +70,10 @@ router.post(
   requireRoles(
     "loan_officer_processor",
     "loan_officer_approval",
-    "admin_pawn_limited"
+    "admin_pawn_limited",
+    "super_admin_vendor",
   ),
-  loanController.createLoan
+  loanController.createLoan,
 );
 
 /**
@@ -162,12 +163,14 @@ router.post(
 router.get(
   "/",
   requireRoles(
+    "customer",
     "loan_officer_processor",
     "loan_officer_approval",
     "admin_pawn_limited",
-    "management"
+    "management",
+    "super_admin_vendor",
   ),
-  loanController.getLoans
+  loanController.getLoans,
 );
 
 /**
@@ -213,7 +216,7 @@ router.get(
 router.get(
   "/all",
   requireRoles("admin_pawn_limited", "management"),
-  loanController.getAllLoans
+  loanController.getAllLoans,
 );
 
 /**
@@ -245,9 +248,10 @@ router.get(
     "loan_officer_processor",
     "loan_officer_approval",
     "admin_pawn_limited",
-    "management"
+    "super_admin_vendor",
+    "management",
   ),
-  loanController.getLoan
+  loanController.getLoan,
 );
 
 /**
@@ -296,9 +300,10 @@ router.put(
   requireRoles(
     "loan_officer_processor",
     "loan_officer_approval",
-    "admin_pawn_limited"
+    "super_admin_vendor",
+    "admin_pawn_limited",
   ),
-  loanController.updateLoan
+  loanController.updateLoan,
 );
 
 /**
@@ -344,9 +349,10 @@ router.put(
   requireRoles(
     "loan_officer_processor",
     "loan_officer_approval",
-    "admin_pawn_limited"
+    "super_admin_vendor",
+    "admin_pawn_limited",
   ),
-  loanController.updateStatus
+  loanController.updateStatus,
 );
 
 /**
@@ -390,8 +396,12 @@ router.put(
  */
 router.post(
   "/:id/payment",
-  requireRoles("loan_officer_processor", "admin_pawn_limited"),
-  loanController.processPayment
+  requireRoles(
+    "loan_officer_processor",
+    "super_admin_vendor",
+    "admin_pawn_limited",
+  ),
+  loanController.processPayment,
 );
 
 /**
@@ -422,9 +432,10 @@ router.get(
     "customer",
     "loan_officer_processor",
     "loan_officer_approval",
-    "admin_pawn_limited"
+    "admin_pawn_limited",
+    "super_admin_vendor",
   ),
-  loanController.calculateCharges
+  loanController.calculateCharges,
 );
 
 /**
@@ -454,7 +465,7 @@ router.get(
 router.delete(
   "/:id",
   requireRoles("admin_pawn_limited"),
-  loanController.deleteLoan
+  loanController.deleteLoan,
 );
 
 /**
@@ -495,10 +506,11 @@ router.get(
     "customer",
     "loan_officer_processor",
     "loan_officer_approval",
+    "super_admin_vendor",
     "admin_pawn_limited",
-    "management"
+    "management",
   ),
-  loanController.getLoansByCustomer
+  loanController.getLoansByCustomer,
 );
 
 /**
@@ -539,10 +551,11 @@ router.get(
   requireRoles(
     "loan_officer_processor",
     "loan_officer_approval",
+    "super_admin_vendor",
     "admin_pawn_limited",
-    "management"
+    "management",
   ),
-  loanController.searchLoans
+  loanController.searchLoans,
 );
 
 /**
@@ -561,8 +574,13 @@ router.get(
  */
 router.get(
   "/stats",
-  requireRoles("admin_pawn_limited", "management"),
-  loanController.getLoanStats
+  requireRoles(
+    "admin_pawn_limited",
+
+    "management",
+    "super_admin_vendor",
+  ),
+  loanController.getLoanStats,
 );
 
 /**
@@ -593,9 +611,9 @@ router.get(
     "loan_officer_processor",
     "loan_officer_approval",
     "admin_pawn_limited",
-    "management"
+    "management",
   ),
-  loanController.getLoanApplication
+  loanController.getLoanApplication,
 );
 
 /**
@@ -641,9 +659,10 @@ router.put(
   requireRoles(
     "loan_officer_processor",
     "loan_officer_approval",
-    "admin_pawn_limited"
+    "super_admin_vendor",
+    "admin_pawn_limited",
   ),
-  loanController.updateLoanApplicationStatus
+  loanController.updateLoanApplicationStatus,
 );
 
 module.exports = router;
