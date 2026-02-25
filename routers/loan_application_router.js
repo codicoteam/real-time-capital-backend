@@ -27,7 +27,7 @@ const {
  * @swagger
  * /api/v1/loan-applications:
  *   post:
- *     summary: Create a new loan application (draft)
+ *     summary: Create a new loan application (draft) – for customers
  *     tags: [Loan Applications]
  *     security:
  *       - bearerAuth: []
@@ -105,6 +105,89 @@ router.post(
   authMiddleware,
   requireRoles("customer"),
   loanApplicationController.createLoanApplication,
+);
+
+/**
+ * @swagger
+ * /api/v1/loan-applications/admin/create:
+ *   post:
+ *     summary: Create a loan application for a specific customer (staff only)
+ *     tags: [Loan Applications]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - customer_user_id
+ *               - full_name
+ *               - national_id_number
+ *               - requested_loan_amount
+ *               - collateral_category
+ *             properties:
+ *               customer_user_id:
+ *                 type: string
+ *                 description: ID of the customer for whom the application is created
+ *               full_name:
+ *                 type: string
+ *               national_id_number:
+ *                 type: string
+ *               gender:
+ *                 type: string
+ *               date_of_birth:
+ *                 type: string
+ *                 format: date
+ *               marital_status:
+ *                 type: string
+ *               contact_details:
+ *                 type: string
+ *               alternative_number:
+ *                 type: string
+ *               email_address:
+ *                 type: string
+ *                 format: email
+ *               home_address:
+ *                 type: string
+ *               employment:
+ *                 type: object
+ *               requested_loan_amount:
+ *                 type: number
+ *               collateral_category:
+ *                 type: string
+ *                 enum: [small_loans, motor_vehicle, jewellery]
+ *               collateral_description:
+ *                 type: string
+ *               surety_description:
+ *                 type: string
+ *               declared_asset_value:
+ *                 type: number
+ *               declaration_text:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Loan application created successfully for the customer
+ *       400:
+ *         description: Validation error or missing customer_user_id
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Insufficient permissions
+ *       500:
+ *         description: Server error
+ */
+router.post(
+  "/admin/create",
+  authMiddleware,
+  requireRoles(
+    "loan_officer_approval",
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management",
+  ),
+  loanApplicationController.createLoanApplicationForCustomer,
 );
 
 /**

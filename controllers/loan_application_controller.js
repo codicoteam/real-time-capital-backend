@@ -2,7 +2,7 @@ const loanApplicationService = require("../services/loan_application_service");
 
 class LoanApplicationController {
   /**
-   * Create a new loan application (draft)
+   * Create a new loan application (draft) – for customers themselves
    */
   async createLoanApplication(req, res) {
     try {
@@ -13,6 +13,43 @@ class LoanApplicationController {
         applicationData,
         userId,
       );
+
+      res.status(201).json({
+        success: true,
+        data: result.data,
+        message: result.message,
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+
+  /**
+   * Create a loan application for a specific customer (staff only)
+   */
+  async createLoanApplicationForCustomer(req, res) {
+    try {
+      const applicationData = req.body;
+      const { customer_user_id } = applicationData;
+
+      if (!customer_user_id) {
+        return res.status(400).json({
+          success: false,
+          error: "customer_user_id is required",
+        });
+      }
+
+      const staffUser = req.user; // The staff member creating the application
+
+      const result =
+        await loanApplicationService.createLoanApplicationForCustomer(
+          applicationData,
+          customer_user_id,
+          staffUser,
+        );
 
       res.status(201).json({
         success: true,
@@ -71,7 +108,7 @@ class LoanApplicationController {
         endDate,
       } = req.query;
 
-      const userRole = req.user.roles[0]; // Primary role
+      const userRole = req.user.roles[0];
       const userId = req.user._id;
 
       const result = await loanApplicationService.getLoanApplications({
