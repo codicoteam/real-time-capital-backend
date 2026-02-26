@@ -219,7 +219,7 @@ router.get("/all",
  *         description: Unauthorized
  */
 router.get("/:id", 
-  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'super_admin_vendor', 'management'),
+  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'super_admin_vendor', 'management', 'customer'),
   loanTermController.getLoanTerm
 );
 
@@ -374,7 +374,7 @@ router.delete("/:id",
  *         description: Unauthorized
  */
 router.get("/loan/:loanId", 
-  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management', 'super_admin_vendor'),
+  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management', 'super_admin_vendor', 'customer'),
   loanTermController.getLoanTermsByLoan
 );
 
