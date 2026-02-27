@@ -17,6 +17,7 @@ class UserService {
   generateToken(user) {
     return jwt.sign(
       {
+        full_name: user.full_name,
         userId: user._id,
         email: user.email,
         roles: user.roles,
