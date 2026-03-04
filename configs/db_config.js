@@ -30,10 +30,15 @@ let connectDB = async () => {
         binary: {
           version: "6.0.6",
           downloadDir: './node_modules/.cache/mongodb-memory-server',
+          cacheSkipCheck: true,
+        },
+        instance: {
+          launchTimeout: 7200000, // 2 hours timeout for instance startup
+          port: 27017,
         },
         spawn: {
-          // Increase timeout to allow downloads on slow networks
-          timeout: 120000,
+          // Increase timeout to 2 hours to allow downloads on slow networks
+          timeout: 7200000,
         },
       });
     } catch (err) {
@@ -49,8 +54,15 @@ let connectDB = async () => {
 
     const uri = mongod.getUri();
     await mongoose.connect(uri, {
-      connectTimeoutMS: 30000,
-      serverSelectionTimeoutMS: 30000,
+      connectTimeoutMS: 7200000,
+      serverSelectionTimeoutMS: 7200000,
+      bufferCommands: false,
+      socketTimeoutMS: 7200000,
+      maxPoolSize: 10,
+      family: 4,
+      heartbeatFrequencyMS: 300000,
+      maxIdleTimeMS: 7200000,
+      minPoolSize: 1
     });
     console.log("✅ Connected to in-memory MongoDB for testing");
   } catch (err) {

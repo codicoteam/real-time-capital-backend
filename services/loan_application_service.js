@@ -7,6 +7,7 @@ const mongoose = require("mongoose");
 })();
 const emailService = require("../utils/emails_util");
 const documentService = require("./document_service");
+const { getTemplateInfo } = require("../utils/template_selector");
 
 class LoanApplicationService {
   /**
@@ -27,26 +28,113 @@ class LoanApplicationService {
    */
   async createLoanApplication(applicationData, userId) {
     try {
-      // Validate required fields first
+      // Validate required fields first (allow 0 for requested_loan_amount for pawn applications)
       const requiredFields = [
         "full_name",
         "national_id_number",
-        "requested_loan_amount",
         "collateral_category",
       ];
 
       for (const field of requiredFields) {
-        if (!applicationData[field]) {
-          throw new Error(`${field.replace("_", " ")} is required`);
+        if (applicationData[field] === undefined || applicationData[field] === null || applicationData[field] === "") {
+          throw new Error(`${field.replace(/_/g, " ")} is required`);
         }
       }
 
+      // Validate requested_loan_amount - must be present (can be 0 for pawn)
+      if (applicationData.requested_loan_amount === undefined || applicationData.requested_loan_amount === null) {
+        throw new Error("requested_loan_amount is required");
+      }
+
       // Validate collateral category
-      const validCategories = ["small_loans", "motor_vehicle", "jewellery"];
+     const validCategories = [
+  "small_loans",
+  "motor_vehicle",
+  "jewellery",
+  "electronics",
+  "furniture",
+  "land",
+  "machinery",
+];
       if (!validCategories.includes(applicationData.collateral_category)) {
         throw new Error(
           `Invalid collateral category. Must be one of: ${validCategories.join(", ")}`,
         );
+      }
+
+      // ========================================
+      // TEMPLATE-SPECIFIC VALIDATION
+      // ========================================
+
+      // Determine intent for template selection
+      const intent = applicationData.intent || "loan";
+      const collateralCategory = applicationData.collateral_category;
+
+      // LOAN REQUEST FORM validation (for intent="loan" or small_loans)
+      if (intent === "loan" || collateralCategory === "small_loans") {
+        const loanRequiredFields = [
+          "gender",
+          "date_of_birth",
+          "marital_status",
+          "contact_details",
+          "home_address",
+          "employment.employment_type",
+          "employment.title",
+          "employment.duration",
+          "surety_description",
+        ];
+        
+        for (const field of loanRequiredFields) {
+          const value = field.split(".").reduce((obj, key) => obj && obj[key], applicationData);
+          if (!value) {
+            throw new Error(`${field.replace(/_/g, " ")} is required for Loan Request Form`);
+          }
+        }
+      }
+
+      // PAWN CONTRACT MOTOR VEHICLE validation
+      if (intent === "pawn" && collateralCategory === "motor_vehicle") {
+        // Only require home_address and contact_details - auto-generate the rest
+        const pawnMotorVehicleRequiredFields = [
+          "home_address",
+          "contact_details",
+        ];
+        
+        for (const field of pawnMotorVehicleRequiredFields) {
+          if (!applicationData[field]) {
+            throw new Error(`${field.replace(/_/g, " ")} is required for Pawn Contract (Motor Vehicle)`);
+          }
+        }
+        
+        // Auto-generate amount_in_words if not provided
+        if (!applicationData.amount_in_words && applicationData.requested_loan_amount) {
+          applicationData.amount_in_words = this._numberToWords(applicationData.requested_loan_amount);
+        }
+        
+        // Auto-generate due_date if not provided (default: 30 days from now)
+        if (!applicationData.due_date) {
+          const dueDate = new Date();
+          dueDate.setDate(dueDate.getDate() + 30);
+          applicationData.due_date = dueDate.toISOString();
+        }
+        
+      }
+
+      // PAWN CONTRACT ELECTRICALS/JEWELLERY validation
+      if (intent === "pawn" && collateralCategory === "jewellery") {
+        const pawnElectricalsRequiredFields = [
+          "home_address",
+          "contact_details",
+          "amount_in_words",
+          "due_date",
+          "item_type",
+        ];
+        
+        for (const field of pawnElectricalsRequiredFields) {
+          if (!applicationData[field]) {
+            throw new Error(`${field.replace(/_/g, " ")} is required for Pawn Contract (Electricals/Jewellery)`);
+          }
+        }
       }
 
       // Generate application number
@@ -91,9 +179,54 @@ class LoanApplicationService {
         "first_name last_name email phone",
       );
 
+      // Auto-generate PDF document after successful creation
+      let documentGeneration = null;
+      try {
+        // Template selection based on intent and collateral category
+        let templateCode = "LOAN_REQUEST_FORM";
+
+        const collateralCategory = loanApplication.collateral_category;
+        const amount = loanApplication.requested_loan_amount;
+        
+        // Decision logic based on intent field (explicit user intent)
+        const applicationIntent = loanApplication.intent || "loan";
+        
+        if (applicationIntent === "pawn" && collateralCategory === "motor_vehicle") {
+          templateCode = "PAWN_CONTRACT_MOTOR_VEHICLE";
+        } else if (applicationIntent === "pawn" && collateralCategory === "jewellery") {
+          templateCode = "PAWN_CONTRACT_ELECTRICALS";
+        } else if (amount <= 1000) {
+          templateCode = "small_loans";
+        }
+
+        console.log(`=== Document Generation (CREATE Step) ===`);
+        console.log(`Application ID: ${loanApplication._id}`);
+        console.log(`Intent: ${applicationIntent}`);
+        console.log(`Collateral Category: ${collateralCategory}`);
+        console.log(`Selected Template: ${templateCode}`);
+        
+        const templateInfo = getTemplateInfo(templateCode);
+        console.log(`Template path: ${templateInfo.path}`);
+        console.log(`Generating document...`);
+        
+        documentGeneration = await documentService.generateDocumentFromTemplate(
+          loanApplication._id,
+          templateCode
+        );
+        
+        console.log(`Document generated:`, documentGeneration ? "YES" : "NO");
+      } catch (docError) {
+        console.error("=== Document Generation Error (CREATE) ===");
+        console.error("Failed to auto-generate document:", docError.message);
+      }
+
+      // Convert to plain object to ensure _id is included
+      const responseData = loanApplication.toObject();
+      
       return {
         success: true,
-        data: loanApplication,
+        data: responseData,
+        document: documentGeneration,
         message: "Loan application draft created successfully",
       };
     } catch (error) {
@@ -125,19 +258,21 @@ class LoanApplicationService {
       Object.assign(loanApplication, submitData);
 
       // Check if all required fields are filled
+      // For pawn applications (motor_vehicle, jewellery), employment fields are optional
+      const isPawnApplication = ["motor_vehicle", "jewellery"].includes(loanApplication.collateral_category);
+      
       const requiredFields = [
         "full_name",
         "national_id_number",
-        "date_of_birth",
-        "contact_details",
-        "home_address",
-        "employment.employment_type",
-        "employment.title",
-        "employment.duration",
         "collateral_description",
         "declaration_signed_at",
         "declaration_signature_name",
       ];
+      
+      // Add employment fields only for non-pawn applications
+      if (!isPawnApplication) {
+        requiredFields.push("date_of_birth", "contact_details", "home_address", "employment.employment_type", "employment.title", "employment.duration");
+      }
 
       for (const field of requiredFields) {
         const value = field
@@ -184,42 +319,86 @@ class LoanApplicationService {
       // Auto-generate PDF document after successful submission
       let documentGeneration = null;
       try {
+        // Template selection based on collateral category
+        let templateCode = "LOAN_REQUEST_FORM"; // default
+
+        const asset = loanApplication.collateral_description?.toLowerCase() || "";
+        const amount = loanApplication.requested_loan_amount;
+        const hasEmployment = loanApplication.employment?.employment_type;
+        const hasSurety = loanApplication.surety_description;
+        const hasDeclaration = loanApplication.declaration_signature_name;
+        const collateralCategory = loanApplication.collateral_category;
+        const hasVehicleDetails = asset.includes("toyota") || asset.includes("regius") || asset.includes("nissan");
+        
+        // Check if it's a pawn application based on collateral_category (motor_vehicle or jewellery)
+        const isPawnCollateral = ["motor_vehicle", "jewellery"].includes(collateralCategory);
+
+        // Decision logic based on intent field (explicit user intent)
+        const applicationIntent = loanApplication.intent || "loan";
+        
+        if (applicationIntent === "pawn" && collateralCategory === "motor_vehicle") {
+          templateCode = "PAWN_CONTRACT_MOTOR_VEHICLE";
+        } else if (applicationIntent === "pawn" && (collateralCategory === "jewellery" || isPawnCollateral)) {
+          templateCode = "PAWN_CONTRACT_ELECTRICALS";
+        } else if (hasEmployment && hasSurety && hasDeclaration) {
+          templateCode = "LOAN_REQUEST_FORM";
+        } else if (amount <= 1000) {
+          templateCode = "small_loans";
+        }
+
+        console.log(`=== Document Generation Debug ===`);
+        console.log(`Application ID: ${applicationId}`);
+        console.log(`Collateral Category: ${collateralCategory}`);
+        console.log(`Collateral Description: ${loanApplication.collateral_description}`);
+        console.log(`Requested Amount: ${amount}`);
+        console.log(`Selected Template: ${templateCode}`);
+        
+        // Pass templateCode to template_selector.js
+        const templateInfo = getTemplateInfo(templateCode);
+        
+        console.log(`Template path: ${templateInfo.path}`);
+        console.log(`Generating document...`);
+        
         documentGeneration = await documentService.generateDocumentFromTemplate(
           applicationId,
-          "LOAN_REQUEST_FORM"
+          templateCode
         );
+        
+        console.log(`Document generated successfully:`, documentGeneration ? "YES" : "NO");
       } catch (docError) {
+        console.error("=== Document Generation Error ===");
         console.error("Failed to auto-generate document:", docError.message);
-          // Don't throw - document generation failure shouldn't break the application submission
-        }
+        console.error("Stack trace:", docError.stack);
+        // Don't throw - document generation failure shouldn't break the application submission
+      }
 
-        // Send email notifications
-        try {
-          // Send to customer
-          await emailService.sendLoanApplicationSubmittedEmail({
-            to: loanApplication.customer_user.email,
-            fullName: loanApplication.full_name,
-            applicationNo: loanApplication.application_no,
-          });
+      // Send email notifications
+      try {
+        // Send to customer
+        await emailService.sendLoanApplicationSubmittedEmail({
+          to: loanApplication.customer_user.email,
+          fullName: loanApplication.full_name,
+          applicationNo: loanApplication.application_no,
+        });
 
-          // Send to admin team
-          await emailService.sendLoanApplicationAdminNotification({
-            applicationNo: loanApplication.application_no,
-            customerName: loanApplication.full_name,
-            requestedAmount: loanApplication.requested_loan_amount,
-            collateralCategory: loanApplication.collateral_category,
-          });
-        } catch (emailError) {
-          console.error("Failed to send email notifications:", emailError);
-          // Don't throw - email failure shouldn't break the application
-        }
+        // Send to admin team
+        await emailService.sendLoanApplicationAdminNotification({
+          applicationNo: loanApplication.application_no,
+          customerName: loanApplication.full_name,
+          requestedAmount: loanApplication.requested_loan_amount,
+          collateralCategory: loanApplication.collateral_category,
+        });
+      } catch (emailError) {
+        console.error("Failed to send email notifications:", emailError);
+        // Don't throw - email failure shouldn't break the application
+      }
 
-        return {
-          success: true,
-          data: loanApplication,
-          message: "Loan application submitted successfully",
-          document: documentGeneration, // Include document info in response
-        };
+      return {
+        success: true,
+        data: loanApplication,
+        message: "Loan application submitted successfully",
+        document: documentGeneration, // Include document info in response
+      };
     } catch (error) {
       console.error("Error submitting loan application:", error);
       throw new Error(`Failed to submit loan application: ${error.message}`);
@@ -876,6 +1055,57 @@ class LoanApplicationService {
       console.error("Error sending document requirement:", error);
       throw new Error(`Failed to send document requirement: ${error.message}`);
     }
+  }
+
+  /**
+   * Convert number to words (for amount_in_words field)
+   * e.g., 2000 -> "Two Thousand"
+   */
+  _numberToWords(number) {
+    const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 
+                  'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+    const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+    const scales = ['', 'Thousand', 'Million', 'Billion'];
+
+    if (number === 0) return 'Zero';
+
+    const numStr = number.toString();
+    const numLen = numStr.length;
+    
+    let words = '';
+    let segment = 0;
+    
+    for (let i = numLen; i > 0; i -= 3) {
+      const start = Math.max(0, i - 3);
+      const part = parseInt(numStr.substring(start, i));
+      
+      if (part > 0) {
+        let partWords = '';
+        
+        if (part >= 100) {
+          partWords += ones[Math.floor(part / 100)] + ' Hundred';
+          part = part % 100;
+          if (part > 0) partWords += ' ';
+        }
+        
+        if (part >= 20) {
+          partWords += tens[Math.floor(part / 10)];
+          if (part % 10 > 0) partWords += ' ' + ones[part % 10];
+        } else if (part > 0) {
+          partWords += ones[part];
+        }
+        
+        if (segment > 0) {
+          words = partWords + ' ' + scales[segment] + (words ? ' ' + words : '');
+        } else {
+          words = partWords + (words ? ' ' + words : '');
+        }
+      }
+      
+      segment++;
+    }
+    
+    return words;
   }
 }
 

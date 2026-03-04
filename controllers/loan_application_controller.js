@@ -14,12 +14,26 @@ class LoanApplicationController {
         userId
       );
 
+      console.log("=== Controller Response ===");
+      console.log("Document generated:", result.document ? "YES" : "NO");
+      if (result.document) {
+        console.log("Document success:", result.document.success);
+        console.log("Document ID:", result.document.signedDocumentId);
+        console.log("Document filename:", result.document.filename);
+      } else {
+        console.log("Document is null - generation failed or not attempted");
+      }
+
+      // Include generated document info (if any) in the response
       res.status(201).json({
         success: true,
         data: result.data,
+        document: result.document || null,
         message: result.message,
       });
     } catch (error) {
+      console.error("=== Controller Error ===");
+      console.error(error);
       res.status(400).json({
         success: false,
         error: error.message,

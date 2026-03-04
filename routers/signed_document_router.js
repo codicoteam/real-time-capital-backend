@@ -2,6 +2,27 @@ const express = require("express");
 const router = express.Router();
 const signedDocumentController = require("../controllers/signed_document_controller");
 const { authMiddleware, requireRoles } = require("../middlewares/auth_middleware");
+const multer = require("multer");
+const path = require("path");
+
+// Configure multer for signature uploads (images and PDFs)
+const storage = multer.memoryStorage();
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    // Allow images and PDFs for signatures
+    const allowedImageTypes = /jpeg|jpg|png|gif/;
+    const allowedPdfType = /pdf/;
+    const extname = allowedImageTypes.test(path.extname(file.originalname).toLowerCase()) || 
+                    allowedPdfType.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedImageTypes.test(file.mimetype) || allowedPdfType.test(file.mimetype);
+    if (extname && mimetype) {
+      return cb(null, true);
+    }
+    cb(new Error("Only image files (JPEG, JPG, PNG, GIF) and PDF files are allowed for signature"));
+  }
+});
 
 /**
  * @swagger
@@ -78,12 +99,30 @@ router.post(
   signedDocumentController.generateDocument
 );
 
+// IMPORTANT: Route order matters! More specific routes must come before parameterized routes
+// 1. First: /generate/:applicationId (already defined at top)
+// 2. Second: /:documentId/sign (specific action on document) - must come before /:documentId
+// 3. Third: /application/:applicationId - must come before /:documentId
+// 4. Fourth: /:documentId (generic document operations - GET, DELETE)
+
 /**
  * @swagger
  * /api/v1/signed-documents/{documentId}/sign:
  *   post:
- *     summary: Upload signature image and stamp it on PDF document
- *     description: Send signature as base64 encoded image. Returns signed PDF as base64. Document status becomes "verified" after signing.
+ *     summary: Upload signature and stamp it on PDF document
+ *     description: |
+ *       Send signature as multipart form data (file upload) or as base64 encoded string. 
+ *       Returns signed PDF as base64. Document status becomes "verified" after signing.
+ *       
+ *       **Two ways to send request:**
+ *       
+ *       1. **Multipart Form Data (Recommended)** - Upload signature file:
+ *          - Field `signature`: The signature file (image: PNG, JPG, JPEG, GIF or PDF)
+ *          - Field `signedByName`: Name of the person signing
+ *       
+ *       2. **JSON Body** - Send base64 encoded signature:
+ *          - Field `signatureBase64`: Base64 encoded signature image
+ *          - Field `signedByName`: Name of the person signing
  *     tags: [Signed Documents]
  *     security:
  *       - bearerAuth: []
@@ -97,6 +136,21 @@ router.post(
  *     requestBody:
  *       required: true
  *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - signature
+ *               - signedByName
+ *             properties:
+ *               signature:
+ *                 type: string
+ *                 format: binary
+ *                 description: Signature file (PNG, JPG, JPEG, GIF, or PDF)
+ *               signedByName:
+ *                 type: string
+ *                 description: Full name of the person signing
+ *                 example: John Doe
  *         application/json:
  *           schema:
  *             type: object
@@ -106,15 +160,12 @@ router.post(
  *             properties:
  *               signatureBase64:
  *                 type: string
- *                 description: Base64 encoded signature image (PNG or JPG). Example format - data without "data:image/png;base64," prefix
+ *                 description: Base64 encoded signature image (PNG, JPG) or PDF
  *                 example: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
  *               signedByName:
  *                 type: string
  *                 description: Full name of the person signing
  *                 example: John Doe
- *           example:
- *             signatureBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
- *             signedByName: "John Doe"
  *     responses:
  *       200:
  *         description: Signature stamped successfully. Document signed and returns updated base64 PDF.
@@ -155,7 +206,65 @@ router.post(
 router.post(
   "/:documentId/sign",
   authMiddleware,
+  upload.single("signature"),
   signedDocumentController.signDocument
+);
+
+/**
+ * @swagger
+ * /api/v1/signed-documents/application/{applicationId}:
+ *   get:
+ *     summary: Get all signed documents for a loan application
+ *     tags: [Signed Documents]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: applicationId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Loan application ID
+ *     responses:
+ *       200:
+ *         description: Documents retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id:
+ *                         type: string
+ *                       template_id:
+ *                         type: object
+ *                       loan_application_id:
+ *                         type: string
+ *                       status:
+ *                         type: string
+ *                       signed_at:
+ *                         type: string
+ *                         format: date-time
+ *                       created_at:
+ *                         type: string
+ *                         format: date-time
+ *                 message:
+ *                   type: string
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.get(
+  "/application/:applicationId",
+  authMiddleware,
+  signedDocumentController.getApplicationDocuments
 );
 
 /**
@@ -239,63 +348,6 @@ router.post(
  *         description: Server error
  */
 router.get("/:documentId", authMiddleware, signedDocumentController.getSignedDocument);
-
-/**
- * @swagger
- * /api/v1/signed-documents/application/{applicationId}:
- *   get:
- *     summary: Get all signed documents for a loan application
- *     tags: [Signed Documents]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: applicationId
- *         required: true
- *         schema:
- *           type: string
- *         description: Loan application ID
- *     responses:
- *       200:
- *         description: Documents retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       _id:
- *                         type: string
- *                       template_id:
- *                         type: object
- *                       loan_application_id:
- *                         type: string
- *                       status:
- *                         type: string
- *                       signed_at:
- *                         type: string
- *                         format: date-time
- *                       created_at:
- *                         type: string
- *                         format: date-time
- *                 message:
- *                   type: string
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Server error
- */
-router.get(
-  "/application/:applicationId",
-  authMiddleware,
-  signedDocumentController.getApplicationDocuments
-);
 
 /**
  * @swagger

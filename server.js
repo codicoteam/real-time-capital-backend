@@ -64,10 +64,19 @@ app.use("/api/v1/ledger-entries", ledgerEntryRouter);
 app.use("/api/v1/asset-valuations", assetValuationRouter);
 app.use("/api/v1/signed-documents", signedDocumentRouter);
 
-// Global error handler (REST)
+// Global error handler (REST) - Improved for better debugging
 app.use((err, req, res, next) => {
   console.error("Global error handler:", err.stack || err);
-  res.status(500).json({ message: "Something went wrong!" });
+  
+  // Provide more detailed error message for debugging
+  const errorMessage = process.env.NODE_ENV === 'production' 
+    ? "An error occurred while processing your request" 
+    : err.message || "Something went wrong!";
+  
+  res.status(500).json({ 
+    message: errorMessage,
+    ...(process.env.NODE_ENV !== 'production' && { stack: err.stack })
+  });
 });
 
 // Init Socket.IO (chat + tracking now)

@@ -32,22 +32,56 @@ const LoanApplicationSchema = new mongoose.Schema(
     // EMPLOYMENT DETAILS (from form)
     employment: { type: EmploymentSchema, default: {} },
 
-    // BASIC INFORMATION (from form)
-    requested_loan_amount: { type: Number, required: true, min: 0 },
+    // Intent to determine template type: "loan" or "pawn"
+    intent: { 
+      type: String, 
+      enum: ["loan", "pawn"], 
+      default: "loan",
+      index: true 
+    },
+    
+    // BASIC INFORMATION (from form) - not required to allow pawn applications with amount = 0
+    requested_loan_amount: { type: Number, required: false, min: 0, default: 0 },
     collateral_category: {
       type: String,
       required: true,
-      enum: ["small_loans", "motor_vehicle", "jewellery"],
+      enum: ["small_loans", "motor_vehicle", "jewellery", "electronics", "furniture", "land", "machinery"],
       index: true,
     },
     collateral_description: { type: String, trim: true }, // "Collateral" / surety description
     surety_description: { type: String, trim: true },
     declared_asset_value: { type: Number, min: 0 },
 
-    // DECLARATION
+    // DECLARATION (for Loan Request Form)
+    declaration_reason: { type: String, trim: true, maxlength: 100 },
     declaration_text: { type: String, trim: true },
     declaration_signed_at: { type: Date },
     declaration_signature_name: { type: String, trim: true },
+    signature_image_url: { type: String, trim: true }, // Base64 or URL for signature image
+
+    // PAWN CONTRACT SPECIFIC FIELDS
+    // Amount in words (required for pawn contracts)
+    amount_in_words: { type: String, trim: true },
+    
+    // Due date (required for pawn contracts - appears in Special Terms and Conditions)
+    due_date: { type: Date },
+    
+    // Vehicle details (for Motor Vehicle pawn contracts)
+    vehicle_make: { type: String, trim: true },
+    vehicle_model: { type: String, trim: true },
+    vehicle_registration_number: { type: String, trim: true },
+    vehicle_cc_serial_number: { type: String, trim: true },
+    vehicle_engine_number: { type: String, trim: true },
+    vehicle_chassis_number: { type: String, trim: true },
+    
+    // Item details (for Electricals/Jewellery pawn contracts)
+    item_type: { type: String, trim: true },
+    item_model: { type: String, trim: true },
+    item_serial_number: { type: String, trim: true },
+    
+    // Signature dates for pawn contracts
+    signature_pawner_date: { type: Date },
+    signature_broker_date: { type: Date },
 
     // Workflow
     status: {

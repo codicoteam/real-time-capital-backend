@@ -4,4 +4,9 @@ node_modules/
 # Environment variables
 .env
 .env.*
+
+# Package lock (optional - can be kept if using npm)
 package-lock.json
+
+# Uploaded/generated documents (these are test files)
+uploads/documents/

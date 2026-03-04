@@ -1,0 +1,30 @@
+{
+  "LOAN_REQUEST_FORM": {
+    "filename": "LOAN REQUEST FORM FINAL  .pdf",
+    "type": "pdf"
+  },
+  "small_loans": {
+    "filename": "LOAN REQUEST FORM FINAL  .pdf",
+    "type": "pdf"
+  },
+  "motor_vehicle": {
+    "filename": "LOAN REQUEST FORM FINAL  .pdf",
+    "type": "pdf"
+  },
+  "jewellery": {
+    "filename": "LOAN REQUEST FORM FINAL  .pdf",
+    "type": "pdf"
+  },
+  "general_loan": {
+    "filename": "LOAN REQUEST FORM FINAL  .pdf",
+    "type": "pdf"
+  },
+  "PAWN_CONTRACT_MOTOR_VEHICLE": {
+    "filename": "pawn_contract_-_motor_vehicles_DESIGNIT_MEDIA REAL TIME CAPITAL .pdf",
+    "type": "pdf"
+  },
+  "PAWN_CONTRACT_ELECTRICALS": {
+    "filename": "pawn_contract_-_electricals DESIGNIT MEDIA ta Real Time capital.pdf",
+    "type": "pdf"
+  }
+}
