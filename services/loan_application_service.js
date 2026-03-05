@@ -12,9 +12,12 @@ class LoanApplicationService {
     const date = new Date();
     const year = date.getFullYear().toString().slice(-2);
     const month = (date.getMonth() + 1).toString().padStart(2, "0");
-    const random = Math.floor(Math.random() * 1000)
+
+    // Increase randomness to 6 digits (1 million combinations)
+    const random = Math.floor(Math.random() * 1000000)
       .toString()
-      .padStart(3, "0");
+      .padStart(6, "0");
+
     return `APP${year}${month}${random}`;
   }
 
@@ -22,73 +25,80 @@ class LoanApplicationService {
    * Create a new loan application (draft)
    */
   async createLoanApplication(applicationData, userId) {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
     try {
-      const session = await mongoose.startSession();
-      session.startTransaction();
+      const requiredFields = [
+        "full_name",
+        "national_id_number",
+        "requested_loan_amount",
+        "collateral_category",
+      ];
 
-      try {
-        // Validate required fields
-        const requiredFields = [
-          "full_name",
-          "national_id_number",
-          "requested_loan_amount",
-          "collateral_category",
-        ];
+      for (const field of requiredFields) {
+        if (!applicationData[field]) {
+          throw new Error(`${field.replace("_", " ")} is required`);
+        }
+      }
 
-        for (const field of requiredFields) {
-          if (!applicationData[field]) {
-            throw new Error(`${field.replace("_", " ")} is required`);
+      const validCategories = ["small_loans", "motor_vehicle", "jewellery"];
+      if (!validCategories.includes(applicationData.collateral_category)) {
+        throw new Error(
+          `Invalid collateral category. Must be one of: ${validCategories.join(", ")}`,
+        );
+      }
+
+      let loanApplication;
+      let attempts = 0;
+      const maxAttempts = 5;
+
+      while (attempts < maxAttempts) {
+        try {
+          const applicationNo = this.generateApplicationNo();
+
+          loanApplication = new LoanApplication({
+            ...applicationData,
+            application_no: applicationNo,
+            customer_user: userId,
+            status: "draft",
+            created_at: new Date(),
+            updated_at: new Date(),
+          });
+
+          await loanApplication.save({ session });
+          break; // success
+        } catch (err) {
+          if (err.code === 11000) {
+            attempts++;
+            if (attempts >= maxAttempts) {
+              throw new Error("Failed to generate unique application number");
+            }
+          } else {
+            throw err;
           }
         }
-
-        // Validate collateral category
-        const validCategories = ["small_loans", "motor_vehicle", "jewellery"];
-        if (!validCategories.includes(applicationData.collateral_category)) {
-          throw new Error(
-            `Invalid collateral category. Must be one of: ${validCategories.join(", ")}`,
-          );
-        }
-
-        // Generate application number
-        const applicationNo = this.generateApplicationNo();
-
-        // Create the loan application
-        const loanApplication = new LoanApplication({
-          ...applicationData,
-          application_no: applicationNo,
-          customer_user: userId,
-          status: "draft",
-          created_at: new Date(),
-          updated_at: new Date(),
-        });
-
-        await loanApplication.save({ session });
-
-        await session.commitTransaction();
-        session.endSession();
-
-        // Populate customer info
-        await loanApplication.populate(
-          "customer_user",
-          "first_name last_name email phone",
-        );
-
-        return {
-          success: true,
-          data: loanApplication,
-          message: "Loan application draft created successfully",
-        };
-      } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
-        throw error;
       }
+
+      await session.commitTransaction();
+      session.endSession();
+
+      await loanApplication.populate(
+        "customer_user",
+        "first_name last_name email phone",
+      );
+
+      return {
+        success: true,
+        data: loanApplication,
+        message: "Loan application draft created successfully",
+      };
     } catch (error) {
-      console.error("Error creating loan application:", error);
+      await session.abortTransaction();
+      session.endSession();
       throw new Error(`Failed to create loan application: ${error.message}`);
     }
   }
-
   /**
    * Submit a draft loan application
    */

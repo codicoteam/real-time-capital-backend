@@ -9,18 +9,25 @@ const {
 /**
  * @swagger
  * tags:
- *   name: Customer Dashboard
- *   description: Comprehensive customer analytics dashboard
+ *   name: Customer Dashboard (Staff)
+ *   description: Staff endpoints to view any customer's dashboard
  */
 
 /**
  * @swagger
- * /api/v1/customer/dashboard:
+ * /api/v1/customer/dashboard/{userId}:
  *   get:
- *     summary: Get full dashboard data for the authenticated customer
- *     tags: [Customer Dashboard]
+ *     summary: Get full dashboard data for a specific customer (staff only)
+ *     tags: [Customer Dashboard (Staff)]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID of the customer to fetch dashboard for
  *     responses:
  *       200:
  *         description: Dashboard data retrieved successfully
@@ -63,12 +70,20 @@ const {
  *       401:
  *         description: Unauthorized
  *       403:
- *         description: Forbidden – not a customer
+ *         description: Forbidden – insufficient role
  */
 router.get(
-  "/dashboard",
+  "/dashboard/:userId",
   authMiddleware,
-  requireRoles("customer"),
+  // Allow all roles except 'customer'
+  requireRoles(
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management",
+    "loan_officer_approval",
+    "loan_officer_processor",
+    "call_centre_support",
+  ),
   customerDashboardController.getDashboard,
 );
 

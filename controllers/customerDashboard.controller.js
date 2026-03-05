@@ -2,12 +2,13 @@ const customerDashboardService = require("../services/customerDashboard.service"
 
 class CustomerDashboardController {
   /**
-   * GET /customer/dashboard – Returns full dashboard for the logged-in customer
+   * GET /customer/dashboard/:userId – Returns full dashboard for the specified customer
    */
   async getDashboard(req, res) {
     try {
-      const userId = req.user._id;
-      const result = await customerDashboardService.getCustomerDashboard(userId);
+      const { userId } = req.params; // Extract userId from URL parameter
+      const result =
+        await customerDashboardService.getCustomerDashboard(userId);
       res.status(200).json({
         success: true,
         data: result.data,
