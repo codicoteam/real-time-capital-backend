@@ -2798,6 +2798,7 @@ const options = {
     "./routers/inventory_transaction_router.js",
     "./routers/ledger_entry_router.js",
     "./routers/asset_valuation_router.js",
+    "./routers/home_router.js",
   ],
 };
 const specs = swaggerJsdoc(options);
