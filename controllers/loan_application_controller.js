@@ -33,23 +33,18 @@ class LoanApplicationController {
   async createLoanApplicationForCustomer(req, res) {
     try {
       const applicationData = req.body;
-      const { customer_user_id } = applicationData;
 
-      if (!customer_user_id) {
+      if (!applicationData.customer_user_id) {
         return res.status(400).json({
           success: false,
           error: "customer_user_id is required",
         });
       }
 
-      const staffUser = req.user; // The staff member creating the application
-
-      const result =
-        await loanApplicationService.createLoanApplicationForCustomer(
-          applicationData,
-          customer_user_id,
-          staffUser,
-        );
+      const result = await loanApplicationService.createLoanApplication(
+        applicationData,
+        applicationData.customer_user_id,
+      );
 
       res.status(201).json({
         success: true,
