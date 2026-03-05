@@ -2,13 +2,11 @@ const homeService = require("../services/home_service");
 
 class HomeController {
   /**
-   * GET /home – Returns customer home data
+   * GET /home – Returns home data for the authenticated user based on their role.
    */
   async getHomeData(req, res) {
     try {
-      const userId = req.user._id; // set by authMiddleware
-      const result = await homeService.getCustomerHomeData(userId);
-
+      const result = await homeService.getHomeData(req.user);
       res.status(200).json({
         success: true,
         data: result.data,
