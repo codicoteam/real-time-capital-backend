@@ -27,6 +27,7 @@ const inventoryRouter = require("./routers/inventory_transaction_router");
 const ledgerEntryRouter = require("./routers/ledger_entry_router");
 const assetValuationRouter = require("./routers/asset_valuation_router");
 const homeRouter = require("./routers/home_router");
+const customerDashboardRouter = require("./routers/customer_dashboard_router");
 // Load env
 dotenv.config();
 
@@ -62,6 +63,7 @@ app.use("/api/v1/transactions", inventoryRouter);
 app.use("/api/v1/ledger-entries", ledgerEntryRouter);
 app.use("/api/v1/asset-valuations", assetValuationRouter);
 app.use("/api/v1/home", homeRouter);
+app.use("/api/v1/customer/dashboard", customerDashboardRouter);
 // Global error handler (REST)
 app.use((err, req, res, next) => {
   console.error("Global error handler:", err.stack || err);

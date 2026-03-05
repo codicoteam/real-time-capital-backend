@@ -2799,6 +2799,7 @@ const options = {
     "./routers/ledger_entry_router.js",
     "./routers/asset_valuation_router.js",
     "./routers/home_router.js",
+    "./routers/customer_dashboard_router.js",
   ],
 };
 const specs = swaggerJsdoc(options);
