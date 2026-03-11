@@ -40,6 +40,8 @@ class ReportService {
         assetDistribution,
         profitLoss,
         supportTickets,
+        loanConversion,
+        bidWinRatio,
         recentActivities,
       ] = await Promise.all([
         this._getSummary(),
@@ -51,7 +53,9 @@ class ReportService {
         this._getAssetDistribution(),
         this._getProfitLoss(start, end),
         this._getSupportTicketsOverTime(start, end),
-        this._getRecentActivities(10), // last 10 activities
+        this._getLoanConversionRate(start, end),
+        this._getBidWinRatio(start, end),
+        this._getRecentActivities(10), // last 10 activities with populated fields
       ]);
 
       return {
@@ -63,10 +67,13 @@ class ReportService {
             loanBook,
             loanApplications,
             payments,
-            auctions,
+            auctions: auctions.trend,      // main time-series chart
+            auctionSummary: auctions.summary,
             assetDistribution,
             profitLoss,
             supportTickets,
+            loanConversion,                 // new chart
+            bidWinRatio,                     // new chart
           },
           tables: {
             recentActivities,
@@ -452,16 +459,12 @@ class ReportService {
       },
     ]);
 
-    // Expenses? Not directly tracked; maybe from bid payments refunds, etc.
-    // For simplicity, we'll just report revenue streams.
-
     return {
       interest_income: interestIncome?.interest || 0,
       principal_collected: interestIncome?.principal || 0,
       storage_fees: interestIncome?.storage || 0,
       penalty_fees: interestIncome?.penalty || 0,
       auction_revenue: auctionRevenue?.total || 0,
-      // total_revenue = interest + storage + penalty + auction_revenue
     };
   }
 
@@ -525,10 +528,157 @@ class ReportService {
   }
 
   /**
-   * Recent activities (last N events from various collections).
+   * Loan conversion rate over time: percentage of submitted applications that become loans.
+   */
+  async _getLoanConversionRate(start, end) {
+    // Get monthly submitted applications and monthly created loans (disbursed)
+    const monthlySubmitted = await LoanApplication.aggregate([
+      {
+        $match: {
+          created_at: { $gte: start, $lte: end },
+          status: { $in: ["submitted", "approved"] },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$created_at" },
+            month: { $month: "$created_at" },
+          },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1 } },
+    ]);
+
+    const monthlyLoans = await Loan.aggregate([
+      {
+        $match: {
+          created_at: { $gte: start, $lte: end },
+          status: { $in: ["active", "redeemed", "overdue"] }, // loans that were successfully created
+        },
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$created_at" },
+            month: { $month: "$created_at" },
+          },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1 } },
+    ]);
+
+    // Build arrays
+    const months = [];
+    const submittedData = [];
+    const loanData = [];
+    const rateData = [];
+
+    const allMonths = new Set();
+    monthlySubmitted.forEach((m) => allMonths.add(`${m._id.year}-${m._id.month}`));
+    monthlyLoans.forEach((m) => allMonths.add(`${m._id.year}-${m._id.month}`));
+    const sortedMonths = Array.from(allMonths).sort();
+
+    for (const ym of sortedMonths) {
+      const [year, month] = ym.split('-').map(Number);
+      months.push(`${year}-${month.toString().padStart(2, '0')}`);
+      const sub = monthlySubmitted.find(m => m._id.year === year && m._id.month === month)?.count || 0;
+      const loan = monthlyLoans.find(m => m._id.year === year && m._id.month === month)?.count || 0;
+      submittedData.push(sub);
+      loanData.push(loan);
+      rateData.push(sub > 0 ? Math.round((loan / sub) * 100) : 0);
+    }
+
+    return {
+      labels: months,
+      datasets: [
+        { label: "Submitted Applications", data: submittedData },
+        { label: "Loans Created", data: loanData },
+        { label: "Conversion Rate (%)", data: rateData, yAxisID: 'percentage' },
+      ],
+    };
+  }
+
+  /**
+   * Bid win ratio: total bids vs winning bids per month.
+   */
+  async _getBidWinRatio(start, end) {
+    // Aggregate bids per month
+    const monthlyBids = await Bid.aggregate([
+      {
+        $match: {
+          placed_at: { $gte: start, $lte: end },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$placed_at" },
+            month: { $month: "$placed_at" },
+          },
+          total_bids: { $sum: 1 },
+        },
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1 } },
+    ]);
+
+    // Winning bids: we need to know which bids won. Winner is stored in Auction.winner_user and winning_bid_amount.
+    // We can get from auctions that ended in the period and have a winner.
+    const monthlyWins = await Auction.aggregate([
+      {
+        $match: {
+          ends_at: { $gte: start, $lte: end },
+          winner_user: { $exists: true, $ne: null },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$ends_at" },
+            month: { $month: "$ends_at" },
+          },
+          winning_bids: { $sum: 1 },
+        },
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1 } },
+    ]);
+
+    const months = [];
+    const bidsData = [];
+    const winsData = [];
+    const ratioData = [];
+
+    const allMonths = new Set();
+    monthlyBids.forEach((m) => allMonths.add(`${m._id.year}-${m._id.month}`));
+    monthlyWins.forEach((m) => allMonths.add(`${m._id.year}-${m._id.month}`));
+    const sortedMonths = Array.from(allMonths).sort();
+
+    for (const ym of sortedMonths) {
+      const [year, month] = ym.split('-').map(Number);
+      months.push(`${year}-${month.toString().padStart(2, '0')}`);
+      const bids = monthlyBids.find(m => m._id.year === year && m._id.month === month)?.total_bids || 0;
+      const wins = monthlyWins.find(m => m._id.year === year && m._id.month === month)?.winning_bids || 0;
+      bidsData.push(bids);
+      winsData.push(wins);
+      ratioData.push(bids > 0 ? Math.round((wins / bids) * 100) : 0);
+    }
+
+    return {
+      labels: months,
+      datasets: [
+        { label: "Total Bids", data: bidsData },
+        { label: "Winning Bids", data: winsData },
+        { label: "Win Ratio (%)", data: ratioData, yAxisID: 'percentage' },
+      ],
+    };
+  }
+
+  /**
+   * Recent activities (last N events from various collections) with populated fields.
    */
   async _getRecentActivities(limit = 10) {
-    // Combine recent documents from multiple collections with a common structure.
     const activities = [];
 
     // Recent users
@@ -543,14 +693,15 @@ class ReportService {
         description: `${u.first_name} ${u.last_name} (${u.roles.join(", ")}) registered`,
         timestamp: u.created_at,
         user: u._id,
+        details: { name: `${u.first_name} ${u.last_name}`, email: u.email, roles: u.roles },
       });
     });
 
-    // Recent loan applications
+    // Recent loan applications with populated customer
     const recentApps = await LoanApplication.find()
       .sort({ created_at: -1 })
       .limit(5)
-      .populate("customer_user", "first_name last_name")
+      .populate("customer_user", "first_name last_name email phone")
       .lean();
     recentApps.forEach((a) => {
       activities.push({
@@ -558,14 +709,21 @@ class ReportService {
         description: `${a.customer_user?.first_name} ${a.customer_user?.last_name} applied for loan ${a.application_no}`,
         timestamp: a.created_at,
         application: a._id,
+        details: {
+          application_no: a.application_no,
+          amount: a.requested_loan_amount,
+          status: a.status,
+          customer: a.customer_user,
+        },
       });
     });
 
-    // Recent loans
+    // Recent loans with populated customer and asset
     const recentLoans = await Loan.find()
       .sort({ created_at: -1 })
       .limit(5)
-      .populate("customer_user", "first_name last_name")
+      .populate("customer_user", "first_name last_name email")
+      .populate("asset", "title category asset_no")
       .lean();
     recentLoans.forEach((l) => {
       activities.push({
@@ -573,14 +731,25 @@ class ReportService {
         description: `Loan ${l.loan_no} created for ${l.customer_user?.first_name} ${l.customer_user?.last_name}`,
         timestamp: l.created_at,
         loan: l._id,
+        details: {
+          loan_no: l.loan_no,
+          amount: l.principal_amount,
+          status: l.status,
+          asset: l.asset,
+          customer: l.customer_user,
+        },
       });
     });
 
-    // Recent payments
+    // Recent payments with populated loan
     const recentPayments = await Payment.find({ payment_status: "paid" })
       .sort({ paid_at: -1 })
       .limit(5)
-      .populate("loan", "loan_no")
+      .populate({
+        path: "loan",
+        select: "loan_no customer_user",
+        populate: { path: "customer_user", select: "first_name last_name" },
+      })
       .lean();
     recentPayments.forEach((p) => {
       activities.push({
@@ -588,20 +757,59 @@ class ReportService {
         description: `Payment of $${p.amount} received for loan ${p.loan?.loan_no}`,
         timestamp: p.paid_at,
         payment: p._id,
+        details: {
+          amount: p.amount,
+          method: p.method,
+          loan_no: p.loan?.loan_no,
+          customer: p.loan?.customer_user,
+        },
       });
     });
 
-    // Recent auctions
+    // Recent auctions with populated asset
     const recentAuctions = await Auction.find()
       .sort({ created_at: -1 })
       .limit(5)
+      .populate("asset", "title category asset_no")
+      .populate("created_by", "first_name last_name")
       .lean();
     recentAuctions.forEach((a) => {
       activities.push({
         type: "auction_created",
-        description: `Auction ${a.auction_no} created for asset ${a.asset}`,
+        description: `Auction ${a.auction_no} created for asset ${a.asset?.title}`,
         timestamp: a.created_at,
         auction: a._id,
+        details: {
+          auction_no: a.auction_no,
+          asset: a.asset,
+          starts_at: a.starts_at,
+          ends_at: a.ends_at,
+          created_by: a.created_by,
+        },
+      });
+    });
+
+    // Recent support tickets
+    const recentTickets = await SupportTicket.find()
+      .sort({ created_at: -1 })
+      .limit(5)
+      .populate("customer_user", "first_name last_name email")
+      .populate("assigned_to", "first_name last_name")
+      .lean();
+    recentTickets.forEach((t) => {
+      activities.push({
+        type: "support_ticket",
+        description: `Ticket ${t.ticket_no}: ${t.subject}`,
+        timestamp: t.created_at,
+        ticket: t._id,
+        details: {
+          ticket_no: t.ticket_no,
+          subject: t.subject,
+          status: t.status,
+          priority: t.priority,
+          customer: t.customer_user,
+          assigned_to: t.assigned_to,
+        },
       });
     });
 
