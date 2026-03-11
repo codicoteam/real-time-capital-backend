@@ -2800,6 +2800,7 @@ const options = {
     "./routers/asset_valuation_router.js",
     "./routers/home_router.js",
     "./routers/customer_dashboard_router.js",
+    "./routers/report_router.js",
   ],
 };
 const specs = swaggerJsdoc(options);
