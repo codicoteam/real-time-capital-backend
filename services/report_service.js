@@ -42,6 +42,9 @@ class ReportService {
         supportTickets,
         loanConversion,
         bidWinRatio,
+        debtorSummary,
+        loanTermStats,
+        attachmentStats,
         recentActivities,
       ] = await Promise.all([
         this._getSummary(),
@@ -55,6 +58,9 @@ class ReportService {
         this._getSupportTicketsOverTime(start, end),
         this._getLoanConversionRate(start, end),
         this._getBidWinRatio(start, end),
+        this._getDebtorSummary(),
+        this._getLoanTermStats(),
+        this._getAttachmentStats(),
         this._getRecentActivities(10), // last 10 activities with populated fields
       ]);
 
@@ -67,13 +73,16 @@ class ReportService {
             loanBook,
             loanApplications,
             payments,
-            auctions: auctions.trend,      // main time-series chart
+            auctions: auctions.trend, // main time-series chart
             auctionSummary: auctions.summary,
             assetDistribution,
             profitLoss,
             supportTickets,
-            loanConversion,                 // new chart
-            bidWinRatio,                     // new chart
+            loanConversion, // loan conversion rate
+            bidWinRatio, // bid win ratio
+            debtorSummary, // debtor stats
+            loanTermStats, // loan term stats
+            attachmentStats, // attachment stats
           },
           tables: {
             recentActivities,
@@ -109,22 +118,44 @@ class ReportService {
       totalAuctions,
       totalLiveAuctions,
       totalTicketsOpen,
+      totalDebtorRecords,
+      totalMatchedDebtors,
+      totalAttachments,
     ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ roles: "customer" }),
-      User.countDocuments({ roles: { $in: ["super_admin_vendor", "admin_pawn_limited", "management", "loan_officer_approval", "loan_officer_processor", "call_centre_support"] } }),
+      User.countDocuments({
+        roles: {
+          $in: [
+            "super_admin_vendor",
+            "admin_pawn_limited",
+            "management",
+            "loan_officer_approval",
+            "loan_officer_processor",
+            "call_centre_support",
+          ],
+        },
+      }),
       Loan.countDocuments(),
       Loan.countDocuments({ status: "active" }),
       Loan.countDocuments({ status: "overdue" }),
       Asset.countDocuments(),
       Asset.countDocuments({ status: "pawned" }),
       Payment.countDocuments({ payment_status: "paid" }),
-      Payment.aggregate([{ $match: { payment_status: "paid" } }, { $group: { _id: null, total: { $sum: "$amount" } } }]),
+      Payment.aggregate([
+        { $match: { payment_status: "paid" } },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
       LoanApplication.countDocuments(),
       LoanApplication.countDocuments({ status: "submitted" }),
       Auction.countDocuments(),
       Auction.countDocuments({ status: "live" }),
-      SupportTicket.countDocuments({ status: { $in: ["open", "in_progress"] } }),
+      SupportTicket.countDocuments({
+        status: { $in: ["open", "in_progress"] },
+      }),
+      DebtorRecord.countDocuments(),
+      DebtorRecord.countDocuments({ matched_user: { $ne: null } }),
+      Attachment.countDocuments(),
     ]);
 
     return {
@@ -143,6 +174,9 @@ class ReportService {
       total_auctions: totalAuctions,
       total_live_auctions: totalLiveAuctions,
       total_open_tickets: totalTicketsOpen,
+      total_debtor_records: totalDebtorRecords,
+      total_matched_debtors: totalMatchedDebtors,
+      total_attachments: totalAttachments,
     };
   }
 
@@ -162,17 +196,34 @@ class ReportService {
             { $match: { roles: "customer" } },
             {
               $group: {
-                _id: { $dateToString: { format: "%Y-%m-%d", date: "$created_at" } },
+                _id: {
+                  $dateToString: { format: "%Y-%m-%d", date: "$created_at" },
+                },
                 count: { $sum: 1 },
               },
             },
             { $sort: { _id: 1 } },
           ],
           staff: [
-            { $match: { roles: { $in: ["super_admin_vendor", "admin_pawn_limited", "management", "loan_officer_approval", "loan_officer_processor", "call_centre_support"] } } },
+            {
+              $match: {
+                roles: {
+                  $in: [
+                    "super_admin_vendor",
+                    "admin_pawn_limited",
+                    "management",
+                    "loan_officer_approval",
+                    "loan_officer_processor",
+                    "call_centre_support",
+                  ],
+                },
+              },
+            },
             {
               $group: {
-                _id: { $dateToString: { format: "%Y-%m-%d", date: "$created_at" } },
+                _id: {
+                  $dateToString: { format: "%Y-%m-%d", date: "$created_at" },
+                },
                 count: { $sum: 1 },
               },
             },
@@ -228,9 +279,15 @@ class ReportService {
           _id: null,
           total_disbursed: { $sum: "$principal_amount" },
           total_outstanding: { $sum: "$current_balance" },
-          active_loans: { $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] } },
-          overdue_loans: { $sum: { $cond: [{ $eq: ["$status", "overdue"] }, 1, 0] } },
-          redeemed_loans: { $sum: { $cond: [{ $eq: ["$status", "redeemed"] }, 1, 0] } },
+          active_loans: {
+            $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] },
+          },
+          overdue_loans: {
+            $sum: { $cond: [{ $eq: ["$status", "overdue"] }, 1, 0] },
+          },
+          redeemed_loans: {
+            $sum: { $cond: [{ $eq: ["$status", "redeemed"] }, 1, 0] },
+          },
         },
       },
     ]);
@@ -257,7 +314,9 @@ class ReportService {
       {
         $group: {
           _id: {
-            date: { $dateToString: { format: "%Y-%m-%d", date: "$created_at" } },
+            date: {
+              $dateToString: { format: "%Y-%m-%d", date: "$created_at" },
+            },
             status: "$status",
           },
           count: { $sum: 1 },
@@ -269,7 +328,13 @@ class ReportService {
     const results = await LoanApplication.aggregate(pipeline);
 
     // Organize by status
-    const statuses = ["submitted", "approved", "rejected", "processing", "cancelled"];
+    const statuses = [
+      "submitted",
+      "approved",
+      "rejected",
+      "processing",
+      "cancelled",
+    ];
     const dataMap = {};
     const labels = [];
 
@@ -577,15 +642,22 @@ class ReportService {
     const rateData = [];
 
     const allMonths = new Set();
-    monthlySubmitted.forEach((m) => allMonths.add(`${m._id.year}-${m._id.month}`));
+    monthlySubmitted.forEach((m) =>
+      allMonths.add(`${m._id.year}-${m._id.month}`),
+    );
     monthlyLoans.forEach((m) => allMonths.add(`${m._id.year}-${m._id.month}`));
     const sortedMonths = Array.from(allMonths).sort();
 
     for (const ym of sortedMonths) {
-      const [year, month] = ym.split('-').map(Number);
-      months.push(`${year}-${month.toString().padStart(2, '0')}`);
-      const sub = monthlySubmitted.find(m => m._id.year === year && m._id.month === month)?.count || 0;
-      const loan = monthlyLoans.find(m => m._id.year === year && m._id.month === month)?.count || 0;
+      const [year, month] = ym.split("-").map(Number);
+      months.push(`${year}-${month.toString().padStart(2, "0")}`);
+      const sub =
+        monthlySubmitted.find(
+          (m) => m._id.year === year && m._id.month === month,
+        )?.count || 0;
+      const loan =
+        monthlyLoans.find((m) => m._id.year === year && m._id.month === month)
+          ?.count || 0;
       submittedData.push(sub);
       loanData.push(loan);
       rateData.push(sub > 0 ? Math.round((loan / sub) * 100) : 0);
@@ -596,7 +668,7 @@ class ReportService {
       datasets: [
         { label: "Submitted Applications", data: submittedData },
         { label: "Loans Created", data: loanData },
-        { label: "Conversion Rate (%)", data: rateData, yAxisID: 'percentage' },
+        { label: "Conversion Rate (%)", data: rateData, yAxisID: "percentage" },
       ],
     };
   }
@@ -656,10 +728,14 @@ class ReportService {
     const sortedMonths = Array.from(allMonths).sort();
 
     for (const ym of sortedMonths) {
-      const [year, month] = ym.split('-').map(Number);
-      months.push(`${year}-${month.toString().padStart(2, '0')}`);
-      const bids = monthlyBids.find(m => m._id.year === year && m._id.month === month)?.total_bids || 0;
-      const wins = monthlyWins.find(m => m._id.year === year && m._id.month === month)?.winning_bids || 0;
+      const [year, month] = ym.split("-").map(Number);
+      months.push(`${year}-${month.toString().padStart(2, "0")}`);
+      const bids =
+        monthlyBids.find((m) => m._id.year === year && m._id.month === month)
+          ?.total_bids || 0;
+      const wins =
+        monthlyWins.find((m) => m._id.year === year && m._id.month === month)
+          ?.winning_bids || 0;
       bidsData.push(bids);
       winsData.push(wins);
       ratioData.push(bids > 0 ? Math.round((wins / bids) * 100) : 0);
@@ -670,8 +746,123 @@ class ReportService {
       datasets: [
         { label: "Total Bids", data: bidsData },
         { label: "Winning Bids", data: winsData },
-        { label: "Win Ratio (%)", data: ratioData, yAxisID: 'percentage' },
+        { label: "Win Ratio (%)", data: ratioData, yAxisID: "percentage" },
       ],
+    };
+  }
+
+  /**
+   * Debtor summary: total records, matched vs unmatched, total due amounts, etc.
+   */
+  async _getDebtorSummary() {
+    const [totalDebtors, matchedDebtors, totalAmountDue] = await Promise.all([
+      DebtorRecord.countDocuments(),
+      DebtorRecord.countDocuments({ matched_user: { $ne: null } }),
+      DebtorRecord.aggregate([
+        { $group: { _id: null, total_due: { $sum: "$total_due" } } },
+      ]),
+    ]);
+
+    // Also get top debtors by amount due
+    const topDebtors = await DebtorRecord.find()
+      .sort({ total_due: -1 })
+      .limit(5)
+      .select("client_name total_due asset_no reg_or_serial_no matched_user")
+      .populate("matched_user", "first_name last_name email")
+      .lean();
+
+    return {
+      total_records: totalDebtors,
+      matched_records: matchedDebtors,
+      unmatched_records: totalDebtors - matchedDebtors,
+      total_amount_due: totalAmountDue[0]?.total_due || 0,
+      top_debtors: topDebtors.map((d) => ({
+        client_name: d.client_name,
+        total_due: d.total_due,
+        asset_no: d.asset_no,
+        reg_or_serial_no: d.reg_or_serial_no,
+        matched_user: d.matched_user
+          ? `${d.matched_user.first_name} ${d.matched_user.last_name}`
+          : null,
+      })),
+    };
+  }
+
+  /**
+   * Loan term statistics: average interest rates, renewals, etc.
+   */
+  async _getLoanTermStats() {
+    const [totalTerms, avgInterestRate, renewalsByType] = await Promise.all([
+      LoanTerm.countDocuments(),
+      LoanTerm.aggregate([
+        {
+          $group: {
+            _id: null,
+            avg_interest: { $avg: "$interest_rate_percent" },
+          },
+        },
+      ]),
+      LoanTerm.aggregate([
+        { $group: { _id: "$renewal_type", count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    // Distribution of terms per loan
+    const termsPerLoan = await LoanTerm.aggregate([
+      { $group: { _id: "$loan", count: { $sum: 1 } } },
+      { $group: { _id: "$count", count: { $sum: 1 } } },
+      { $sort: { _id: 1 } },
+    ]);
+
+    return {
+      total_terms: totalTerms,
+      average_interest_rate: avgInterestRate[0]?.avg_interest || 0,
+      renewals_by_type: renewalsByType.reduce((acc, r) => {
+        acc[r._id] = r.count;
+        return acc;
+      }, {}),
+      terms_per_loan_distribution: termsPerLoan.map((t) => ({
+        terms: t._id,
+        count: t.count,
+      })),
+    };
+  }
+
+  /**
+   * Attachment statistics: counts by category, entity type, etc.
+   */
+  async _getAttachmentStats() {
+    const [totalAttachments, byCategory, byEntityType] = await Promise.all([
+      Attachment.countDocuments(),
+      Attachment.aggregate([
+        { $group: { _id: "$category", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+      Attachment.aggregate([
+        { $group: { _id: "$entity_type", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+    ]);
+
+    // Also get storage distribution (gridfs, s3, local, url)
+    const byStorage = await Attachment.aggregate([
+      { $group: { _id: "$storage", count: { $sum: 1 } } },
+    ]);
+
+    return {
+      total_attachments: totalAttachments,
+      by_category: byCategory.reduce((acc, c) => {
+        acc[c._id] = c.count;
+        return acc;
+      }, {}),
+      by_entity_type: byEntityType.reduce((acc, e) => {
+        acc[e._id] = e.count;
+        return acc;
+      }, {}),
+      by_storage: byStorage.reduce((acc, s) => {
+        acc[s._id] = s.count;
+        return acc;
+      }, {}),
     };
   }
 
@@ -693,7 +884,11 @@ class ReportService {
         description: `${u.first_name} ${u.last_name} (${u.roles.join(", ")}) registered`,
         timestamp: u.created_at,
         user: u._id,
-        details: { name: `${u.first_name} ${u.last_name}`, email: u.email, roles: u.roles },
+        details: {
+          name: `${u.first_name} ${u.last_name}`,
+          email: u.email,
+          roles: u.roles,
+        },
       });
     });
 
@@ -741,7 +936,7 @@ class ReportService {
       });
     });
 
-    // Recent payments with populated loan
+    // Recent payments with populated loan and customer
     const recentPayments = await Payment.find({ payment_status: "paid" })
       .sort({ paid_at: -1 })
       .limit(5)
@@ -766,7 +961,7 @@ class ReportService {
       });
     });
 
-    // Recent auctions with populated asset
+    // Recent auctions with populated asset and creator
     const recentAuctions = await Auction.find()
       .sort({ created_at: -1 })
       .limit(5)
@@ -789,7 +984,7 @@ class ReportService {
       });
     });
 
-    // Recent support tickets
+    // Recent support tickets with populated customer and assignee
     const recentTickets = await SupportTicket.find()
       .sort({ created_at: -1 })
       .limit(5)
@@ -809,6 +1004,53 @@ class ReportService {
           priority: t.priority,
           customer: t.customer_user,
           assigned_to: t.assigned_to,
+        },
+      });
+    });
+
+    // Recent debtor records
+    const recentDebtors = await DebtorRecord.find()
+      .sort({ created_at: -1 })
+      .limit(5)
+      .populate("matched_user", "first_name last_name email")
+      .lean();
+    recentDebtors.forEach((d) => {
+      activities.push({
+        type: "debtor_record",
+        description: `Debtor record for ${d.client_name} (${d.asset_no}) imported`,
+        timestamp: d.created_at,
+        debtor: d._id,
+        details: {
+          client_name: d.client_name,
+          asset_no: d.asset_no,
+          total_due: d.total_due,
+          matched_user: d.matched_user
+            ? `${d.matched_user.first_name} ${d.matched_user.last_name}`
+            : null,
+        },
+      });
+    });
+
+    // Recent attachments
+    const recentAttachments = await Attachment.find()
+      .sort({ created_at: -1 })
+      .limit(5)
+      .populate("owner_user", "first_name last_name")
+      .lean();
+    recentAttachments.forEach((a) => {
+      activities.push({
+        type: "attachment_uploaded",
+        description: `Attachment ${a.filename} (${a.category}) uploaded`,
+        timestamp: a.created_at,
+        attachment: a._id,
+        details: {
+          filename: a.filename,
+          category: a.category,
+          mime_type: a.mime_type,
+          entity_type: a.entity_type,
+          owner: a.owner_user
+            ? `${a.owner_user.first_name} ${a.owner_user.last_name}`
+            : null,
         },
       });
     });
