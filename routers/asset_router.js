@@ -57,7 +57,7 @@ router.use(authMiddleware);
  *         description: Asset number already exists
  */
 router.post("/", 
-  requireRoles('customer', 'loan_officer_processor', 'admin_pawn_limited'),
+  requireRoles('customer', 'loan_officer_processor', 'admin_pawn_limited', 'super_admin_vendor'),
   assetController.createAsset
 );
 
@@ -131,7 +131,7 @@ router.post("/",
  *         description: Unauthorized
  */
 router.get("/", 
-  requireRoles('customer', 'loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management'),
+  requireRoles('customer', 'loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management', 'super_admin_vendor'),
   assetController.getAssets
 );
 
@@ -176,7 +176,7 @@ router.get("/",
  *         description: Unauthorized
  */
 router.get("/all", 
-  requireRoles('admin_pawn_limited', 'management'),
+  requireRoles('admin_pawn_limited', 'management', 'super_admin_vendor'),
   assetController.getAllAssets
 );
 
@@ -214,7 +214,7 @@ router.get("/all",
  *         description: Unauthorized
  */
 router.get("/search", 
-  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management'),
+  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management', 'super_admin_vendor'),
   assetController.searchAssets
 );
 
@@ -242,7 +242,7 @@ router.get("/search",
  *         description: Unauthorized
  */
 router.get("/:id", 
-  requireRoles('customer', 'loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management'),
+  requireRoles('customer', 'loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management', 'super_admin_vendor'),
   assetController.getAsset
 );
 
@@ -286,7 +286,7 @@ router.get("/:id",
  *         description: Unauthorized
  */
 router.put("/:id", 
-  requireRoles('loan_officer_processor', 'admin_pawn_limited'),
+  requireRoles('loan_officer_processor', 'admin_pawn_limited', 'super_admin_vendor'),
   assetController.updateAsset
 );
 
@@ -330,7 +330,7 @@ router.put("/:id",
  *         description: Unauthorized
  */
 router.put("/:id/valuation", 
-  requireRoles('loan_officer_approval', 'admin_pawn_limited'),
+  requireRoles('loan_officer_approval', 'admin_pawn_limited', 'super_admin_vendor'),
   assetController.updateValuation
 );
 
@@ -373,7 +373,7 @@ router.put("/:id/valuation",
  *         description: Unauthorized
  */
 router.put("/:id/status", 
-  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited'),
+  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management', 'super_admin_vendor'),
   assetController.updateStatus
 );
 
@@ -402,7 +402,7 @@ router.put("/:id/status",
  *         description: Unauthorized
  */
 router.delete("/:id", 
-  requireRoles('admin_pawn_limited'),
+  requireRoles('admin_pawn_limited', 'super_admin_vendor'),
   assetController.deleteAsset
 );
 
@@ -439,7 +439,7 @@ router.delete("/:id",
  *         description: Unauthorized
  */
 router.get("/owner/:ownerId", 
-  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management'),
+  requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management', 'super_admin_vendor'),
   assetController.getAssetsByOwner
 );
 
@@ -458,7 +458,7 @@ router.get("/owner/:ownerId",
  *         description: Unauthorized
  */
 router.get("/stats", 
-  requireRoles('admin_pawn_limited', 'management'),
+  requireRoles('admin_pawn_limited', 'management', 'super_admin_vendor'),
   assetController.getAssetStats
 );
 

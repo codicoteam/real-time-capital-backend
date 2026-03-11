@@ -32,6 +32,7 @@
     "socket.io": "^4.8.3",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
+    "twilio": "^5.12.2",
     "uuid": "^13.0.0"
   }
 }

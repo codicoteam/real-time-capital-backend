@@ -435,7 +435,7 @@ router.put(
 router.post(
   "/:id/submit",
   authMiddleware,
-  requireRoles("customer"),
+  requireRoles("customer", "loan_officer_processor", "loan_officer_approval", "super_admin_vendor", "admin_pawn_limited", "management"),
   loanApplicationController.submitLoanApplication,
 );
 

@@ -215,7 +215,7 @@ router.get(
  */
 router.get(
   "/all",
-  requireRoles("admin_pawn_limited", "management"),
+  requireRoles("admin_pawn_limited", "management", "super_admin_vendor"),
   loanController.getAllLoans,
 );
 
@@ -464,7 +464,7 @@ router.get(
  */
 router.delete(
   "/:id",
-  requireRoles("admin_pawn_limited"),
+  requireRoles("admin_pawn_limited", "super_admin_vendor"),
   loanController.deleteLoan,
 );
 
@@ -611,6 +611,7 @@ router.get(
     "loan_officer_processor",
     "loan_officer_approval",
     "admin_pawn_limited",
+    "super_admin_vendor",
     "management",
   ),
   loanController.getLoanApplication,

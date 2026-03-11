@@ -2,6 +2,7 @@
 const User = require("../models/user.model");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const twilio = require("twilio");
 const {
   sendVerificationEmail,
   sendAdminCreatedAccountEmail,
@@ -11,6 +12,44 @@ const {
 } = require("../utils/emails_util");
 
 class UserService {
+  constructor() {
+    // Initialize Twilio client if credentials exist
+    if (
+      process.env.TWILIO_ACCOUNT_SID &&
+      process.env.TWILIO_AUTH_TOKEN &&
+      process.env.TWILIO_PHONE_NUMBER
+    ) {
+      this.twilioClient = twilio(
+        process.env.TWILIO_ACCOUNT_SID,
+        process.env.TWILIO_AUTH_TOKEN,
+      );
+      this.twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
+    } else {
+      console.warn("Twilio credentials missing – SMS will not be sent.");
+    }
+  }
+
+  /**
+   * Send SMS via Twilio
+   */
+  async sendSms(to, message) {
+    if (!this.twilioClient) {
+      console.log("SMS not sent – Twilio not configured");
+      return;
+    }
+    try {
+      await this.twilioClient.messages.create({
+        body: message,
+        from: this.twilioPhoneNumber,
+        to,
+      });
+      console.log(`SMS sent to ${to}`);
+    } catch (error) {
+      console.error("SMS sending failed:", error);
+      // Don't throw – we don't want to break the flow if SMS fails
+    }
+  }
+
   /**
    * Generate JWT token for user
    */
@@ -23,7 +62,7 @@ class UserService {
         roles: user.roles,
       },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
+      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" },
     );
   }
 
@@ -88,7 +127,7 @@ class UserService {
       user.status = "pending";
       user.email_verification_otp = generateOTP();
       user.email_verification_expires_at = new Date(
-        Date.now() + 15 * 60 * 1000
+        Date.now() + 15 * 60 * 1000,
       ); // 15 minutes
     } else if (createdByAdmin && !isCustomer && !isSuperAdmin) {
       // For admin-created staff: set active immediately
@@ -103,13 +142,19 @@ class UserService {
     // Save user
     await user.save();
 
-    // Send appropriate emails
+    // Send appropriate emails and SMS
     if (isCustomer && !createdByAdmin) {
+      // Email
       await sendVerificationEmail({
         to: email,
         fullName: user.full_name,
         otp: user.email_verification_otp,
       });
+      // SMS (if phone exists)
+      if (user.phone) {
+        const smsMessage = `Your Real Time Capital verification code is: ${user.email_verification_otp}. It expires in 15 minutes.`;
+        await this.sendSms(user.phone, smsMessage);
+      }
     } else if (createdByAdmin && !isCustomer && !isSuperAdmin) {
       await sendAdminCreatedAccountEmail({
         to: email,
@@ -193,6 +238,12 @@ class UserService {
       otp: user.email_verification_otp,
     });
 
+    // Send SMS if phone exists
+    if (user.phone) {
+      const smsMessage = `Your new Real Time Capital verification code is: ${user.email_verification_otp}. It expires in 15 minutes.`;
+      await this.sendSms(user.phone, smsMessage);
+    }
+
     return user;
   }
 
@@ -217,7 +268,7 @@ class UserService {
     // Verify password
     const isValidPassword = await this.comparePassword(
       password,
-      user.password_hash
+      user.password_hash,
     );
     if (!isValidPassword) {
       throw { status: 401, message: "Invalid credentials" };
@@ -257,7 +308,13 @@ class UserService {
       otp: user.reset_password_otp,
     });
 
-    return { message: "OTP sent to email" };
+    // Send SMS if phone exists
+    if (user.phone) {
+      const smsMessage = `Your Real Time Capital password reset code is: ${user.reset_password_otp}. It expires in 15 minutes.`;
+      await this.sendSms(user.phone, smsMessage);
+    }
+
+    return { message: "OTP sent to email and SMS (if phone number provided)" };
   }
 
   /**
@@ -364,6 +421,12 @@ class UserService {
       fullName: user.full_name,
       otp: user.delete_account_otp,
     });
+
+    // Optionally also send SMS (uncomment if needed)
+    // if (user.phone) {
+    //   const smsMessage = `Your Real Time Capital account deletion code is: ${user.delete_account_otp}. It expires in 15 minutes.`;
+    //   await this.sendSms(user.phone, smsMessage);
+    // }
 
     return { message: "Account deletion OTP sent to email" };
   }
@@ -493,7 +556,7 @@ class UserService {
     }
 
     user.documents = user.documents.filter(
-      (doc) => doc._id.toString() !== documentId
+      (doc) => doc._id.toString() !== documentId,
     );
 
     await user.save();

@@ -3,8 +3,47 @@ const User = require("../models/user.model");
 const DebtorRecord = require("../models/debtorRecord.model");
 const mongoose = require("mongoose");
 const emailService = require("../utils/emails_util");
+const twilio = require("twilio");
 
 class LoanApplicationService {
+  constructor() {
+    // Initialize Twilio client if credentials exist
+    if (
+      process.env.TWILIO_ACCOUNT_SID &&
+      process.env.TWILIO_AUTH_TOKEN &&
+      process.env.TWILIO_PHONE_NUMBER
+    ) {
+      this.twilioClient = twilio(
+        process.env.TWILIO_ACCOUNT_SID,
+        process.env.TWILIO_AUTH_TOKEN,
+      );
+      this.twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
+    } else {
+      console.warn("Twilio credentials missing – SMS will not be sent.");
+    }
+  }
+
+  /**
+   * Send SMS via Twilio
+   */
+  async sendSms(to, message) {
+    if (!this.twilioClient) {
+      console.log("SMS not sent – Twilio not configured");
+      return;
+    }
+    try {
+      await this.twilioClient.messages.create({
+        body: message,
+        from: this.twilioPhoneNumber,
+        to,
+      });
+      console.log(`SMS sent to ${to}`);
+    } catch (error) {
+      console.error("SMS sending failed:", error);
+      // Don't throw – we don't want to break the flow if SMS fails
+    }
+  }
+
   /**
    * Generate unique application number
    */
@@ -99,6 +138,7 @@ class LoanApplicationService {
       throw new Error(`Failed to create loan application: ${error.message}`);
     }
   }
+
   /**
    * Submit a draft loan application
    */
@@ -389,10 +429,10 @@ class LoanApplicationService {
 
         await application.save({ session });
 
-        // Get customer details for email
+        // Get customer details for notifications (include phone for SMS)
         await application.populate(
           "customer_user",
-          "first_name last_name email",
+          "first_name last_name email phone",
         );
 
         await session.commitTransaction();
@@ -412,6 +452,12 @@ class LoanApplicationService {
           });
         } catch (emailError) {
           console.error("Failed to send status update email:", emailError);
+        }
+
+        // If status is approved, also send an SMS notification
+        if (status === "approved" && application.customer_user.phone) {
+          const smsMessage = `Your loan application (${application.application_no}) has been APPROVED. Please contact our loan department for further steps.`;
+          await this.sendSms(application.customer_user.phone, smsMessage);
         }
 
         return {
@@ -573,6 +619,7 @@ class LoanApplicationService {
       throw new Error(`Failed to update loan application: ${error.message}`);
     }
   }
+
   /**
    * Add attachment to loan application
    */
