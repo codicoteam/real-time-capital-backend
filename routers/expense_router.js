@@ -378,6 +378,7 @@ router.put(
 router.put(
   "/:id/status",
   requireRoles(
+    "admin_pawn_limited",
     "loan_officer_approval",
     "management",
     "super_admin_vendor"

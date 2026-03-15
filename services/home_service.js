@@ -7,6 +7,7 @@ const User = require("../models/user.model");
 const Asset = require("../models/asset.model");
 const Payment = require("../models/payment.model");
 const SupportTicket = require("../models/supportTicket.model");
+const Expense = require("../models/expense.model");
 
 class HomeService {
   /**
@@ -33,7 +34,8 @@ class HomeService {
 
       // Find the first role the user has (according to priority)
       const userRoles = Array.isArray(user.roles) ? user.roles : [];
-      const primaryRole = rolePriority.find(role => userRoles.includes(role)) || "customer";
+      const primaryRole =
+        rolePriority.find((role) => userRoles.includes(role)) || "customer";
 
       // Dispatch to the appropriate role method
       switch (primaryRole) {
@@ -44,11 +46,11 @@ class HomeService {
         case "management":
           return await this._getManagementHomeData();
         case "loan_officer_approval":
-          return await this._getLoanOfficerApprovalHomeData(user._id);
+          return await this._getLoanOfficerApprovalHomeData();
         case "loan_officer_processor":
-          return await this._getLoanOfficerProcessorHomeData(user._id);
+          return await this._getLoanOfficerProcessorHomeData();
         case "call_centre_support":
-          return await this._getCallCentreHomeData(user._id);
+          return await this._getCallCentreHomeData();
         case "customer":
           return await this._getCustomerHomeData(user._id);
         default:
@@ -63,34 +65,31 @@ class HomeService {
   // ------------------- Private role-specific methods -------------------
 
   /**
-   * Customer home data (as previously defined)
+   * Customer home data
    */
   async _getCustomerHomeData(userId) {
-    // 1. Profile summary (minimal)
     const profile = await User.findById(userId)
       .select("first_name last_name profile_pic_url email phone")
       .lean();
 
     if (!profile) throw new Error("User not found");
 
-    // 2. Active auctions – latest 3 (instead of 5 to keep it light)
     const activeAuctions = await Auction.find({ status: "live" })
       .sort({ starts_at: -1 })
       .limit(3)
       .lean();
 
-    // 3. Latest bid by the customer
     const latestBid = await Bid.findOne({ bidder_user: userId })
       .sort({ placed_at: -1 })
       .lean();
 
-    // 4. Two most recent loan applications
-    const loanApplications = await LoanApplication.find({ customer_user: userId })
+    const loanApplications = await LoanApplication.find({
+      customer_user: userId,
+    })
       .sort({ created_at: -1 })
       .limit(2)
       .lean();
 
-    // 5. Two most recent loans
     const loans = await Loan.find({ customer_user: userId })
       .sort({ created_at: -1 })
       .limit(2)
@@ -119,48 +118,55 @@ class HomeService {
    * Super Admin / Vendor home data
    */
   async _getSuperAdminHomeData() {
-    // System-wide counts
     const [
       totalCustomers,
       totalLoans,
       totalPendingApplications,
       totalActiveAuctions,
       totalOpenTickets,
+      recentExpenses,
+      totalExpenseAmount,
     ] = await Promise.all([
       User.countDocuments({ roles: "customer" }),
       Loan.countDocuments(),
       LoanApplication.countDocuments({ status: "submitted" }),
       Auction.countDocuments({ status: "live" }),
       SupportTicket.countDocuments({ status: "open" }),
+      Expense.find()
+        .sort({ expense_date: -1, created_at: -1 })
+        .limit(5)
+        .populate("created_by", "first_name last_name")
+        .populate("approved_by", "first_name last_name")
+        .lean(),
+      Expense.aggregate([
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
     ]);
 
-    // 3 pending loan applications
-    const pendingApplications = await LoanApplication.find({ status: "submitted" })
+    const pendingApplications = await LoanApplication.find({
+      status: "submitted",
+    })
       .sort({ created_at: -1 })
       .limit(3)
       .lean();
 
-    // 3 active auctions
     const activeAuctions = await Auction.find({ status: "live" })
       .sort({ starts_at: -1 })
       .limit(3)
       .lean();
 
-    // 3 recent payments
     const recentPayments = await Payment.find()
       .sort({ paid_at: -1 })
       .limit(3)
       .populate("loan", "loan_no")
       .lean();
 
-    // 3 recent user registrations (customers)
     const recentCustomers = await User.find({ roles: "customer" })
       .sort({ created_at: -1 })
       .limit(3)
       .select("first_name last_name email created_at")
       .lean();
 
-    // 3 open support tickets
     const openTickets = await SupportTicket.find({ status: "open" })
       .sort({ created_at: -1 })
       .limit(3)
@@ -176,6 +182,10 @@ class HomeService {
           active_auctions: totalActiveAuctions,
           open_tickets: totalOpenTickets,
         },
+        expenses: {
+          recent: recentExpenses,
+          total_amount: totalExpenseAmount[0]?.total || 0,
+        },
         pending_applications: pendingApplications,
         active_auctions: activeAuctions,
         recent_payments: recentPayments,
@@ -187,10 +197,9 @@ class HomeService {
   }
 
   /**
-   * Admin Pawn Limited (similar to super admin but maybe branch-scoped; for now same as super admin)
+   * Admin Pawn Limited (same as super admin for now)
    */
   async _getAdminHomeData() {
-    // For now, reuse super admin data; later you can add branch filtering.
     return this._getSuperAdminHomeData();
   }
 
@@ -198,32 +207,26 @@ class HomeService {
    * Management home data
    */
   async _getManagementHomeData() {
-    // Key metrics
-    const [
-      totalLoanBook,
-      activeLoans,
-      overdueLoans,
-      pendingApplications,
-    ] = await Promise.all([
-      Loan.aggregate([{ $group: { _id: null, total: { $sum: "$current_balance" } } }]),
-      Loan.countDocuments({ status: "active" }),
-      Loan.countDocuments({ status: "overdue" }),
-      LoanApplication.countDocuments({ status: "submitted" }),
-    ]);
+    const [totalLoanBook, activeLoans, overdueLoans, pendingApplications] =
+      await Promise.all([
+        Loan.aggregate([
+          { $group: { _id: null, total: { $sum: "$current_balance" } } },
+        ]),
+        Loan.countDocuments({ status: "active" }),
+        Loan.countDocuments({ status: "overdue" }),
+        LoanApplication.countDocuments({ status: "submitted" }),
+      ]);
 
-    // 3 recent loan applications
     const recentApplications = await LoanApplication.find()
       .sort({ created_at: -1 })
       .limit(3)
       .lean();
 
-    // 3 active auctions
     const activeAuctions = await Auction.find({ status: "live" })
       .sort({ starts_at: -1 })
       .limit(3)
       .lean();
 
-    // 3 recent payments
     const recentPayments = await Payment.find()
       .sort({ paid_at: -1 })
       .limit(3)
@@ -249,23 +252,25 @@ class HomeService {
 
   /**
    * Loan Officer Approval home data
-   * @param {string} userId - ID of the logged-in officer
+   * (No user filtering – sees all items)
    */
-  async _getLoanOfficerApprovalHomeData(userId) {
-    // Applications ready for approval – assuming after processor they become "processing"
-    const readyForApproval = await LoanApplication.find({ status: "processing" })
+  async _getLoanOfficerApprovalHomeData() {
+    const readyForApproval = await LoanApplication.find({
+      status: "processing",
+    })
       .sort({ created_at: -1 })
       .limit(3)
       .lean();
 
-    // 3 recent approved loans (by this officer or general)
-    const recentApprovedLoans = await Loan.find({ status: "active" }) // approved loans become active
+    const recentApprovedLoans = await Loan.find({ status: "active" })
       .sort({ created_at: -1 })
       .limit(3)
       .lean();
 
-    // 3 active loans needing attention (maybe soon due)
-    const activeLoans = await Loan.find({ status: "active", due_date: { $lte: new Date(Date.now() + 7*24*60*60*1000) } })
+    const activeLoans = await Loan.find({
+      status: "active",
+      due_date: { $lte: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
+    })
       .sort({ due_date: 1 })
       .limit(3)
       .lean();
@@ -283,22 +288,22 @@ class HomeService {
 
   /**
    * Loan Officer Processor home data
-   * @param {string} userId - ID of the logged-in officer
+   * (Now sees all pending applications, all processed loans, all assets pending valuation)
    */
-  async _getLoanOfficerProcessorHomeData(userId) {
-    // Pending applications (submitted)
-    const pendingApplications = await LoanApplication.find({ status: "submitted" })
+  async _getLoanOfficerProcessorHomeData() {
+    const pendingApplications = await LoanApplication.find({
+      status: "submitted",
+    })
       .sort({ created_at: -1 })
       .limit(3)
       .lean();
 
-    // Recent loans processed by this officer (if tracked via processed_by)
-    const recentProcessedLoans = await Loan.find({ processed_by: userId })
+    // Removed processed_by filter – now shows all processed loans
+    const recentProcessedLoans = await Loan.find()
       .sort({ created_at: -1 })
       .limit(3)
       .lean();
 
-    // Assets pending valuation (status 'valuating')
     const assetsPendingValuation = await Asset.find({ status: "valuating" })
       .sort({ created_at: -1 })
       .limit(3)
@@ -317,19 +322,15 @@ class HomeService {
 
   /**
    * Call Centre Support home data
-   * @param {string} userId - ID of the logged-in support staff
+   * (Now sees all open tickets, not just assigned)
    */
-  async _getCallCentreHomeData(userId) {
-    // Open tickets assigned to this user (or general open)
-    const myOpenTickets = await SupportTicket.find({
-      status: "open",
-      assigned_to: userId,
-    })
+  async _getCallCentreHomeData() {
+    // Now shows all open tickets, regardless of assignment
+    const openTickets = await SupportTicket.find({ status: "open" })
       .sort({ created_at: -1 })
       .limit(3)
       .lean();
 
-    // Unassigned open tickets (if any)
     const unassignedTickets = await SupportTicket.find({
       status: "open",
       assigned_to: { $exists: false },
@@ -338,13 +339,11 @@ class HomeService {
       .limit(3)
       .lean();
 
-    // Recent loan applications (maybe for follow-up)
     const recentApplications = await LoanApplication.find()
       .sort({ created_at: -1 })
       .limit(3)
       .lean();
 
-    // Active auctions (for customer inquiries)
     const activeAuctions = await Auction.find({ status: "live" })
       .sort({ starts_at: -1 })
       .limit(3)
@@ -353,7 +352,7 @@ class HomeService {
     return {
       success: true,
       data: {
-        my_open_tickets: myOpenTickets,
+        open_tickets: openTickets, // renamed from my_open_tickets
         unassigned_tickets: unassignedTickets,
         recent_applications: recentApplications,
         active_auctions: activeAuctions,
