@@ -29,6 +29,7 @@ const assetValuationRouter = require("./routers/asset_valuation_router");
 const homeRouter = require("./routers/home_router");
 const customerDashboardRouter = require("./routers/customer_dashboard_router");
 const reportRouter = require("./routers/report_router");
+const expenseRouter = require("./routers/expense_router");
 // Load env
 dotenv.config();
 
@@ -66,6 +67,7 @@ app.use("/api/v1/asset-valuations", assetValuationRouter);
 app.use("/api/v1/home", homeRouter);
 app.use("/api/v1/customer/dashboard", customerDashboardRouter);
 app.use("/api/v1/report", reportRouter);
+app.use("/api/v1/expenses", expenseRouter);
 
 // Global error handler (REST)
 app.use((err, req, res, next) => {
