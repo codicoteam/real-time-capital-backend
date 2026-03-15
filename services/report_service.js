@@ -10,6 +10,7 @@ const SupportTicket = require("../models/supportTicket.model");
 const DebtorRecord = require("../models/debtorRecord.model");
 const LoanTerm = require("../models/loanTerm.model");
 const Attachment = require("../models/attachment.model");
+const Expense = require("../models/expense.model"); // <-- ADDED
 
 class ReportService {
   /**
@@ -46,6 +47,10 @@ class ReportService {
         loanTermStats,
         attachmentStats,
         recentActivities,
+        // New expense data
+        expenseSummary,
+        expenseTrend,
+        expenseBreakdown,
       ] = await Promise.all([
         this._getSummary(),
         this._getUserGrowth(start, end),
@@ -62,12 +67,19 @@ class ReportService {
         this._getLoanTermStats(),
         this._getAttachmentStats(),
         this._getRecentActivities(10), // last 10 activities with populated fields
+        // New expense methods
+        this._getExpenseSummary(start, end),
+        this._getExpenseTrend(start, end),
+        this._getExpenseBreakdownByCategory(start, end),
       ]);
 
       return {
         success: true,
         data: {
-          summary,
+          summary: {
+            ...summary,
+            expenses: expenseSummary, // add expense summary to main summary
+          },
           charts: {
             userGrowth,
             loanBook,
@@ -83,6 +95,9 @@ class ReportService {
             debtorSummary, // debtor stats
             loanTermStats, // loan term stats
             attachmentStats, // attachment stats
+            // New expense charts
+            expenseTrend,
+            expenseBreakdown,
           },
           tables: {
             recentActivities,
@@ -121,6 +136,8 @@ class ReportService {
       totalDebtorRecords,
       totalMatchedDebtors,
       totalAttachments,
+      totalExpenses, // <-- NEW
+      totalApprovedExpensesAmount, // <-- NEW
     ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ roles: "customer" }),
@@ -156,6 +173,12 @@ class ReportService {
       DebtorRecord.countDocuments(),
       DebtorRecord.countDocuments({ matched_user: { $ne: null } }),
       Attachment.countDocuments(),
+      Expense.countDocuments(), // total expenses
+      Expense.aggregate([
+        // total approved amount
+        { $match: { status: "approved" } },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
     ]);
 
     return {
@@ -177,6 +200,123 @@ class ReportService {
       total_debtor_records: totalDebtorRecords,
       total_matched_debtors: totalMatchedDebtors,
       total_attachments: totalAttachments,
+      total_expenses: totalExpenses, // <-- NEW
+      total_approved_expenses_amount:
+        totalApprovedExpensesAmount[0]?.total || 0, // <-- NEW
+    };
+  }
+
+  /**
+   * Expense summary for the period: totals, counts by status, etc.
+   */
+  async _getExpenseSummary(start, end) {
+    const [totalAmount] = await Expense.aggregate([
+      {
+        $match: {
+          expense_date: { $gte: start, $lte: end },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const byStatus = await Expense.aggregate([
+      {
+        $match: {
+          expense_date: { $gte: start, $lte: end },
+        },
+      },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          total: { $sum: "$amount" },
+        },
+      },
+    ]);
+
+    // Approved amount separately for convenience
+    const approvedTotal =
+      byStatus.find((s) => s._id === "approved")?.total || 0;
+    const approvedCount =
+      byStatus.find((s) => s._id === "approved")?.count || 0;
+
+    return {
+      period_total: totalAmount?.total || 0,
+      period_count: totalAmount?.count || 0,
+      by_status: byStatus.reduce((acc, s) => {
+        acc[s._id] = { count: s.count, total: s.total };
+        return acc;
+      }, {}),
+      approved_total: approvedTotal,
+      approved_count: approvedCount,
+    };
+  }
+
+  /**
+   * Expense trend over time (daily approved expenses).
+   */
+  async _getExpenseTrend(start, end) {
+    const daily = await Expense.aggregate([
+      {
+        $match: {
+          expense_date: { $gte: start, $lte: end },
+          status: "approved",
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$expense_date" } },
+          total: { $sum: "$amount" },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    const labels = daily.map((d) => d._id);
+    const amountData = daily.map((d) => d.total);
+    const countData = daily.map((d) => d.count);
+
+    return {
+      labels,
+      datasets: [
+        { label: "Expense Amount (USD)", data: amountData },
+        { label: "Number of Expenses", data: countData },
+      ],
+    };
+  }
+
+  /**
+   * Expense breakdown by category (total amount per category).
+   */
+  async _getExpenseBreakdownByCategory(start, end) {
+    const byCategory = await Expense.aggregate([
+      {
+        $match: {
+          expense_date: { $gte: start, $lte: end },
+          status: "approved", // only approved expenses for financial reporting
+        },
+      },
+      {
+        $group: {
+          _id: "$category",
+          total: { $sum: "$amount" },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { total: -1 } },
+    ]);
+
+    return {
+      labels: byCategory.map((c) => c._id),
+      data: byCategory.map((c) => c.total),
+      counts: byCategory.map((c) => c.count),
     };
   }
 
@@ -1050,6 +1190,31 @@ class ReportService {
           entity_type: a.entity_type,
           owner: a.owner_user
             ? `${a.owner_user.first_name} ${a.owner_user.last_name}`
+            : null,
+        },
+      });
+    });
+
+    // Recent expenses (NEW) - optionally include in activities
+    const recentExpenses = await Expense.find()
+      .sort({ created_at: -1 })
+      .limit(5)
+      .populate("created_by", "first_name last_name")
+      .populate("approved_by", "first_name last_name")
+      .lean();
+    recentExpenses.forEach((e) => {
+      activities.push({
+        type: "expense_recorded",
+        description: `Expense ${e.expense_no} (${e.category}) - $${e.amount}`,
+        timestamp: e.created_at,
+        expense: e._id,
+        details: {
+          expense_no: e.expense_no,
+          category: e.category,
+          amount: e.amount,
+          status: e.status,
+          created_by: e.created_by
+            ? `${e.created_by.first_name} ${e.created_by.last_name}`
             : null,
         },
       });
