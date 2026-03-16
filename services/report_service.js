@@ -12,6 +12,42 @@ const LoanTerm = require("../models/loanTerm.model");
 const Attachment = require("../models/attachment.model");
 const Expense = require("../models/expense.model");
 
+// ---------------------------------------------------------------------------
+// Constants — centralised so they can be updated in one place
+// ---------------------------------------------------------------------------
+
+/** Number of days used when no date range is supplied by the caller. */
+const DEFAULT_DATE_RANGE_DAYS = 30;
+
+/** Maximum number of recent activity rows returned by default. */
+const DEFAULT_RECENT_ACTIVITIES_LIMIT = 10;
+
+/**
+ * Roles that are considered "staff" throughout the reporting service.
+ * Must stay in sync with the User model's roles enum.
+ */
+const STAFF_ROLES = [
+  "super_admin_vendor",
+  "admin_pawn_limited",
+  "management",
+  "loan_officer_approval",
+  "loan_officer_processor",
+  "call_centre_support",
+];
+
+/**
+ * Loan statuses that represent a fully-disbursed (live or settled) loan.
+ * Used consistently across ratio calculations and aggregations.
+ */
+const DISBURSED_LOAN_STATUSES = ["active", "redeemed", "overdue"];
+
+/**
+ * Loan application statuses that represent an application which entered the system.
+ */
+const ENTERED_APPLICATION_STATUSES = ["submitted", "approved", "processing"];
+
+// ---------------------------------------------------------------------------
+
 class ReportService {
   /**
    * Generate comprehensive system report with graphs and analytics.
@@ -22,15 +58,13 @@ class ReportService {
     try {
       const { startDate, endDate } = options;
 
-      // Default date range: last 30 days if not provided
       const now = new Date();
       const defaultStart = new Date(now);
-      defaultStart.setDate(now.getDate() - 30);
+      defaultStart.setDate(now.getDate() - DEFAULT_DATE_RANGE_DAYS);
 
       const start = startDate ? new Date(startDate) : defaultStart;
       const end = endDate ? new Date(endDate) : now;
 
-      // Run all aggregations in parallel
       const [
         summary,
         userGrowth,
@@ -50,7 +84,7 @@ class ReportService {
         expenseSummary,
         expenseTrend,
         expenseBreakdown,
-        businessRatios, // <-- NEW
+        businessRatios,
       ] = await Promise.all([
         this._getSummary(),
         this._getUserGrowth(start, end),
@@ -66,11 +100,11 @@ class ReportService {
         this._getDebtorSummary(),
         this._getLoanTermStats(),
         this._getAttachmentStats(),
-        this._getRecentActivities(10),
+        this._getRecentActivities(DEFAULT_RECENT_ACTIVITIES_LIMIT),
         this._getExpenseSummary(start, end),
         this._getExpenseTrend(start, end),
         this._getExpenseBreakdownByCategory(start, end),
-        this._getBusinessRatios(start, end), // <-- NEW
+        this._getBusinessRatios(start, end),
       ]);
 
       return {
@@ -101,7 +135,7 @@ class ReportService {
           tables: {
             recentActivities,
           },
-          ratios: businessRatios, // <-- NEW
+          ratios: businessRatios,
         },
         message: "System report generated successfully",
       };
@@ -113,9 +147,6 @@ class ReportService {
 
   // ------------------- Private aggregation methods -------------------
 
-  /**
-   * High-level system summary counts.
-   */
   async _getSummary() {
     const [
       totalUsers,
@@ -129,30 +160,29 @@ class ReportService {
       totalPayments,
       totalPaymentsAmount,
       totalApplications,
+      // "Pending Approvals" card = applications still awaiting a decision
       totalPendingApplications,
+      totalApprovedApplications,
       totalAuctions,
       totalLiveAuctions,
       totalTicketsOpen,
       totalDebtorRecords,
       totalMatchedDebtors,
       totalAttachments,
-      totalExpenses,
+      totalExpensesCount,
       totalApprovedExpensesAmount,
+      // FIX 1: "Total Bids" card — was never queried in _getSummary before
+      totalBids,
+      // FIX 2: Auction revenue for "Total Revenue" card
+      totalAuctionRevenue,
+      // FIX 3: Average loan principal for "Avg. Loan Amount" card
+      avgLoanAmountResult,
+      // For approval rate denominator
+      totalDecidedApps,
     ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ roles: "customer" }),
-      User.countDocuments({
-        roles: {
-          $in: [
-            "super_admin_vendor",
-            "admin_pawn_limited",
-            "management",
-            "loan_officer_approval",
-            "loan_officer_processor",
-            "call_centre_support",
-          ],
-        },
-      }),
+      User.countDocuments({ roles: { $in: STAFF_ROLES } }),
       Loan.countDocuments(),
       Loan.countDocuments({ status: "active" }),
       Loan.countDocuments({ status: "overdue" }),
@@ -165,6 +195,7 @@ class ReportService {
       ]),
       LoanApplication.countDocuments(),
       LoanApplication.countDocuments({ status: "submitted" }),
+      LoanApplication.countDocuments({ status: "approved" }),
       Auction.countDocuments(),
       Auction.countDocuments({ status: "live" }),
       SupportTicket.countDocuments({
@@ -178,7 +209,59 @@ class ReportService {
         { $match: { status: "approved" } },
         { $group: { _id: null, total: { $sum: "$amount" } } },
       ]),
+
+      // FIX 1: Count all bids across all time for the summary card
+      Bid.countDocuments(),
+
+      // FIX 2: Sum winning_bid_amount on all closed auctions that have a winner
+      Auction.aggregate([
+        {
+          $match: {
+            status: "closed",
+            winner_user: { $exists: true, $ne: null },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$winning_bid_amount" } } },
+      ]),
+
+      // FIX 3: $avg on all disbursed loans — returns 0 only when there are
+      // genuinely no loans, not because of a missing query
+      Loan.aggregate([
+        { $match: { status: { $in: DISBURSED_LOAN_STATUSES } } },
+        { $group: { _id: null, avg: { $avg: "$principal_amount" } } },
+      ]),
+
+      // Applications that have received a decision (for approval rate denominator)
+      LoanApplication.countDocuments({
+        status: { $in: ["approved", "rejected", "processing"] },
+      }),
     ]);
+
+    // --- Derived metrics (computed after all DB calls) ---
+
+    // FIX 4: Default rate = overdue / all disbursed loans (not total loan docs)
+    // Uses totalLoans (already fetched above) as the denominator since every
+    // Loan document represents a disbursed loan in this schema.
+    const disbursedCount = await Loan.countDocuments({
+      status: { $in: DISBURSED_LOAN_STATUSES },
+    });
+    const default_rate =
+      disbursedCount > 0
+        ? parseFloat(((totalOverdueLoans / disbursedCount) * 100).toFixed(2))
+        : 0;
+
+    // FIX 5: Approval rate = approved apps / apps that reached a decision
+    const approval_rate =
+      totalDecidedApps > 0
+        ? parseFloat(
+            ((totalApprovedApplications / totalDecidedApps) * 100).toFixed(2),
+          )
+        : 0;
+
+    // FIX 6: Total revenue = payment income + auction revenue
+    const payment_revenue = totalPaymentsAmount[0]?.total || 0;
+    const auction_revenue = totalAuctionRevenue[0]?.total || 0;
+    const total_revenue = payment_revenue + auction_revenue;
 
     return {
       total_users: totalUsers,
@@ -190,34 +273,41 @@ class ReportService {
       total_assets: totalAssets,
       total_pawned_assets: totalPawnedAssets,
       total_payments: totalPayments,
-      total_payments_amount: totalPaymentsAmount[0]?.total || 0,
+      total_payments_amount: payment_revenue,
       total_applications: totalApplications,
-      total_pending_applications: totalPendingApplications,
+      total_pending_applications: totalPendingApplications, // "Pending Approvals" card
+      total_approved_applications: totalApprovedApplications,
       total_auctions: totalAuctions,
       total_live_auctions: totalLiveAuctions,
-      total_open_tickets: totalTicketsOpen,
+      total_open_tickets: totalTicketsOpen, // "Support Tickets" card
       total_debtor_records: totalDebtorRecords,
       total_matched_debtors: totalMatchedDebtors,
       total_attachments: totalAttachments,
-      total_expenses: totalExpenses,
+      total_expenses_count: totalExpensesCount,
       total_approved_expenses_amount:
         totalApprovedExpensesAmount[0]?.total || 0,
+      // Newly surfaced fields powering the broken dashboard cards:
+      total_bids: totalBids, // "Total Bids" card
+      total_revenue, // "Total Revenue" card
+      auction_revenue,
+      avg_loan_amount: parseFloat(
+        // "Avg. Loan Amount" card
+        (avgLoanAmountResult[0]?.avg || 0).toFixed(2),
+      ),
+      default_rate, // "Default Rate" card
+      approval_rate, // "Approval Rate" card
     };
   }
 
-  /**
-   * Business ratios and key metrics for the period.
-   */
   async _getBusinessRatios(start, end) {
-    // 1. Loan application to loan conversion (overall)
     const totalApplications = await LoanApplication.countDocuments({
       created_at: { $gte: start, $lte: end },
-      status: { $in: ["submitted", "approved", "processing"] }, // any application that entered the system
+      status: { $in: ENTERED_APPLICATION_STATUSES },
     });
 
     const totalLoansDisbursed = await Loan.countDocuments({
       created_at: { $gte: start, $lte: end },
-      status: { $in: ["active", "redeemed", "overdue"] }, // loans that were actually disbursed
+      status: { $in: DISBURSED_LOAN_STATUSES },
     });
 
     const applicationToLoanRatio =
@@ -225,18 +315,15 @@ class ReportService {
         ? (totalLoansDisbursed / totalApplications) * 100
         : 0;
 
-    // 2. Assets in vs assets pawned
     const totalAssetsCreated = await Asset.countDocuments({
       created_at: { $gte: start, $lte: end },
     });
 
-    // Assets pawned = loans disbursed (each loan has one asset)
     const assetInToPawnedRatio =
       totalAssetsCreated > 0
         ? (totalLoansDisbursed / totalAssetsCreated) * 100
         : 0;
 
-    // 3. Bids vs winning bids (overall)
     const totalBidsPlaced = await Bid.countDocuments({
       placed_at: { $gte: start, $lte: end },
     });
@@ -249,8 +336,6 @@ class ReportService {
     const bidWinRatioOverall =
       totalBidsPlaced > 0 ? (totalWinningBids / totalBidsPlaced) * 100 : 0;
 
-    // 4. Income vs Expense
-    // Income from payments (interest + storage + penalty)
     const paymentIncome = await Payment.aggregate([
       {
         $match: {
@@ -268,7 +353,6 @@ class ReportService {
       },
     ]);
 
-    // Income from auction revenue (winning bids)
     const auctionRevenue = await Auction.aggregate([
       {
         $match: {
@@ -277,12 +361,7 @@ class ReportService {
           winner_user: { $exists: true, $ne: null },
         },
       },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: "$winning_bid_amount" },
-        },
-      },
+      { $group: { _id: null, total: { $sum: "$winning_bid_amount" } } },
     ]);
 
     const totalIncome =
@@ -298,12 +377,7 @@ class ReportService {
           status: "approved",
         },
       },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: "$amount" },
-        },
-      },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
     ]);
 
     const totalExpenses = totalExpensesResult[0]?.total || 0;
@@ -315,12 +389,11 @@ class ReportService {
           ? Infinity
           : 0;
 
-    // 5. Additional key metrics for business analysis
     const loanStats = await Loan.aggregate([
       {
         $match: {
           created_at: { $gte: start, $lte: end },
-          status: { $in: ["active", "redeemed", "overdue"] },
+          status: { $in: DISBURSED_LOAN_STATUSES },
         },
       },
       {
@@ -334,10 +407,10 @@ class ReportService {
       },
     ]);
 
-    // Average loan term length in days
+    // FIX: Explicit Number() cast guards against stored strings or null dates
     const loans = await Loan.find({
       created_at: { $gte: start, $lte: end },
-      status: { $in: ["active", "redeemed", "overdue"] },
+      status: { $in: DISBURSED_LOAN_STATUSES },
     })
       .select("start_date due_date")
       .lean();
@@ -347,13 +420,47 @@ class ReportService {
     loans.forEach((loan) => {
       if (loan.start_date && loan.due_date) {
         const days = Math.round(
-          (loan.due_date - loan.start_date) / (1000 * 60 * 60 * 24),
+          (Number(loan.due_date) - Number(loan.start_date)) /
+            (1000 * 60 * 60 * 24),
         );
-        totalDays += days;
-        loanCount++;
+        if (days > 0) {
+          totalDays += days;
+          loanCount++;
+        }
       }
     });
     const avgLoanTermDays = loanCount > 0 ? totalDays / loanCount : 0;
+
+    // Period-scoped default rate and approval rate
+    const [periodDisbursed, periodOverdue, periodTotalDecided, periodApproved] =
+      await Promise.all([
+        Loan.countDocuments({
+          created_at: { $gte: start, $lte: end },
+          status: { $in: DISBURSED_LOAN_STATUSES },
+        }),
+        Loan.countDocuments({
+          created_at: { $gte: start, $lte: end },
+          status: "overdue",
+        }),
+        LoanApplication.countDocuments({
+          created_at: { $gte: start, $lte: end },
+          status: { $in: ["approved", "rejected", "processing"] },
+        }),
+        LoanApplication.countDocuments({
+          created_at: { $gte: start, $lte: end },
+          status: "approved",
+        }),
+      ]);
+
+    const periodDefaultRate =
+      periodDisbursed > 0
+        ? parseFloat(((periodOverdue / periodDisbursed) * 100).toFixed(2))
+        : 0;
+
+    const periodApprovalRate =
+      periodTotalDecided > 0
+        ? parseFloat(((periodApproved / periodTotalDecided) * 100).toFixed(2))
+        : 0;
 
     return {
       application_to_loan_ratio: parseFloat(applicationToLoanRatio.toFixed(2)),
@@ -363,24 +470,27 @@ class ReportService {
       total_income: totalIncome,
       total_expenses: totalExpenses,
       net_profit: totalIncome - totalExpenses,
-      average_loan_amount: loanStats[0]?.avgPrincipal || 0,
-      average_interest_rate_percent: loanStats[0]?.avgInterestRate || 0,
-      average_storage_charge_percent: loanStats[0]?.avgStorageCharge || 0,
-      average_penalty_percent: loanStats[0]?.avgPenalty || 0,
+      average_loan_amount: parseFloat(
+        (loanStats[0]?.avgPrincipal || 0).toFixed(2),
+      ),
+      average_interest_rate_percent: parseFloat(
+        (loanStats[0]?.avgInterestRate || 0).toFixed(2),
+      ),
+      average_storage_charge_percent: parseFloat(
+        (loanStats[0]?.avgStorageCharge || 0).toFixed(2),
+      ),
+      average_penalty_percent: parseFloat(
+        (loanStats[0]?.avgPenalty || 0).toFixed(2),
+      ),
       average_loan_term_days: parseFloat(avgLoanTermDays.toFixed(1)),
+      default_rate: periodDefaultRate,
+      approval_rate: periodApprovalRate,
     };
   }
 
-  /**
-   * Expense summary for the period: totals, counts by status, etc.
-   */
   async _getExpenseSummary(start, end) {
     const [totalAmount] = await Expense.aggregate([
-      {
-        $match: {
-          expense_date: { $gte: start, $lte: end },
-        },
-      },
+      { $match: { expense_date: { $gte: start, $lte: end } } },
       {
         $group: {
           _id: null,
@@ -391,11 +501,7 @@ class ReportService {
     ]);
 
     const byStatus = await Expense.aggregate([
-      {
-        $match: {
-          expense_date: { $gte: start, $lte: end },
-        },
-      },
+      { $match: { expense_date: { $gte: start, $lte: end } } },
       {
         $group: {
           _id: "$status",
@@ -422,9 +528,6 @@ class ReportService {
     };
   }
 
-  /**
-   * Expense trend over time (daily approved expenses).
-   */
   async _getExpenseTrend(start, end) {
     const daily = await Expense.aggregate([
       {
@@ -435,7 +538,9 @@ class ReportService {
       },
       {
         $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$expense_date" } },
+          _id: {
+            $dateToString: { format: "%Y-%m-%d", date: "$expense_date" },
+          },
           total: { $sum: "$amount" },
           count: { $sum: 1 },
         },
@@ -443,22 +548,15 @@ class ReportService {
       { $sort: { _id: 1 } },
     ]);
 
-    const labels = daily.map((d) => d._id);
-    const amountData = daily.map((d) => d.total);
-    const countData = daily.map((d) => d.count);
-
     return {
-      labels,
+      labels: daily.map((d) => d._id),
       datasets: [
-        { label: "Expense Amount (USD)", data: amountData },
-        { label: "Number of Expenses", data: countData },
+        { label: "Expense amount", data: daily.map((d) => d.total) },
+        { label: "Number of expenses", data: daily.map((d) => d.count) },
       ],
     };
   }
 
-  /**
-   * Expense breakdown by category (total amount per category).
-   */
   async _getExpenseBreakdownByCategory(start, end) {
     const byCategory = await Expense.aggregate([
       {
@@ -484,16 +582,9 @@ class ReportService {
     };
   }
 
-  /**
-   * User growth over time: cumulative new users per day (customers vs staff).
-   */
   async _getUserGrowth(start, end) {
     const pipeline = [
-      {
-        $match: {
-          created_at: { $gte: start, $lte: end },
-        },
-      },
+      { $match: { created_at: { $gte: start, $lte: end } } },
       {
         $facet: {
           customers: [
@@ -501,7 +592,10 @@ class ReportService {
             {
               $group: {
                 _id: {
-                  $dateToString: { format: "%Y-%m-%d", date: "$created_at" },
+                  $dateToString: {
+                    format: "%Y-%m-%d",
+                    date: "$created_at",
+                  },
                 },
                 count: { $sum: 1 },
               },
@@ -509,24 +603,14 @@ class ReportService {
             { $sort: { _id: 1 } },
           ],
           staff: [
-            {
-              $match: {
-                roles: {
-                  $in: [
-                    "super_admin_vendor",
-                    "admin_pawn_limited",
-                    "management",
-                    "loan_officer_approval",
-                    "loan_officer_processor",
-                    "call_centre_support",
-                  ],
-                },
-              },
-            },
+            { $match: { roles: { $in: STAFF_ROLES } } },
             {
               $group: {
                 _id: {
-                  $dateToString: { format: "%Y-%m-%d", date: "$created_at" },
+                  $dateToString: {
+                    format: "%Y-%m-%d",
+                    date: "$created_at",
+                  },
                 },
                 count: { $sum: 1 },
               },
@@ -547,17 +631,15 @@ class ReportService {
     const customerData = [];
     const staffData = [];
 
-    const allDates = new Set();
-    customers.forEach((d) => allDates.add(d._id));
-    staff.forEach((d) => allDates.add(d._id));
-    const sortedDates = Array.from(allDates).sort();
+    const allDates = new Set([
+      ...customers.map((d) => d._id),
+      ...staff.map((d) => d._id),
+    ]);
 
-    for (const date of sortedDates) {
+    for (const date of Array.from(allDates).sort()) {
       labels.push(date);
-      const cust = customers.find((c) => c._id === date)?.count || 0;
-      const stf = staff.find((s) => s._id === date)?.count || 0;
-      cumCustomers += cust;
-      cumStaff += stf;
+      cumCustomers += customers.find((c) => c._id === date)?.count || 0;
+      cumStaff += staff.find((s) => s._id === date)?.count || 0;
       customerData.push(cumCustomers);
       staffData.push(cumStaff);
     }
@@ -571,9 +653,6 @@ class ReportService {
     };
   }
 
-  /**
-   * Loan book overview: total disbursed, outstanding, overdue, and current loan counts.
-   */
   async _getLoanBook() {
     const [loanStats] = await Loan.aggregate([
       {
@@ -590,6 +669,7 @@ class ReportService {
           redeemed_loans: {
             $sum: { $cond: [{ $eq: ["$status", "redeemed"] }, 1, 0] },
           },
+          avg_principal: { $avg: "$principal_amount" },
         },
       },
     ]);
@@ -600,19 +680,21 @@ class ReportService {
       active_loans: loanStats?.active_loans || 0,
       overdue_loans: loanStats?.overdue_loans || 0,
       redeemed_loans: loanStats?.redeemed_loans || 0,
+      avg_principal: parseFloat((loanStats?.avg_principal || 0).toFixed(2)),
     };
   }
 
-  /**
-   * Loan applications over time: submitted, approved, rejected counts per day.
-   */
   async _getLoanApplicationsOverTime(start, end) {
-    const pipeline = [
-      {
-        $match: {
-          created_at: { $gte: start, $lte: end },
-        },
-      },
+    const TRACKED_STATUSES = [
+      "submitted",
+      "approved",
+      "rejected",
+      "processing",
+      "cancelled",
+    ];
+
+    const results = await LoanApplication.aggregate([
+      { $match: { created_at: { $gte: start, $lte: end } } },
       {
         $group: {
           _id: {
@@ -625,53 +707,35 @@ class ReportService {
         },
       },
       { $sort: { "_id.date": 1 } },
-    ];
+    ]);
 
-    const results = await LoanApplication.aggregate(pipeline);
+    const labels = Array.from(
+      new Set(results.map((item) => item._id.date)),
+    ).sort();
 
-    const statuses = [
-      "submitted",
-      "approved",
-      "rejected",
-      "processing",
-      "cancelled",
-    ];
-    const dataMap = {};
-    const labels = [];
-
-    results.forEach((item) => {
-      const date = item._id.date;
-      const status = item._id.status;
-      if (!labels.includes(date)) labels.push(date);
-      if (!dataMap[status]) dataMap[status] = [];
-    });
-
-    labels.sort();
-
-    statuses.forEach((status) => {
-      if (!dataMap[status]) dataMap[status] = new Array(labels.length).fill(0);
-    });
+    const dataMap = TRACKED_STATUSES.reduce((acc, s) => {
+      acc[s] = new Array(labels.length).fill(0);
+      return acc;
+    }, {});
 
     results.forEach((item) => {
       const dateIndex = labels.indexOf(item._id.date);
-      if (dateIndex !== -1) {
+      if (dateIndex !== -1 && dataMap[item._id.status]) {
         dataMap[item._id.status][dateIndex] = item.count;
       }
     });
 
-    const datasets = statuses.map((status) => ({
-      label: status.charAt(0).toUpperCase() + status.slice(1),
-      data: dataMap[status] || [],
-    }));
-
-    return { labels, datasets };
+    return {
+      labels,
+      datasets: TRACKED_STATUSES.map((status) => ({
+        label: status.charAt(0).toUpperCase() + status.slice(1),
+        data: dataMap[status],
+      })),
+    };
   }
 
-  /**
-   * Payments collected over time (total amount per day).
-   */
   async _getPaymentsOverTime(start, end) {
-    const pipeline = [
+    const results = await Payment.aggregate([
       {
         $match: {
           paid_at: { $gte: start, $lte: end },
@@ -685,25 +749,19 @@ class ReportService {
         },
       },
       { $sort: { _id: 1 } },
-    ];
+    ]);
 
-    const results = await Payment.aggregate(pipeline);
-    const labels = results.map((r) => r._id);
-    const data = results.map((r) => r.total);
-
-    return { labels, datasets: [{ label: "Payments (USD)", data }] };
+    return {
+      labels: results.map((r) => r._id),
+      datasets: [
+        { label: "Payments collected", data: results.map((r) => r.total) },
+      ],
+    };
   }
 
-  /**
-   * Auction performance: number of auctions, total bids, total winning revenue.
-   */
   async _getAuctionPerformance(start, end) {
     const [auctionStats] = await Auction.aggregate([
-      {
-        $match: {
-          created_at: { $gte: start, $lte: end },
-        },
-      },
+      { $match: { created_at: { $gte: start, $lte: end } } },
       {
         $lookup: {
           from: "bids",
@@ -723,22 +781,17 @@ class ReportService {
     ]);
 
     const dailyTrend = await Auction.aggregate([
-      {
-        $match: {
-          created_at: { $gte: start, $lte: end },
-        },
-      },
+      { $match: { created_at: { $gte: start, $lte: end } } },
       {
         $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$created_at" } },
+          _id: {
+            $dateToString: { format: "%Y-%m-%d", date: "$created_at" },
+          },
           count: { $sum: 1 },
         },
       },
       { $sort: { _id: 1 } },
     ]);
-
-    const labels = dailyTrend.map((d) => d._id);
-    const data = dailyTrend.map((d) => d.count);
 
     return {
       summary: {
@@ -746,30 +799,22 @@ class ReportService {
         total_bids: auctionStats?.total_bids || 0,
         total_revenue: auctionStats?.total_revenue || 0,
       },
-      trend: { labels, datasets: [{ label: "Auctions Created", data }] },
+      trend: {
+        labels: dailyTrend.map((d) => d._id),
+        datasets: [
+          {
+            label: "Auctions created",
+            data: dailyTrend.map((d) => d.count),
+          },
+        ],
+      },
     };
   }
 
-  /**
-   * Asset distribution by category and status.
-   */
   async _getAssetDistribution() {
-    const byCategory = await Asset.aggregate([
-      {
-        $group: {
-          _id: "$category",
-          count: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const byStatus = await Asset.aggregate([
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 },
-        },
-      },
+    const [byCategory, byStatus] = await Promise.all([
+      Asset.aggregate([{ $group: { _id: "$category", count: { $sum: 1 } } }]),
+      Asset.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
     ]);
 
     return {
@@ -784,9 +829,6 @@ class ReportService {
     };
   }
 
-  /**
-   * Profit & Loss: interest income, storage fees, penalties, auction revenue, etc.
-   */
   async _getProfitLoss(start, end) {
     const [interestIncome] = await Payment.aggregate([
       {
@@ -813,12 +855,7 @@ class ReportService {
           status: "closed",
         },
       },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: "$winning_bid_amount" },
-        },
-      },
+      { $group: { _id: null, total: { $sum: "$winning_bid_amount" } } },
     ]);
 
     return {
@@ -830,117 +867,113 @@ class ReportService {
     };
   }
 
-  /**
-   * Support tickets over time: opened vs resolved per day.
-   */
   async _getSupportTicketsOverTime(start, end) {
-    const opened = await SupportTicket.aggregate([
-      {
-        $match: {
-          created_at: { $gte: start, $lte: end },
+    const [opened, resolved] = await Promise.all([
+      SupportTicket.aggregate([
+        { $match: { created_at: { $gte: start, $lte: end } } },
+        {
+          $group: {
+            _id: {
+              $dateToString: { format: "%Y-%m-%d", date: "$created_at" },
+            },
+            count: { $sum: 1 },
+          },
         },
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$created_at" } },
-          count: { $sum: 1 },
+        { $sort: { _id: 1 } },
+      ]),
+      SupportTicket.aggregate([
+        {
+          $match: {
+            updated_at: { $gte: start, $lte: end },
+            status: "resolved",
+          },
         },
-      },
-      { $sort: { _id: 1 } },
+        {
+          $group: {
+            _id: {
+              $dateToString: { format: "%Y-%m-%d", date: "$updated_at" },
+            },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
     ]);
 
-    const resolved = await SupportTicket.aggregate([
-      {
-        $match: {
-          updated_at: { $gte: start, $lte: end },
-          status: "resolved",
-        },
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$updated_at" } },
-          count: { $sum: 1 },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
-
-    const allDates = new Set();
-    opened.forEach((d) => allDates.add(d._id));
-    resolved.forEach((d) => allDates.add(d._id));
-    const labels = Array.from(allDates).sort();
-
-    const openedData = labels.map((date) => {
-      const found = opened.find((o) => o._id === date);
-      return found ? found.count : 0;
-    });
-    const resolvedData = labels.map((date) => {
-      const found = resolved.find((r) => r._id === date);
-      return found ? found.count : 0;
-    });
+    const labels = Array.from(
+      new Set([...opened.map((d) => d._id), ...resolved.map((d) => d._id)]),
+    ).sort();
 
     return {
       labels,
       datasets: [
-        { label: "Opened", data: openedData },
-        { label: "Resolved", data: resolvedData },
+        {
+          label: "Opened",
+          data: labels.map(
+            (date) => opened.find((o) => o._id === date)?.count || 0,
+          ),
+        },
+        {
+          label: "Resolved",
+          data: labels.map(
+            (date) => resolved.find((r) => r._id === date)?.count || 0,
+          ),
+        },
       ],
     };
   }
 
-  /**
-   * Loan conversion rate over time: percentage of submitted applications that become loans.
-   */
   async _getLoanConversionRate(start, end) {
-    const monthlySubmitted = await LoanApplication.aggregate([
-      {
-        $match: {
-          created_at: { $gte: start, $lte: end },
-          status: { $in: ["submitted", "approved"] },
-        },
-      },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$created_at" },
-            month: { $month: "$created_at" },
+    const [monthlySubmitted, monthlyLoans] = await Promise.all([
+      LoanApplication.aggregate([
+        {
+          $match: {
+            created_at: { $gte: start, $lte: end },
+            status: { $in: ["submitted", "approved"] },
           },
-          count: { $sum: 1 },
         },
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1 } },
+        {
+          $group: {
+            _id: {
+              year: { $year: "$created_at" },
+              month: { $month: "$created_at" },
+            },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { "_id.year": 1, "_id.month": 1 } },
+      ]),
+      Loan.aggregate([
+        {
+          $match: {
+            created_at: { $gte: start, $lte: end },
+            status: { $in: DISBURSED_LOAN_STATUSES },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              year: { $year: "$created_at" },
+              month: { $month: "$created_at" },
+            },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { "_id.year": 1, "_id.month": 1 } },
+      ]),
     ]);
 
-    const monthlyLoans = await Loan.aggregate([
-      {
-        $match: {
-          created_at: { $gte: start, $lte: end },
-          status: { $in: ["active", "redeemed", "overdue"] },
-        },
-      },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$created_at" },
-            month: { $month: "$created_at" },
-          },
-          count: { $sum: 1 },
-        },
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1 } },
-    ]);
+    const sortedMonths = Array.from(
+      new Set([
+        ...monthlySubmitted.map((m) => `${m._id.year}-${m._id.month}`),
+        ...monthlyLoans.map((m) => `${m._id.year}-${m._id.month}`),
+      ]),
+    ).sort();
 
     const months = [];
     const submittedData = [];
     const loanData = [];
     const rateData = [];
-
-    const allMonths = new Set();
-    monthlySubmitted.forEach((m) =>
-      allMonths.add(`${m._id.year}-${m._id.month}`),
-    );
-    monthlyLoans.forEach((m) => allMonths.add(`${m._id.year}-${m._id.month}`));
-    const sortedMonths = Array.from(allMonths).sort();
 
     for (const ym of sortedMonths) {
       const [year, month] = ym.split("-").map(Number);
@@ -960,63 +993,63 @@ class ReportService {
     return {
       labels: months,
       datasets: [
-        { label: "Submitted Applications", data: submittedData },
-        { label: "Loans Created", data: loanData },
-        { label: "Conversion Rate (%)", data: rateData, yAxisID: "percentage" },
+        { label: "Submitted applications", data: submittedData },
+        { label: "Loans created", data: loanData },
+        {
+          label: "Conversion rate (%)",
+          data: rateData,
+          yAxisID: "percentage",
+        },
       ],
     };
   }
 
-  /**
-   * Bid win ratio: total bids vs winning bids per month.
-   */
   async _getBidWinRatio(start, end) {
-    const monthlyBids = await Bid.aggregate([
-      {
-        $match: {
-          placed_at: { $gte: start, $lte: end },
-        },
-      },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$placed_at" },
-            month: { $month: "$placed_at" },
+    const [monthlyBids, monthlyWins] = await Promise.all([
+      Bid.aggregate([
+        { $match: { placed_at: { $gte: start, $lte: end } } },
+        {
+          $group: {
+            _id: {
+              year: { $year: "$placed_at" },
+              month: { $month: "$placed_at" },
+            },
+            total_bids: { $sum: 1 },
           },
-          total_bids: { $sum: 1 },
         },
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1 } },
+        { $sort: { "_id.year": 1, "_id.month": 1 } },
+      ]),
+      Auction.aggregate([
+        {
+          $match: {
+            ends_at: { $gte: start, $lte: end },
+            winner_user: { $exists: true, $ne: null },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              year: { $year: "$ends_at" },
+              month: { $month: "$ends_at" },
+            },
+            winning_bids: { $sum: 1 },
+          },
+        },
+        { $sort: { "_id.year": 1, "_id.month": 1 } },
+      ]),
     ]);
 
-    const monthlyWins = await Auction.aggregate([
-      {
-        $match: {
-          ends_at: { $gte: start, $lte: end },
-          winner_user: { $exists: true, $ne: null },
-        },
-      },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$ends_at" },
-            month: { $month: "$ends_at" },
-          },
-          winning_bids: { $sum: 1 },
-        },
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1 } },
-    ]);
+    const sortedMonths = Array.from(
+      new Set([
+        ...monthlyBids.map((m) => `${m._id.year}-${m._id.month}`),
+        ...monthlyWins.map((m) => `${m._id.year}-${m._id.month}`),
+      ]),
+    ).sort();
 
     const months = [];
     const bidsData = [];
     const winsData = [];
     const ratioData = [];
-
-    const allMonths = new Set();
-    monthlyBids.forEach((m) => allMonths.add(`${m._id.year}-${m._id.month}`));
-    monthlyWins.forEach((m) => allMonths.add(`${m._id.year}-${m._id.month}`));
-    const sortedMonths = Array.from(allMonths).sort();
 
     for (const ym of sortedMonths) {
       const [year, month] = ym.split("-").map(Number);
@@ -1035,16 +1068,13 @@ class ReportService {
     return {
       labels: months,
       datasets: [
-        { label: "Total Bids", data: bidsData },
-        { label: "Winning Bids", data: winsData },
-        { label: "Win Ratio (%)", data: ratioData, yAxisID: "percentage" },
+        { label: "Total bids", data: bidsData },
+        { label: "Winning bids", data: winsData },
+        { label: "Win ratio (%)", data: ratioData, yAxisID: "percentage" },
       ],
     };
   }
 
-  /**
-   * Debtor summary: total records, matched vs unmatched, total due amounts, etc.
-   */
   async _getDebtorSummary() {
     const [totalDebtors, matchedDebtors, totalAmountDue] = await Promise.all([
       DebtorRecord.countDocuments(),
@@ -1078,9 +1108,6 @@ class ReportService {
     };
   }
 
-  /**
-   * Loan term statistics: average interest rates, renewals, etc.
-   */
   async _getLoanTermStats() {
     const [totalTerms, avgInterestRate, renewalsByType] = await Promise.all([
       LoanTerm.countDocuments(),
@@ -1117,25 +1144,22 @@ class ReportService {
     };
   }
 
-  /**
-   * Attachment statistics: counts by category, entity type, etc.
-   */
   async _getAttachmentStats() {
-    const [totalAttachments, byCategory, byEntityType] = await Promise.all([
-      Attachment.countDocuments(),
-      Attachment.aggregate([
-        { $group: { _id: "$category", count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-      ]),
-      Attachment.aggregate([
-        { $group: { _id: "$entity_type", count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-      ]),
-    ]);
-
-    const byStorage = await Attachment.aggregate([
-      { $group: { _id: "$storage", count: { $sum: 1 } } },
-    ]);
+    const [totalAttachments, byCategory, byEntityType, byStorage] =
+      await Promise.all([
+        Attachment.countDocuments(),
+        Attachment.aggregate([
+          { $group: { _id: "$category", count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+        ]),
+        Attachment.aggregate([
+          { $group: { _id: "$entity_type", count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+        ]),
+        Attachment.aggregate([
+          { $group: { _id: "$storage", count: { $sum: 1 } } },
+        ]),
+      ]);
 
     return {
       total_attachments: totalAttachments,
@@ -1155,17 +1179,87 @@ class ReportService {
   }
 
   /**
-   * Recent activities (last N events from various collections) with populated fields.
+   * Recent activities across all collections, sorted by timestamp descending.
+   * @param {number} limit - Maximum number of entries to return.
    */
-  async _getRecentActivities(limit = 10) {
+  async _getRecentActivities(limit = DEFAULT_RECENT_ACTIVITIES_LIMIT) {
+    const ITEMS_PER_SOURCE = 5;
     const activities = [];
 
-    // Recent users
-    const recentUsers = await User.find()
-      .sort({ created_at: -1 })
-      .limit(5)
-      .select("first_name last_name email roles created_at")
-      .lean();
+    const [
+      recentUsers,
+      recentApps,
+      recentLoans,
+      recentPayments,
+      recentAuctions,
+      recentTickets,
+      recentDebtors,
+      recentAttachments,
+      recentExpenses,
+    ] = await Promise.all([
+      User.find()
+        .sort({ created_at: -1 })
+        .limit(ITEMS_PER_SOURCE)
+        .select("first_name last_name email roles created_at")
+        .lean(),
+
+      LoanApplication.find()
+        .sort({ created_at: -1 })
+        .limit(ITEMS_PER_SOURCE)
+        .populate("customer_user", "first_name last_name email phone")
+        .lean(),
+
+      Loan.find()
+        .sort({ created_at: -1 })
+        .limit(ITEMS_PER_SOURCE)
+        .populate("customer_user", "first_name last_name email")
+        .populate("asset", "title category asset_no")
+        .lean(),
+
+      Payment.find({ payment_status: "paid" })
+        .sort({ paid_at: -1 })
+        .limit(ITEMS_PER_SOURCE)
+        .populate({
+          path: "loan",
+          select: "loan_no customer_user",
+          populate: { path: "customer_user", select: "first_name last_name" },
+        })
+        .lean(),
+
+      Auction.find()
+        .sort({ created_at: -1 })
+        .limit(ITEMS_PER_SOURCE)
+        .populate("asset", "title category asset_no")
+        .populate("created_by", "first_name last_name")
+        .lean(),
+
+      SupportTicket.find()
+        .sort({ created_at: -1 })
+        .limit(ITEMS_PER_SOURCE)
+        .populate("customer_user", "first_name last_name email")
+        .populate("assigned_to", "first_name last_name")
+        .lean(),
+
+      DebtorRecord.find()
+        .sort({ created_at: -1 })
+        .limit(ITEMS_PER_SOURCE)
+        .populate("matched_user", "first_name last_name email")
+        .lean(),
+
+      Attachment.find()
+        .sort({ created_at: -1 })
+        .limit(ITEMS_PER_SOURCE)
+        .populate("owner_user", "first_name last_name")
+        .lean(),
+
+      Expense.find()
+        .sort({ created_at: -1 })
+        .limit(ITEMS_PER_SOURCE)
+        .populate("created_by", "first_name last_name")
+        .populate("approved_by", "first_name last_name")
+        .lean(),
+    ]);
+
     recentUsers.forEach((u) => {
       activities.push({
         type: "user_registered",
@@ -1180,12 +1274,6 @@ class ReportService {
       });
     });
 
-    // Recent loan applications
-    const recentApps = await LoanApplication.find()
-      .sort({ created_at: -1 })
-      .limit(5)
-      .populate("customer_user", "first_name last_name email phone")
-      .lean();
     recentApps.forEach((a) => {
       activities.push({
         type: "loan_application",
@@ -1201,13 +1289,6 @@ class ReportService {
       });
     });
 
-    // Recent loans
-    const recentLoans = await Loan.find()
-      .sort({ created_at: -1 })
-      .limit(5)
-      .populate("customer_user", "first_name last_name email")
-      .populate("asset", "title category asset_no")
-      .lean();
     recentLoans.forEach((l) => {
       activities.push({
         type: "loan_created",
@@ -1224,20 +1305,10 @@ class ReportService {
       });
     });
 
-    // Recent payments
-    const recentPayments = await Payment.find({ payment_status: "paid" })
-      .sort({ paid_at: -1 })
-      .limit(5)
-      .populate({
-        path: "loan",
-        select: "loan_no customer_user",
-        populate: { path: "customer_user", select: "first_name last_name" },
-      })
-      .lean();
     recentPayments.forEach((p) => {
       activities.push({
         type: "payment",
-        description: `Payment of $${p.amount} received for loan ${p.loan?.loan_no}`,
+        description: `Payment of ${p.amount} received for loan ${p.loan?.loan_no}`,
         timestamp: p.paid_at,
         payment: p._id,
         details: {
@@ -1249,13 +1320,6 @@ class ReportService {
       });
     });
 
-    // Recent auctions
-    const recentAuctions = await Auction.find()
-      .sort({ created_at: -1 })
-      .limit(5)
-      .populate("asset", "title category asset_no")
-      .populate("created_by", "first_name last_name")
-      .lean();
     recentAuctions.forEach((a) => {
       activities.push({
         type: "auction_created",
@@ -1272,13 +1336,6 @@ class ReportService {
       });
     });
 
-    // Recent support tickets
-    const recentTickets = await SupportTicket.find()
-      .sort({ created_at: -1 })
-      .limit(5)
-      .populate("customer_user", "first_name last_name email")
-      .populate("assigned_to", "first_name last_name")
-      .lean();
     recentTickets.forEach((t) => {
       activities.push({
         type: "support_ticket",
@@ -1296,12 +1353,6 @@ class ReportService {
       });
     });
 
-    // Recent debtor records
-    const recentDebtors = await DebtorRecord.find()
-      .sort({ created_at: -1 })
-      .limit(5)
-      .populate("matched_user", "first_name last_name email")
-      .lean();
     recentDebtors.forEach((d) => {
       activities.push({
         type: "debtor_record",
@@ -1319,12 +1370,6 @@ class ReportService {
       });
     });
 
-    // Recent attachments
-    const recentAttachments = await Attachment.find()
-      .sort({ created_at: -1 })
-      .limit(5)
-      .populate("owner_user", "first_name last_name")
-      .lean();
     recentAttachments.forEach((a) => {
       activities.push({
         type: "attachment_uploaded",
@@ -1343,17 +1388,10 @@ class ReportService {
       });
     });
 
-    // Recent expenses
-    const recentExpenses = await Expense.find()
-      .sort({ created_at: -1 })
-      .limit(5)
-      .populate("created_by", "first_name last_name")
-      .populate("approved_by", "first_name last_name")
-      .lean();
     recentExpenses.forEach((e) => {
       activities.push({
         type: "expense_recorded",
-        description: `Expense ${e.expense_no} (${e.category}) - $${e.amount}`,
+        description: `Expense ${e.expense_no} (${e.category}) — ${e.amount}`,
         timestamp: e.created_at,
         expense: e._id,
         details: {
