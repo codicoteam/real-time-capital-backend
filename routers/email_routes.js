@@ -37,15 +37,14 @@ const { authMiddleware } = require("../middlewares/auth_middleware");
  *                 description: Email subject line
  *               text:
  *                 type: string
- *                 description: Plain text version of the email
+ *                 description: Plain text version of the email (optional if html provided)
  *               html:
  *                 type: string
- *                 description: HTML version of the email
+ *                 description: HTML version of the email (optional if text provided)
  *             example:
- *               to: "customer@example.com"
+ *               to: "zpmakaza@gmail.com"
  *               subject: "Welcome to Real Time Capital"
- *               text: "Hello, welcome to our service!"
- *               html: "<h1>Welcome</h1><p>Hello, welcome to our service!</p>"
+ *               html: "<p>Hello, welcome to our service!</p>"
  *     responses:
  *       200:
  *         description: Email sent successfully
