@@ -2803,6 +2803,7 @@ const options = {
     "./routers/report_router.js",
     "./routers/expense_router.js",
     "./routers/sms_routes.js",
+    "./routers/email_routes.js",
   ],
 };
 const specs = swaggerJsdoc(options);

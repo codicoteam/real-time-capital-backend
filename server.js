@@ -31,6 +31,7 @@ const customerDashboardRouter = require("./routers/customer_dashboard_router");
 const reportRouter = require("./routers/report_router");
 const expenseRouter = require("./routers/expense_router");
 const smsRouter  = require("./routers/sms_routes");
+const emailRouter = require("./routers/email_routes");
 // Load env
 dotenv.config();
 
@@ -70,6 +71,7 @@ app.use("/api/v1/customer/dashboard", customerDashboardRouter);
 app.use("/api/v1/report", reportRouter);
 app.use("/api/v1/expenses", expenseRouter);
 app.use("/api/v1/sms", smsRouter);
+app.use("/api/v1/email", emailRouter);
 // Global error handler (REST)
 app.use((err, req, res, next) => {
   console.error("Global error handler:", err.stack || err);
