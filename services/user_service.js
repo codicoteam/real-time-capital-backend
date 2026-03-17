@@ -10,6 +10,7 @@ const {
   sendDeleteAccountEmail,
   generateOTP,
 } = require("../utils/emails_util");
+const { sendSmsWithMessage } = require("../utils/sms_utils");
 
 class UserService {
   constructor() {
@@ -153,7 +154,7 @@ class UserService {
       // SMS (if phone exists)
       if (user.phone) {
         const smsMessage = `Your Real Time Capital verification code is: ${user.email_verification_otp}. It expires in 15 minutes.`;
-        await this.sendSms(user.phone, smsMessage);
+        await sendSmsWithMessage(user.phone, smsMessage);
       }
     } else if (createdByAdmin && !isCustomer && !isSuperAdmin) {
       await sendAdminCreatedAccountEmail({
@@ -241,7 +242,7 @@ class UserService {
     // Send SMS if phone exists
     if (user.phone) {
       const smsMessage = `Your new Real Time Capital verification code is: ${user.email_verification_otp}. It expires in 15 minutes.`;
-      await this.sendSms(user.phone, smsMessage);
+      await sendSmsWithMessage(user.phone, smsMessage);
     }
 
     return user;
@@ -311,7 +312,7 @@ class UserService {
     // Send SMS if phone exists
     if (user.phone) {
       const smsMessage = `Your Real Time Capital password reset code is: ${user.reset_password_otp}. It expires in 15 minutes.`;
-      await this.sendSms(user.phone, smsMessage);
+      await sendSmsWithMessage(user.phone, smsMessage);
     }
 
     return { message: "OTP sent to email and SMS (if phone number provided)" };

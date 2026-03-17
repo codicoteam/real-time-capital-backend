@@ -4,6 +4,7 @@ const DebtorRecord = require("../models/debtorRecord.model");
 const mongoose = require("mongoose");
 const emailService = require("../utils/emails_util");
 const twilio = require("twilio");
+const { sendSmsWithMessage } = require("../utils/sms_utils");
 
 class LoanApplicationService {
   constructor() {
@@ -457,7 +458,7 @@ class LoanApplicationService {
         // If status is approved, also send an SMS notification
         if (status === "approved" && application.customer_user.phone) {
           const smsMessage = `Your loan application (${application.application_no}) has been APPROVED. Please contact our loan department for further steps.`;
-          await this.sendSms(application.customer_user.phone, smsMessage);
+          await sendSmsWithMessage(application.customer_user.phone, smsMessage);
         }
 
         return {
