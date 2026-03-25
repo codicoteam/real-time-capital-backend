@@ -3,6 +3,8 @@ const LoanApplication = require("../models/loanApplication.model");
 const User = require("../models/user.model");
 const Asset = require("../models/asset.model");
 const Attachment = require("../models/attachment.model");
+const { sendSmsWithMessage } = require("../utils/sms_utils");
+const { sendEmail } = require("../utils/emails_util");
 
 class LoanService {
   /**
@@ -27,6 +29,16 @@ class LoanService {
       // Set initial current_balance to principal_amount if not provided
       if (!loanData.current_balance && loanData.principal_amount) {
         loanData.current_balance = loanData.principal_amount;
+      }
+
+      // Determine if super admin approval is needed (amount > 500)
+      if (loanData.principal_amount > 500) {
+        loanData.requires_super_admin_approval = true;
+        loanData.approval_status = "pending";
+        loanData.status = "pending_approval"; // Override default status
+      } else {
+        // For amounts <= 500, automatically approved (approval_status = "approved")
+        loanData.approval_status = "approved";
       }
 
       // Validate required dates
@@ -56,7 +68,7 @@ class LoanService {
         },
       ]);
 
-      // Update asset status to 'pawned' if loan is being created
+      // Update asset status to 'pawned' if loan is being created as active
       if (loanData.status === "active" && loanData.asset) {
         await Asset.findByIdAndUpdate(loanData.asset, {
           status: "pawned",
@@ -91,7 +103,7 @@ class LoanService {
             "asset_no title category evaluated_value declared_value status storage_location attachments",
         },
         {
-          path: "application"
+          path: "application",
         },
         {
           path: "attachments",
@@ -108,6 +120,14 @@ class LoanService {
         {
           path: "approved_by",
           select: "first_name last_name email roles",
+        },
+        {
+          path: "requested_super_admins.super_admin",
+          select: "first_name last_name email phone",
+        },
+        {
+          path: "super_admin_approvals.approved_by",
+          select: "first_name last_name email",
         },
       ]);
 
@@ -135,7 +155,7 @@ class LoanService {
     filters = {},
     page = 1,
     limit = 10,
-    sort = { created_at: -1 }
+    sort = { created_at: -1 },
   ) {
     try {
       const skip = (page - 1) * limit;
@@ -188,7 +208,8 @@ class LoanService {
               select: "asset_no title category evaluated_value",
             },
             {
-              path: "application"            },
+              path: "application",
+            },
           ])
           .sort(sort)
           .skip(skip)
@@ -244,7 +265,8 @@ class LoanService {
             select: "asset_no title category evaluated_value",
           },
           {
-            path: "application"          },
+            path: "application",
+          },
         ])
         .sort(sort)
         .lean();
@@ -341,7 +363,7 @@ class LoanService {
         throw {
           status: 400,
           message: `Invalid status. Must be one of: ${validStatuses.join(
-            ", "
+            ", ",
           )}`,
         };
       }
@@ -352,6 +374,20 @@ class LoanService {
           status: 404,
           message: `Loan with ID ${loanId} not found`,
         };
+      }
+
+      // If trying to set status to "active", check if super admin approval is required and granted
+      if (status === "active") {
+        if (
+          loan.requires_super_admin_approval &&
+          loan.approval_status !== "approved"
+        ) {
+          throw {
+            status: 403,
+            message:
+              "Cannot activate loan: pending super admin approval. Loan must be approved by at least one super admin first.",
+          };
+        }
       }
 
       // Status transition validations
@@ -394,6 +430,231 @@ class LoanService {
         success: true,
         data: updatedLoan,
         message: `Loan status updated to ${status}`,
+      };
+    } catch (error) {
+      throw this.handleMongoError(error);
+    }
+  }
+
+  /**
+   * Request super admin approval for a loan (amount > $500)
+   * @param {string} loanId - Loan ID
+   * @param {Array} superAdminIds - Array of User IDs (must have role super_admin_vendor)
+   * @param {string} requesterId - User ID of loan processor
+   */
+  async requestSuperAdminApproval(loanId, superAdminIds, requesterId) {
+    try {
+      // Validate loan exists
+      const loan = await Loan.findById(loanId).populate(
+        "created_by",
+        "first_name last_name email phone",
+      );
+      if (!loan) {
+        throw { status: 404, message: "Loan not found" };
+      }
+
+      // Validate loan amount > 500
+      if (loan.principal_amount <= 500) {
+        throw {
+          status: 400,
+          message: "Loan amount does not require super admin approval",
+        };
+      }
+
+      // Validate loan status: must be pending_approval
+      if (loan.status !== "pending_approval") {
+        throw {
+          status: 400,
+          message: "Loan cannot request approval in current status",
+        };
+      }
+
+      // Validate super admin IDs (fetch users, ensure they have role super_admin_vendor)
+      const superAdmins = await User.find({
+        _id: { $in: superAdminIds },
+        roles: "super_admin_vendor",
+        status: "active",
+      });
+      if (superAdmins.length === 0) {
+        throw { status: 400, message: "No valid super admin vendors found" };
+      }
+      if (superAdmins.length > 3) {
+        throw {
+          status: 400,
+          message: "Cannot request approval from more than 3 super admins",
+        };
+      }
+
+      // Create requested_super_admins entries
+      const requestedAdmins = superAdmins.map((sa) => ({
+        super_admin: sa._id,
+        status: "pending",
+        requested_at: new Date(),
+      }));
+
+      // Update loan with request details
+      loan.requested_super_admins = requestedAdmins;
+      loan.requires_super_admin_approval = true;
+      loan.approval_status = "pending";
+      await loan.save();
+
+      // Prepare notification content
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+      const approvalLink = `${frontendUrl}/loans/${loan._id}?approve=true`;
+      const subject = `Loan Approval Request: ${loan.loan_no}`;
+      const text = `A loan of $${loan.principal_amount} requires your approval. Click here to review: ${approvalLink}`;
+      const html = `<p>A loan of <strong>$${loan.principal_amount}</strong> requires your approval.</p><p><a href="${approvalLink}">Click here to review and approve</a></p>`;
+
+      // Send notifications to each super admin
+      for (const sa of superAdmins) {
+        // Email
+        if (sa.email) {
+          await sendEmail({
+            to: sa.email,
+            subject,
+            text,
+            html,
+          }).catch((err) =>
+            console.error(`Failed to send email to ${sa.email}:`, err),
+          );
+        }
+        // SMS
+        if (sa.phone) {
+          try {
+            await sendSmsWithMessage(
+              sa.phone,
+              `Loan ${loan.loan_no} of $${loan.principal_amount} needs your approval. ${approvalLink}`,
+            );
+          } catch (err) {
+            console.error(`Failed to send SMS to ${sa.phone}:`, err);
+          }
+        }
+      }
+
+      // Notify requester (loan processor) that request was sent
+      const requester = await User.findById(requesterId);
+      if (requester && requester.email) {
+        await sendEmail({
+          to: requester.email,
+          subject: `Super Admin Approval Requested for ${loan.loan_no}`,
+          text: `Your request for super admin approval on loan ${loan.loan_no} has been sent to ${superAdmins.length} super admin(s). You will be notified when approved.`,
+        });
+      }
+
+      return {
+        success: true,
+        message: `Approval request sent to ${superAdmins.length} super admin(s)`,
+        data: {
+          loanId: loan._id,
+          requestedAdmins: requestedAdmins.map((a) => a.super_admin),
+        },
+      };
+    } catch (error) {
+      throw this.handleMongoError(error);
+    }
+  }
+
+  /**
+   * Super admin approves a loan
+   * @param {string} loanId - Loan ID
+   * @param {string} superAdminId - ID of approving super admin
+   */
+  async approveLoanBySuperAdmin(loanId, superAdminId) {
+    try {
+      const loan = await Loan.findById(loanId).populate(
+        "created_by",
+        "first_name last_name email phone",
+      );
+      if (!loan) {
+        throw { status: 404, message: "Loan not found" };
+      }
+
+      // Check if this loan requires super admin approval
+      if (!loan.requires_super_admin_approval) {
+        throw {
+          status: 400,
+          message: "This loan does not require super admin approval",
+        };
+      }
+
+      // Check if already approved
+      if (loan.approval_status === "approved") {
+        throw {
+          status: 400,
+          message: "Loan already approved by a super admin",
+        };
+      }
+
+      // Find the pending request for this super admin
+      const requestEntry = loan.requested_super_admins.find(
+        (entry) =>
+          entry.super_admin.toString() === superAdminId &&
+          entry.status === "pending",
+      );
+      if (!requestEntry) {
+        throw {
+          status: 403,
+          message: "You are not authorized to approve this loan",
+        };
+      }
+
+      // Update the request status
+      requestEntry.status = "approved";
+
+      // Record approval
+      loan.super_admin_approvals.push({
+        approved_by: superAdminId,
+        approved_at: new Date(),
+      });
+
+      // Set overall approval_status to approved
+      loan.approval_status = "approved";
+
+      await loan.save();
+
+      // Notify loan processor (created_by)
+      const processorId = loan.processed_by || loan.created_by;
+      if (processorId) {
+        const processor = await User.findById(processorId);
+        if (processor) {
+          const processorMessage = `Your loan ${loan.loan_no} has been approved by super admin. You may now proceed to disburse.`;
+          if (processor.email) {
+            await sendEmail({
+              to: processor.email,
+              subject: `Loan Approval: ${loan.loan_no}`,
+              text: processorMessage,
+            });
+          }
+          if (processor.phone) {
+            await sendSmsWithMessage(processor.phone, processorMessage).catch(
+              (err) => console.error("SMS failed:", err),
+            );
+          }
+        }
+      }
+
+      // Also notify the approving super admin
+      const approver = await User.findById(superAdminId);
+      if (approver) {
+        const thankYouMessage = `You have approved loan ${loan.loan_no} for $${loan.principal_amount}.`;
+        if (approver.email) {
+          await sendEmail({
+            to: approver.email,
+            subject: `Loan Approval Confirmed: ${loan.loan_no}`,
+            text: thankYouMessage,
+          });
+        }
+        if (approver.phone) {
+          await sendSmsWithMessage(approver.phone, thankYouMessage).catch(
+            (err) => console.error("SMS failed:", err),
+          );
+        }
+      }
+
+      return {
+        success: true,
+        message: "Loan approved successfully",
+        data: { loanId: loan._id, approvedBy: superAdminId },
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -582,7 +843,7 @@ class LoanService {
       // Calculate days elapsed
       const daysElapsed = Math.ceil((now - startDate) / (1000 * 60 * 60 * 24));
       const totalLoanDays = Math.ceil(
-        (dueDate - startDate) / (1000 * 60 * 60 * 24)
+        (dueDate - startDate) / (1000 * 60 * 60 * 24),
       );
 
       // Calculate interest
@@ -727,6 +988,8 @@ class LoanService {
   validateStatusTransition(currentStatus, newStatus, loan) {
     const validTransitions = {
       draft: ["active", "cancelled"],
+      pending_approval: ["active", "cancelled"],
+      approved: ["active", "cancelled"],
       active: ["overdue", "in_grace", "redeemed", "closed"],
       overdue: ["in_grace", "auction", "redeemed", "closed"],
       in_grace: ["auction", "redeemed", "closed"],

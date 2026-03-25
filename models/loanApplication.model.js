@@ -92,7 +92,6 @@ const LoanApplicationSchema = new mongoose.Schema(
     passport_url: { type: String, trim: true }, // if user has passport
     proof_of_resident_url: { type: String, trim: true },
     proof_of_employment_url: { type: String, trim: true },
-    
 
     // NEXT OF KIN
     next_of_kin: { type: NextOfKinSchema, default: {} },
@@ -151,6 +150,41 @@ const LoanApplicationSchema = new mongoose.Schema(
 
     // Attachments: ID scans, signed loan request form, etc. (references to Attachment documents)
     attachments: [{ type: mongoose.Schema.Types.ObjectId, ref: "Attachment" }],
+    created_by: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+
+    /**
+     * Source of the application – helps reporting and business rules.
+     */
+    application_source: {
+      type: String,
+      enum: ["customer", "agent", "processor"],
+      required: true,
+      default: "customer",
+    },
+
+    /**
+     * The user who submitted the application (if submission is a distinct action).
+     * Useful when creation and submission are separate steps.
+     */
+    submitted_by: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
+    },
+
+    /**
+     * The user who performed the final approval or rejection.
+     */
+    processed_by: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
+    },
 
     // Optional internal notes
     internal_notes: { type: String },

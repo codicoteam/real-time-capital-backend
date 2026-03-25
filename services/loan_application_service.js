@@ -52,30 +52,45 @@ class LoanApplicationService {
     const date = new Date();
     const year = date.getFullYear().toString().slice(-2);
     const month = (date.getMonth() + 1).toString().padStart(2, "0");
-
-    // Increase randomness to 6 digits (1 million combinations)
     const random = Math.floor(Math.random() * 1000000)
       .toString()
       .padStart(6, "0");
-
     return `APP${year}${month}${random}`;
   }
 
   /**
-   * Create a new loan application (draft)
+   * Determine the application source based on user roles.
+   * Priority: agent > processor > customer
    */
-  async createLoanApplication(applicationData, userId) {
+  determineApplicationSource(user) {
+    const roles = user.roles || [];
+    if (roles.includes("agent")) return "agent";
+    if (roles.includes("loan_officer_processor")) return "processor";
+    return "customer";
+  }
+
+  /**
+   * Create a new loan application (draft)
+   * @param {Object} applicationData - The application data from request body
+   * @param {Object} createdByUser - The user performing the creation (full user object)
+   * @param {String} customerUserId - Optional: the ID of the customer (if staff is creating on behalf)
+   */
+  async createLoanApplication(
+    applicationData,
+    createdByUser,
+    customerUserId = null,
+  ) {
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
+      // Validate required fields
       const requiredFields = [
         "full_name",
         "national_id_number",
         "requested_loan_amount",
         "collateral_category",
       ];
-
       for (const field of requiredFields) {
         if (!applicationData[field]) {
           throw new Error(`${field.replace("_", " ")} is required`);
@@ -89,6 +104,9 @@ class LoanApplicationService {
         );
       }
 
+      // Determine the customer (borrower)
+      const finalCustomerUserId = customerUserId || createdByUser._id;
+
       let loanApplication;
       let attempts = 0;
       const maxAttempts = 5;
@@ -100,7 +118,9 @@ class LoanApplicationService {
           loanApplication = new LoanApplication({
             ...applicationData,
             application_no: applicationNo,
-            customer_user: userId,
+            customer_user: finalCustomerUserId,
+            created_by: createdByUser._id,
+            application_source: this.determineApplicationSource(createdByUser),
             status: "draft",
             created_at: new Date(),
             updated_at: new Date(),
@@ -142,92 +162,94 @@ class LoanApplicationService {
 
   /**
    * Submit a draft loan application
+   * @param {String} applicationId - The ID of the application
+   * @param {Object} user - The user performing the submission (full user object)
    */
-  async submitLoanApplication(applicationId, userId) {
+  async submitLoanApplication(applicationId, user) {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
     try {
-      const session = await mongoose.startSession();
-      session.startTransaction();
-
-      try {
-        const loanApplication = await LoanApplication.findOne({
-          _id: applicationId,
-          customer_user: userId,
-          status: "draft",
-        }).session(session);
-
-        if (!loanApplication) {
-          throw new Error("Loan application not found or cannot be submitted");
-        }
-
-        // Check if all required fields are filled
-        const requiredFields = [
-          "full_name",
-          "national_id_number",
-          "date_of_birth",
-          "contact_details",
-          "home_address",
-          "employment.employment_type",
-          "employment.title",
-          "employment.duration",
-          "collateral_description",
-          "declaration_signed_at",
-          "declaration_signature_name",
-        ];
-
-        for (const field of requiredFields) {
-          const value = field
-            .split(".")
-            .reduce((obj, key) => obj && obj[key], loanApplication);
-          if (!value) {
-            throw new Error(`Missing required field: ${field}`);
-          }
-        }
-
-        // Update status to submitted
-        loanApplication.status = "submitted";
-        await loanApplication.save({ session });
-
-        // Get customer details for email
-        await loanApplication.populate(
-          "customer_user",
-          "first_name last_name email",
-        );
-
-        await session.commitTransaction();
-        session.endSession();
-
-        // Send email notifications
-        try {
-          // Send to customer
-          await emailService.sendLoanApplicationSubmittedEmail({
-            to: loanApplication.customer_user.email,
-            fullName: loanApplication.full_name,
-            applicationNo: loanApplication.application_no,
-          });
-
-          // Send to admin team
-          await emailService.sendLoanApplicationAdminNotification({
-            applicationNo: loanApplication.application_no,
-            customerName: loanApplication.full_name,
-            requestedAmount: loanApplication.requested_loan_amount,
-            collateralCategory: loanApplication.collateral_category,
-          });
-        } catch (emailError) {
-          console.error("Failed to send email notifications:", emailError);
-          // Don't throw - email failure shouldn't break the application
-        }
-
-        return {
-          success: true,
-          data: loanApplication,
-          message: "Loan application submitted successfully",
-        };
-      } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
-        throw error;
+      // Build query: if user is customer, restrict to their own; if staff, allow any draft
+      const query = { _id: applicationId, status: "draft" };
+      const isCustomer = user.roles.includes("customer");
+      if (isCustomer) {
+        query.customer_user = user._id;
       }
+
+      const loanApplication =
+        await LoanApplication.findOne(query).session(session);
+
+      if (!loanApplication) {
+        throw new Error("Loan application not found or cannot be submitted");
+      }
+
+      // Check if all required fields are filled (same as before)
+      const requiredFields = [
+        "full_name",
+        "national_id_number",
+        "date_of_birth",
+        "contact_details",
+        "home_address",
+        "employment.employment_type",
+        "employment.title",
+        "employment.duration",
+        "collateral_description",
+        "declaration_signed_at",
+        "declaration_signature_name",
+      ];
+      for (const field of requiredFields) {
+        const value = field
+          .split(".")
+          .reduce((obj, key) => obj && obj[key], loanApplication);
+        if (!value) {
+          throw new Error(`Missing required field: ${field}`);
+        }
+      }
+
+      // Update status and submission audit
+      loanApplication.status = "submitted";
+      loanApplication.submitted_by = user._id;
+      await loanApplication.save({ session });
+
+      // Get customer details for email
+      await loanApplication.populate(
+        "customer_user",
+        "first_name last_name email",
+      );
+
+      await session.commitTransaction();
+      session.endSession();
+
+      // Send email notifications
+      try {
+        // Send to customer
+        await emailService.sendLoanApplicationSubmittedEmail({
+          to: loanApplication.customer_user.email,
+          fullName: loanApplication.full_name,
+          applicationNo: loanApplication.application_no,
+        });
+
+        // Send to admin team
+        await emailService.sendLoanApplicationAdminNotification({
+          applicationNo: loanApplication.application_no,
+          customerName: loanApplication.full_name,
+          requestedAmount: loanApplication.requested_loan_amount,
+          collateralCategory: loanApplication.collateral_category,
+        });
+      } catch (emailError) {
+        console.error("Failed to send email notifications:", emailError);
+        // Don't throw – email failure shouldn't break the application
+      }
+
+      return {
+        success: true,
+        data: loanApplication,
+        message: "Loan application submitted successfully",
+      };
     } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
       console.error("Error submitting loan application:", error);
       throw new Error(`Failed to submit loan application: ${error.message}`);
     }
@@ -255,18 +277,14 @@ class LoanApplicationService {
 
       const query = {};
 
-      // =========================
       // Role-based filtering
-      // =========================
       if (userRole === "customer") {
         query.customer_user = userId;
       } else if (userRole === "loan_officer_processor") {
         query.status = { $in: ["submitted", "processing"] };
       }
 
-      // =========================
-      // Filters
-      // =========================
+      // Additional filters
       if (status) query.status = status;
       if (collateral_category) query.collateral_category = collateral_category;
       if (customer_user) query.customer_user = customer_user;
@@ -288,17 +306,11 @@ class LoanApplicationService {
 
       const skip = (page - 1) * limit;
 
-      // =========================
-      // Field selection by role
-      // =========================
       const selectFields =
         userRole === "call_centre_support"
           ? "application_no full_name status collateral_category requested_loan_amount created_at attachments"
           : "";
 
-      // =========================
-      // Query execution
-      // =========================
       const [applications, total] = await Promise.all([
         LoanApplication.find(query)
           .populate("customer_user", "first_name last_name email phone")
@@ -319,9 +331,6 @@ class LoanApplicationService {
         LoanApplication.countDocuments(query),
       ]);
 
-      // =========================
-      // Statistics
-      // =========================
       const stats = await LoanApplication.aggregate([
         { $match: query },
         {
@@ -364,7 +373,6 @@ class LoanApplicationService {
 
       const query = { _id: id };
 
-      // Role-based access control
       if (userRole === "customer") {
         query.customer_user = userId;
       }
@@ -374,6 +382,9 @@ class LoanApplicationService {
           "customer_user",
           "first_name last_name email phone national_id_number date_of_birth address",
         )
+        .populate("created_by", "first_name last_name email roles")
+        .populate("submitted_by", "first_name last_name email roles")
+        .populate("processed_by", "first_name last_name email roles")
         .lean();
 
       if (!application) {
@@ -393,6 +404,10 @@ class LoanApplicationService {
 
   /**
    * Update loan application status (for loan officers)
+   * @param {String} id - Application ID
+   * @param {String} status - New status
+   * @param {Object} user - The user performing the update (full object)
+   * @param {String} notes - Optional internal notes
    */
   async updateLoanApplicationStatus(id, status, user, notes = "") {
     try {
@@ -400,7 +415,6 @@ class LoanApplicationService {
         throw new Error("Invalid application ID");
       }
 
-      // Validate status transition
       const validStatuses = ["processing", "approved", "rejected", "cancelled"];
       if (!validStatuses.includes(status)) {
         throw new Error(
@@ -422,6 +436,11 @@ class LoanApplicationService {
         application.status = status;
         application.updated_at = new Date();
 
+        // Set processed_by only for final decisions
+        if (status === "approved" || status === "rejected") {
+          application.processed_by = user._id;
+        }
+
         if (notes) {
           application.internal_notes = application.internal_notes
             ? `${application.internal_notes}\n[${new Date().toISOString()}] ${user.first_name}: ${notes}`
@@ -430,7 +449,6 @@ class LoanApplicationService {
 
         await application.save({ session });
 
-        // Get customer details for notifications (include phone for SMS)
         await application.populate(
           "customer_user",
           "first_name last_name email phone",
@@ -499,12 +517,10 @@ class LoanApplicationService {
           throw new Error("Loan application not found");
         }
 
-        // Check if debtor check already performed
         if (application.debtor_check.checked) {
           throw new Error("Debtor check already performed on this application");
         }
 
-        // Search for matching debtor records
         const searchCriteria = [
           { client_name: { $regex: application.full_name, $options: "i" } },
           { national_id_number: application.national_id_number },
@@ -517,11 +533,10 @@ class LoanApplicationService {
         if (searchCriteria.length > 0) {
           matchedRecords = await DebtorRecord.find({
             $or: searchCriteria,
-            account_status: { $nin: ["Paid up", "Sold", "Current"] }, // Exclude good statuses
+            account_status: { $nin: ["Paid up", "Sold", "Current"] },
           }).session(session);
         }
 
-        // Update debtor check information
         application.debtor_check = {
           checked: true,
           matched: matchedRecords.length > 0,
@@ -539,7 +554,6 @@ class LoanApplicationService {
         await session.commitTransaction();
         session.endSession();
 
-        // Populate matched records
         await application.populate("debtor_check.matched_debtor_records");
 
         return {
@@ -573,10 +587,9 @@ class LoanApplicationService {
 
       const query = { _id: id };
 
-      // Role-based access control
       if (userRole === "customer") {
         query.customer_user = userId;
-        query.status = "draft"; // Customers can only update drafts
+        query.status = "draft";
       }
 
       const application = await LoanApplication.findOne(query);
@@ -592,14 +605,16 @@ class LoanApplicationService {
       delete updateData.debtor_check;
       delete updateData.attachments;
       delete updateData.internal_notes;
+      delete updateData.created_by;
+      delete updateData.application_source;
+      delete updateData.submitted_by;
+      delete updateData.processed_by;
 
-      // Update application
       Object.assign(application, updateData);
       application.updated_at = new Date();
 
       await application.save();
 
-      // Fetch updated application with populated fields (aligned with list function)
       const updatedApplication = await LoanApplication.findOne(query)
         .populate("customer_user", "first_name last_name email phone")
         .populate("debtor_check.checked_by", "first_name last_name")
@@ -635,7 +650,6 @@ class LoanApplicationService {
 
       const query = { _id: applicationId };
 
-      // Role-based access control
       if (userRole === "customer") {
         query.customer_user = userId;
       }
@@ -646,12 +660,10 @@ class LoanApplicationService {
         throw new Error("Loan application not found");
       }
 
-      // Check if attachment already added
       if (application.attachments.includes(attachmentId)) {
         throw new Error("Attachment already added to this application");
       }
 
-      // Add attachment
       application.attachments.push(attachmentId);
       application.updated_at = new Date();
 
@@ -682,10 +694,9 @@ class LoanApplicationService {
 
       const query = { _id: applicationId };
 
-      // Role-based access control
       if (userRole === "customer") {
         query.customer_user = userId;
-        query.status = "draft"; // Customers can only remove from drafts
+        query.status = "draft";
       }
 
       const application = await LoanApplication.findOne(query);
@@ -694,13 +705,11 @@ class LoanApplicationService {
         throw new Error("Loan application not found or cannot be modified");
       }
 
-      // Check if attachment exists
       const attachmentIndex = application.attachments.indexOf(attachmentId);
       if (attachmentIndex === -1) {
         throw new Error("Attachment not found in this application");
       }
 
-      // Remove attachment
       application.attachments.splice(attachmentIndex, 1);
       application.updated_at = new Date();
 
@@ -724,12 +733,10 @@ class LoanApplicationService {
     try {
       const query = {};
 
-      // Role-based filtering
       if (userRole === "customer") {
         query.customer_user = userId;
       }
 
-      // Overall statistics
       const overallStats = await LoanApplication.aggregate([
         { $match: query },
         {
@@ -760,7 +767,6 @@ class LoanApplicationService {
         },
       ]);
 
-      // Statistics by collateral category
       const collateralStats = await LoanApplication.aggregate([
         { $match: query },
         {
@@ -774,7 +780,6 @@ class LoanApplicationService {
         { $sort: { count: -1 } },
       ]);
 
-      // Monthly trend (last 6 months)
       const sixMonthsAgo = new Date();
       sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
@@ -798,7 +803,6 @@ class LoanApplicationService {
         { $sort: { "_id.year": 1, "_id.month": 1 } },
       ]);
 
-      // Format monthly stats
       const formattedMonthlyStats = monthlyStats.map((stat) => ({
         month: `${stat._id.year}-${stat._id.month.toString().padStart(2, "0")}`,
         count: stat.count,
@@ -847,7 +851,6 @@ class LoanApplicationService {
         throw new Error("Loan application not found");
       }
 
-      // Check if user has permission
       const canRequestDocuments =
         user.roles.includes("loan_officer_processor") ||
         user.roles.includes("loan_officer_approval") ||
@@ -858,7 +861,6 @@ class LoanApplicationService {
         throw new Error("You do not have permission to request documents");
       }
 
-      // Send email to customer
       await emailService.sendDocumentRequirementEmail({
         to: application.customer_user.email,
         fullName: application.full_name,
@@ -866,7 +868,6 @@ class LoanApplicationService {
         requiredDocuments,
       });
 
-      // Add note to application
       application.internal_notes = application.internal_notes
         ? `${application.internal_notes}\n[${new Date().toISOString()}] ${user.first_name}: Requested additional documents: ${requiredDocuments.join(", ")}`
         : `[${new Date().toISOString()}] ${user.first_name}: Requested additional documents: ${requiredDocuments.join(", ")}`;

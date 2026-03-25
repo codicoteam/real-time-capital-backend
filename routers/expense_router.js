@@ -40,6 +40,10 @@ router.use(authMiddleware);
  *           enum: [cash, bank_transfer, mobile_money, cheque, other]
  *         description:
  *           type: string
+ *         images:
+ *           type: array
+ *           items:
+ *             type: string
  *         attachments:
  *           type: array
  *           items:
@@ -85,6 +89,10 @@ router.use(authMiddleware);
  *           default: cash
  *         description:
  *           type: string
+ *         images:
+ *           type: array
+ *           items:
+ *             type: string
  *         attachments:
  *           type: array
  *           items:
@@ -148,9 +156,9 @@ router.post(
     "loan_officer_approval",
     "admin_pawn_limited",
     "management",
-    "super_admin_vendor"
+    "super_admin_vendor",
   ),
-  ExpenseController.createExpense
+  ExpenseController.createExpense,
 );
 
 /**
@@ -238,9 +246,9 @@ router.get(
     "loan_officer_approval",
     "admin_pawn_limited",
     "management",
-    "super_admin_vendor"
+    "super_admin_vendor",
   ),
-  ExpenseController.getExpenses
+  ExpenseController.getExpenses,
 );
 
 /**
@@ -264,9 +272,9 @@ router.get(
     "loan_officer_approval",
     "admin_pawn_limited",
     "management",
-    "super_admin_vendor"
+    "super_admin_vendor",
   ),
-  ExpenseController.getExpenseStats
+  ExpenseController.getExpenseStats,
 );
 
 /**
@@ -298,9 +306,9 @@ router.get(
     "loan_officer_approval",
     "admin_pawn_limited",
     "management",
-    "super_admin_vendor"
+    "super_admin_vendor",
   ),
-  ExpenseController.getExpense
+  ExpenseController.getExpense,
 );
 
 /**
@@ -340,9 +348,9 @@ router.put(
     "loan_officer_approval",
     "admin_pawn_limited",
     "management",
-    "super_admin_vendor"
+    "super_admin_vendor",
   ),
-  ExpenseController.updateExpense
+  ExpenseController.updateExpense,
 );
 
 /**
@@ -381,9 +389,9 @@ router.put(
     "admin_pawn_limited",
     "loan_officer_approval",
     "management",
-    "super_admin_vendor"
+    "super_admin_vendor",
   ),
-  ExpenseController.updateExpenseStatus
+  ExpenseController.updateExpenseStatus,
 );
 
 /**
@@ -412,12 +420,8 @@ router.put(
  */
 router.delete(
   "/:id",
-  requireRoles(
-    "admin_pawn_limited",
-    "management",
-    "super_admin_vendor"
-  ),
-  ExpenseController.deleteExpense
+  requireRoles("admin_pawn_limited", "management", "super_admin_vendor"),
+  ExpenseController.deleteExpense,
 );
 
 module.exports = router;

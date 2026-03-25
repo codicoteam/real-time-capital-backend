@@ -17,8 +17,9 @@ class ExpenseController {
         payment_method,
         description,
         attachments,
+        images, // <-- Added images field
         notes,
-        status, // optional, default will be set in service
+        status,
       } = req.body;
 
       // Basic validation
@@ -37,6 +38,7 @@ class ExpenseController {
           payment_method,
           description,
           attachments,
+          images, // <-- Pass images to service
           notes,
           status,
         },
@@ -136,7 +138,7 @@ class ExpenseController {
   static async updateExpense(req, res) {
     try {
       const { id } = req.params;
-      const updateData = req.body;
+      const updateData = req.body; // Contains images field automatically
 
       if (!id) {
         return res.status(400).json({

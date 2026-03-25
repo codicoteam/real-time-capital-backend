@@ -357,6 +357,80 @@ router.put(
 
 /**
  * @swagger
+ * /api/v1/loans/{id}/request-approval:
+ *   post:
+ *     summary: Request super admin approval for a loan (amount > 500)
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - superAdminIds
+ *             properties:
+ *               superAdminIds:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: Array of super admin user IDs (1-3)
+ *     responses:
+ *       200:
+ *         description: Approval request sent
+ *       400:
+ *         description: Invalid request
+ *       403:
+ *         description: Unauthorized
+ *       404:
+ *         description: Loan not found
+ */
+router.post(
+  "/:id/request-approval",
+  requireRoles("loan_officer_processor", "admin_pawn_limited"),
+  loanController.requestSuperAdminApproval,
+);
+
+/**
+ * @swagger
+ * /api/v1/loans/{id}/approve-super-admin:
+ *   post:
+ *     summary: Super admin approves a loan
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Loan approved
+ *       400:
+ *         description: Invalid request
+ *       403:
+ *         description: Unauthorized
+ *       404:
+ *         description: Loan not found
+ */
+router.post(
+  "/:id/approve-super-admin",
+  requireRoles("super_admin_vendor"),
+  loanController.approveLoanBySuperAdmin,
+);
+
+/**
+ * @swagger
  * /api/v1/loans/{id}/payment:
  *   post:
  *     summary: Process loan payment
@@ -574,12 +648,7 @@ router.get(
  */
 router.get(
   "/stats",
-  requireRoles(
-    "admin_pawn_limited",
-
-    "management",
-    "super_admin_vendor",
-  ),
+  requireRoles("admin_pawn_limited", "management", "super_admin_vendor"),
   loanController.getLoanStats,
 );
 

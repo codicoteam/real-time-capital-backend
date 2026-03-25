@@ -4,10 +4,24 @@ const LoanSchema = new mongoose.Schema(
   {
     loan_no: { type: String, unique: true, index: true },
 
-    customer_user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
-    application: { type: mongoose.Schema.Types.ObjectId, ref: "LoanApplication", index: true },
+    customer_user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+    application: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "LoanApplication",
+      index: true,
+    },
 
-    asset: { type: mongoose.Schema.Types.ObjectId, ref: "Asset", required: true, index: true },
+    asset: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Asset",
+      required: true,
+      index: true,
+    },
 
     collateral_category: {
       type: String,
@@ -24,7 +38,7 @@ const LoanSchema = new mongoose.Schema(
 
     // Terms snapshot (set at creation)
     interest_rate_percent: { type: Number, required: true }, // e.g. 4 or 2
-    interest_period_days: { type: Number, required: true },  // 30 or 14
+    interest_period_days: { type: Number, required: true }, // 30 or 14
     storage_charge_percent: { type: Number, required: true }, // e.g. 21 or 18
     penalty_percent: { type: Number, default: 10 }, // from contracts for late payment
     grace_days: { type: Number, default: 7 }, // grace before auction
@@ -36,9 +50,46 @@ const LoanSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["draft", "active", "overdue", "in_grace", "auction", "sold", "redeemed", "closed", "cancelled"],
+      enum: [
+        "draft",
+        "pending_approval",
+        "approved",
+        "active",
+        "overdue",
+        "in_grace",
+        "auction",
+        "sold",
+        "redeemed",
+        "closed",
+        "cancelled",
+      ],
       default: "draft",
       index: true,
+    },
+
+    // Approval workflow for loans ≥ $500
+    requires_super_admin_approval: { type: Boolean, default: false },
+    requested_super_admins: [
+      {
+        super_admin: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        status: {
+          type: String,
+          enum: ["pending", "approved", "rejected"],
+          default: "pending",
+        },
+        requested_at: { type: Date, default: Date.now },
+      },
+    ],
+    super_admin_approvals: [
+      {
+        approved_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        approved_at: { type: Date, default: Date.now },
+      },
+    ],
+    approval_status: {
+      type: String,
+      enum: ["pending", "approved", "rejected"],
+      default: "pending",
     },
 
     // Contract/forms

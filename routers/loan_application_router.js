@@ -104,7 +104,7 @@ router.post(
   "/",
   authMiddleware,
   requireRoles("customer"),
-  loanApplicationController.createLoanApplication,
+  loanApplicationController.createLoanApplication
 );
 
 /**
@@ -186,8 +186,10 @@ router.post(
     "super_admin_vendor",
     "admin_pawn_limited",
     "management",
+    "loan_officer_processor", // added
+    "agent"                    // added
   ),
-  loanApplicationController.createLoanApplicationForCustomer,
+  loanApplicationController.createLoanApplicationForCustomer
 );
 
 /**
@@ -276,9 +278,9 @@ router.get(
     "loan_officer_processor",
     "loan_officer_approval",
     "management",
-    "customer",
+    "customer"
   ),
-  loanApplicationController.getLoanApplications,
+  loanApplicationController.getLoanApplications
 );
 
 /**
@@ -320,9 +322,9 @@ router.get(
     "loan_officer_processor",
     "loan_officer_approval",
     "management",
-    "customer",
+    "customer"
   ),
-  loanApplicationController.getLoanApplicationById,
+  loanApplicationController.getLoanApplicationById
 );
 
 /**
@@ -400,9 +402,9 @@ router.put(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management",
+    "management"
   ),
-  loanApplicationController.updateLoanApplication,
+  loanApplicationController.updateLoanApplication
 );
 
 /**
@@ -435,8 +437,15 @@ router.put(
 router.post(
   "/:id/submit",
   authMiddleware,
-  requireRoles("customer", "loan_officer_processor", "loan_officer_approval", "super_admin_vendor", "admin_pawn_limited", "management"),
-  loanApplicationController.submitLoanApplication,
+  requireRoles(
+    "customer",
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management"
+  ),
+  loanApplicationController.submitLoanApplication
 );
 
 /**
@@ -491,9 +500,9 @@ router.put(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management",
+    "management"
   ),
-  loanApplicationController.updateLoanApplicationStatus,
+  loanApplicationController.updateLoanApplicationStatus
 );
 
 /**
@@ -533,9 +542,9 @@ router.post(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management",
+    "management"
   ),
-  loanApplicationController.performDebtorCheck,
+  loanApplicationController.performDebtorCheck
 );
 
 /**
@@ -586,9 +595,9 @@ router.post(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management",
+    "management"
   ),
-  loanApplicationController.addAttachment,
+  loanApplicationController.addAttachment
 );
 
 /**
@@ -633,9 +642,9 @@ router.delete(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management",
+    "management"
   ),
-  loanApplicationController.removeAttachment,
+  loanApplicationController.removeAttachment
 );
 
 /**
@@ -689,9 +698,9 @@ router.post(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management",
+    "management"
   ),
-  loanApplicationController.sendDocumentRequirement,
+  loanApplicationController.sendDocumentRequirement
 );
 
 /**
@@ -719,9 +728,9 @@ router.get(
     "loan_officer_processor",
     "loan_officer_approval",
     "management",
-    "customer",
+    "customer"
   ),
-  loanApplicationController.getStatistics,
+  loanApplicationController.getStatistics
 );
 
 /**
@@ -775,7 +784,7 @@ router.get(
       success: true,
       message: "Export endpoint - implement CSV/Excel generation here",
     });
-  },
+  }
 );
 
 module.exports = router;

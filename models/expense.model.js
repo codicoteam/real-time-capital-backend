@@ -41,6 +41,7 @@ const ExpenseSchema = new mongoose.Schema(
     description: { type: String, trim: true },
 
     // Optional attachment references (if you have an Attachment model)
+    images:[String],
     attachments: [{ type: mongoose.Schema.Types.ObjectId, ref: "Attachment" }],
 
     // Status for approval workflow (optional feature)

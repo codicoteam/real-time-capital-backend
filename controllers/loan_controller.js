@@ -10,11 +10,11 @@ class LoanController {
       const userId = req.user?.id;
 
       const result = await loanService.createLoan(loanData, userId);
-      
+
       res.status(201).json({
         success: true,
         message: result.message,
-        data: result.data
+        data: result.data,
       });
     } catch (error) {
       const status = error.status || 500;
@@ -22,7 +22,7 @@ class LoanController {
         success: false,
         message: error.message || "Failed to create loan",
         errors: error.errors,
-        detail: error.detail
+        detail: error.detail,
       });
     }
   }
@@ -33,20 +33,20 @@ class LoanController {
   async getLoan(req, res) {
     try {
       const { id } = req.params;
-      
+
       const result = await loanService.getLoanById(id);
-      
+
       res.status(200).json({
         success: true,
         message: result.message,
-        data: result.data
+        data: result.data,
       });
     } catch (error) {
       const status = error.status || 500;
       res.status(status).json({
         success: false,
         message: error.message || "Failed to retrieve loan",
-        detail: error.detail
+        detail: error.detail,
       });
     }
   }
@@ -69,24 +69,25 @@ class LoanController {
         due_to,
         min_amount,
         max_amount,
-        sort_by = 'created_at',
-        sort_order = 'desc'
+        sort_by = "created_at",
+        sort_order = "desc",
       } = req.query;
 
       // Parse page and limit
       const pageNum = parseInt(page);
       const limitNum = parseInt(limit);
-      
+
       // Validate pagination params
       if (pageNum < 1 || limitNum < 1 || limitNum > 100) {
         return res.status(400).json({
           success: false,
-          message: "Invalid pagination parameters. Page must be >= 1, limit must be between 1 and 100"
+          message:
+            "Invalid pagination parameters. Page must be >= 1, limit must be between 1 and 100",
         });
       }
 
       // Build sort object
-      const sort = { [sort_by]: sort_order === 'asc' ? 1 : -1 };
+      const sort = { [sort_by]: sort_order === "asc" ? 1 : -1 };
 
       // Build filters
       const filters = {
@@ -99,27 +100,27 @@ class LoanController {
         due_from,
         due_to,
         min_amount,
-        max_amount
+        max_amount,
       };
 
       const result = await loanService.getLoansPaginated(
         filters,
         pageNum,
         limitNum,
-        sort
+        sort,
       );
 
       res.status(200).json({
         success: true,
         message: result.message,
-        data: result.data
+        data: result.data,
       });
     } catch (error) {
       const status = error.status || 500;
       res.status(status).json({
         success: false,
         message: error.message || "Failed to retrieve loans",
-        detail: error.detail
+        detail: error.detail,
       });
     }
   }
@@ -133,12 +134,12 @@ class LoanController {
         customer_user,
         status,
         collateral_category,
-        sort_by = 'created_at',
-        sort_order = 'desc'
+        sort_by = "created_at",
+        sort_order = "desc",
       } = req.query;
 
       // Build sort object
-      const sort = { [sort_by]: sort_order === 'asc' ? 1 : -1 };
+      const sort = { [sort_by]: sort_order === "asc" ? 1 : -1 };
 
       // Build filters
       const filters = { customer_user, status, collateral_category };
@@ -149,14 +150,14 @@ class LoanController {
         success: true,
         message: result.message,
         data: result.data,
-        count: result.count
+        count: result.count,
       });
     } catch (error) {
       const status = error.status || 500;
       res.status(status).json({
         success: false,
         message: error.message || "Failed to retrieve loans",
-        detail: error.detail
+        detail: error.detail,
       });
     }
   }
@@ -171,11 +172,11 @@ class LoanController {
       const userId = req.user?.id;
 
       const result = await loanService.updateLoan(id, updateData, userId);
-      
+
       res.status(200).json({
         success: true,
         message: result.message,
-        data: result.data
+        data: result.data,
       });
     } catch (error) {
       const status = error.status || 500;
@@ -183,7 +184,7 @@ class LoanController {
         success: false,
         message: error.message || "Failed to update loan",
         errors: error.errors,
-        detail: error.detail
+        detail: error.detail,
       });
     }
   }
@@ -200,23 +201,94 @@ class LoanController {
       if (!status) {
         return res.status(400).json({
           success: false,
-          message: "Status is required"
+          message: "Status is required",
         });
       }
 
-      const result = await loanService.updateLoanStatus(id, status, notes, userId);
-      
+      const result = await loanService.updateLoanStatus(
+        id,
+        status,
+        notes,
+        userId,
+      );
+
       res.status(200).json({
         success: true,
         message: result.message,
-        data: result.data
+        data: result.data,
       });
     } catch (error) {
       const status = error.status || 500;
       res.status(status).json({
         success: false,
         message: error.message || "Failed to update loan status",
-        detail: error.detail
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
+   * Request super admin approval for a loan
+   */
+  async requestSuperAdminApproval(req, res) {
+    try {
+      const { id } = req.params;
+      const { superAdminIds } = req.body;
+      const userId = req.user?.id;
+
+      if (
+        !superAdminIds ||
+        !Array.isArray(superAdminIds) ||
+        superAdminIds.length === 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Please provide an array of super admin IDs (1-3)",
+        });
+      }
+
+      if (superAdminIds.length > 3) {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot request approval from more than 3 super admins",
+        });
+      }
+
+      const result = await loanService.requestSuperAdminApproval(
+        id,
+        superAdminIds,
+        userId,
+      );
+      res.status(200).json(result);
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to request approval",
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
+   * Super admin approves a loan
+   */
+  async approveLoanBySuperAdmin(req, res) {
+    try {
+      const { id } = req.params;
+      const superAdminId = req.user?.id;
+
+      const result = await loanService.approveLoanBySuperAdmin(
+        id,
+        superAdminId,
+      );
+      res.status(200).json(result);
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to approve loan",
+        detail: error.detail,
       });
     }
   }
@@ -230,18 +302,18 @@ class LoanController {
       const userId = req.user?.id;
 
       const result = await loanService.deleteLoan(id, userId);
-      
+
       res.status(200).json({
         success: true,
         message: result.message,
-        data: result.data
+        data: result.data,
       });
     } catch (error) {
       const status = error.status || 500;
       res.status(status).json({
         success: false,
         message: error.message || "Failed to delete loan",
-        detail: error.detail
+        detail: error.detail,
       });
     }
   }
@@ -257,19 +329,23 @@ class LoanController {
       const pageNum = parseInt(page);
       const limitNum = parseInt(limit);
 
-      const result = await loanService.getLoansByCustomer(customerId, pageNum, limitNum);
-      
+      const result = await loanService.getLoansByCustomer(
+        customerId,
+        pageNum,
+        limitNum,
+      );
+
       res.status(200).json({
         success: true,
         message: result.message,
-        data: result.data
+        data: result.data,
       });
     } catch (error) {
       const status = error.status || 500;
       res.status(status).json({
         success: false,
         message: error.message || "Failed to retrieve loans by customer",
-        detail: error.detail
+        detail: error.detail,
       });
     }
   }
@@ -285,7 +361,7 @@ class LoanController {
       if (!q || q.trim().length < 2) {
         return res.status(400).json({
           success: false,
-          message: "Search term must be at least 2 characters long"
+          message: "Search term must be at least 2 characters long",
         });
       }
 
@@ -293,18 +369,18 @@ class LoanController {
       const limitNum = parseInt(limit);
 
       const result = await loanService.searchLoans(q.trim(), pageNum, limitNum);
-      
+
       res.status(200).json({
         success: true,
         message: result.message,
-        data: result.data
+        data: result.data,
       });
     } catch (error) {
       const status = error.status || 500;
       res.status(status).json({
         success: false,
         message: error.message || "Failed to search loans",
-        detail: error.detail
+        detail: error.detail,
       });
     }
   }
@@ -315,18 +391,18 @@ class LoanController {
   async getLoanStats(req, res) {
     try {
       const result = await loanService.getLoanStats();
-      
+
       res.status(200).json({
         success: true,
         message: "Loan statistics retrieved successfully",
-        data: result
+        data: result,
       });
     } catch (error) {
       const status = error.status || 500;
       res.status(status).json({
         success: false,
         message: error.message || "Failed to retrieve loan statistics",
-        detail: error.detail
+        detail: error.detail,
       });
     }
   }
@@ -337,20 +413,20 @@ class LoanController {
   async calculateCharges(req, res) {
     try {
       const { id } = req.params;
-      
+
       const result = await loanService.calculateLoanCharges(id);
-      
+
       res.status(200).json({
         success: true,
         message: result.message,
-        data: result.data
+        data: result.data,
       });
     } catch (error) {
       const status = error.status || 500;
       res.status(status).json({
         success: false,
         message: error.message || "Failed to calculate loan charges",
-        detail: error.detail
+        detail: error.detail,
       });
     }
   }
@@ -366,23 +442,23 @@ class LoanController {
       if (!paymentData.amount || paymentData.amount <= 0) {
         return res.status(400).json({
           success: false,
-          message: "Payment amount is required and must be greater than 0"
+          message: "Payment amount is required and must be greater than 0",
         });
       }
 
       const result = await loanService.processPayment(id, paymentData);
-      
+
       res.status(200).json({
         success: true,
         message: result.message,
-        data: result.data
+        data: result.data,
       });
     } catch (error) {
       const status = error.status || 500;
       res.status(status).json({
         success: false,
         message: error.message || "Failed to process payment",
-        detail: error.detail
+        detail: error.detail,
       });
     }
   }
@@ -393,46 +469,47 @@ class LoanController {
   async getLoanApplication(req, res) {
     try {
       const { id } = req.params;
-      
+
       const loanApplication = await require("../models/loan_application_model")
         .findById(id)
         .populate([
-          { 
-            path: 'customer_user', 
-            select: 'first_name last_name email phone national_id_number address profile_pic_url' 
+          {
+            path: "customer_user",
+            select:
+              "first_name last_name email phone national_id_number address profile_pic_url",
           },
-          { 
-            path: 'attachments',
-            select: 'filename url mime_type category'
+          {
+            path: "attachments",
+            select: "filename url mime_type category",
           },
-          { 
-            path: 'debtor_check.matched_debtor_records',
-            select: 'debtor_name amount status'
+          {
+            path: "debtor_check.matched_debtor_records",
+            select: "debtor_name amount status",
           },
-          { 
-            path: 'debtor_check.checked_by',
-            select: 'first_name last_name email roles'
-          }
+          {
+            path: "debtor_check.checked_by",
+            select: "first_name last_name email roles",
+          },
         ]);
 
       if (!loanApplication) {
         return res.status(404).json({
           success: false,
-          message: `Loan application with ID ${id} not found`
+          message: `Loan application with ID ${id} not found`,
         });
       }
 
       res.status(200).json({
         success: true,
         message: "Loan application retrieved successfully",
-        data: loanApplication
+        data: loanApplication,
       });
     } catch (error) {
       const status = error.status || 500;
       res.status(status).json({
         success: false,
         message: error.message || "Failed to retrieve loan application",
-        detail: error.message
+        detail: error.message,
       });
     }
   }
@@ -449,25 +526,32 @@ class LoanController {
       if (!status) {
         return res.status(400).json({
           success: false,
-          message: "Status is required"
+          message: "Status is required",
         });
       }
 
-      const validStatuses = ["draft", "submitted", "processing", "approved", "rejected", "cancelled"];
+      const validStatuses = [
+        "draft",
+        "submitted",
+        "processing",
+        "approved",
+        "rejected",
+        "cancelled",
+      ];
       if (!validStatuses.includes(status)) {
         return res.status(400).json({
           success: false,
-          message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+          message: `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
         });
       }
 
       const LoanApplication = require("../models/loan_application_model");
       const loanApplication = await LoanApplication.findById(id);
-      
+
       if (!loanApplication) {
         return res.status(404).json({
           success: false,
-          message: `Loan application with ID ${id} not found`
+          message: `Loan application with ID ${id} not found`,
         });
       }
 
@@ -477,7 +561,7 @@ class LoanController {
         loanApplication.internal_notes = internal_notes;
       }
       loanApplication.updated_at = new Date();
-      
+
       // Add status history
       loanApplication.status_history = loanApplication.status_history || [];
       loanApplication.status_history.push({
@@ -485,27 +569,27 @@ class LoanController {
         to: status,
         changed_by: userId,
         changed_at: new Date(),
-        notes: internal_notes
+        notes: internal_notes,
       });
 
       await loanApplication.save();
 
       // Populate before returning
       await loanApplication.populate([
-        { path: 'customer_user', select: 'first_name last_name email phone' }
+        { path: "customer_user", select: "first_name last_name email phone" },
       ]);
 
       res.status(200).json({
         success: true,
         message: `Loan application status updated to ${status}`,
-        data: loanApplication
+        data: loanApplication,
       });
     } catch (error) {
       const status = error.status || 500;
       res.status(status).json({
         success: false,
         message: error.message || "Failed to update loan application status",
-        detail: error.message
+        detail: error.message,
       });
     }
   }

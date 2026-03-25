@@ -7,11 +7,12 @@ class LoanApplicationController {
   async createLoanApplication(req, res) {
     try {
       const applicationData = req.body;
-      const userId = req.user._id;
+      const user = req.user; // full user object with roles
 
       const result = await loanApplicationService.createLoanApplication(
         applicationData,
-        userId,
+        user,
+        null, // no separate customer – it's self‑service
       );
 
       res.status(201).json({
@@ -41,9 +42,16 @@ class LoanApplicationController {
         });
       }
 
+      const user = req.user; // staff user (agent/processor)
+      const customerUserId = applicationData.customer_user_id;
+
+      // Remove the separate field from the data that goes into the application
+      delete applicationData.customer_user_id;
+
       const result = await loanApplicationService.createLoanApplication(
         applicationData,
-        applicationData.customer_user_id,
+        user,
+        customerUserId,
       );
 
       res.status(201).json({
@@ -65,11 +73,11 @@ class LoanApplicationController {
   async submitLoanApplication(req, res) {
     try {
       const { id } = req.params;
-      const userId = req.user._id;
+      const user = req.user;
 
       const result = await loanApplicationService.submitLoanApplication(
         id,
-        userId,
+        user,
       );
 
       res.status(200).json({

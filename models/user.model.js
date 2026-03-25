@@ -37,20 +37,21 @@ const UserSchema = new mongoose.Schema(
     password_hash: { type: String, select: false },
 
     // Roles
-    roles: {
-      type: [String],
-      enum: [
-        "super_admin_vendor",
-        "admin_pawn_limited",
-        "call_centre_support",
-        "loan_officer_processor",
-        "loan_officer_approval",
-        "management",
-        "customer",
-      ],
-      default: ["customer"],
-      validate: (v) => Array.isArray(v) && v.length > 0,
-    },
+roles: {
+  type: [String],
+  enum: [
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "call_centre_support",
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "management",
+    "customer",
+    "agent", // ✅ Added
+  ],
+  default: ["customer"],
+  validate: (v) => Array.isArray(v) && v.length > 0,
+},
 
     // ✅ Name split
     first_name: { type: String, required: true, trim: true },
