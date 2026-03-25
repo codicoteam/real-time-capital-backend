@@ -4,8 +4,8 @@ const Asset = require("../models/asset.model");
 const Loan = require("../models/loan.model");
 const Auction = require("../models/auction.model");
 const User = require("../models/user.model");
-const { sendSmsWithMessage } = require("./sms.service"); // your twilio file
-const { sendEmail, generateDocumentTemplate } = require("./email_service");
+const { sendSmsWithMessage } = require("../utils/sms_utils"); // your twilio file
+const { sendEmail, generateDocumentTemplate } = require("../utils/emails_util");
 
 // ─────────────────────────────────────────────
 // Helper – generate sequential auction_no

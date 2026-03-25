@@ -4,11 +4,14 @@ const http = require("http");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const dotenv = require("dotenv");
+
 // DB + Socket config
 const connectDB = require("./configs/db_config");
 // const initChatSocket = require("./config/socket_config");
+
 // Swagger setup
 const setupSwagger = require("./middlewares/swagger");
+
 // Routers
 const debtorRecordRouter = require("./routers/debtor_record_router");
 const userRouter = require("./routers/user_router");
@@ -30,8 +33,12 @@ const homeRouter = require("./routers/home_router");
 const customerDashboardRouter = require("./routers/customer_dashboard_router");
 const reportRouter = require("./routers/report_router");
 const expenseRouter = require("./routers/expense_router");
-const smsRouter  = require("./routers/sms_routes");
+const smsRouter = require("./routers/sms_routes");
 const emailRouter = require("./routers/email_routes");
+
+// Auction service (automatic loan expiry & notifications)
+const auctionService = require("./services/assets_auction_service");
+
 // Load env
 dotenv.config();
 
@@ -72,6 +79,7 @@ app.use("/api/v1/report", reportRouter);
 app.use("/api/v1/expenses", expenseRouter);
 app.use("/api/v1/sms", smsRouter);
 app.use("/api/v1/email", emailRouter);
+
 // Global error handler (REST)
 app.use((err, req, res, next) => {
   console.error("Global error handler:", err.stack || err);
@@ -86,4 +94,7 @@ const PORT = process.env.PORT || 7070;
 app.listen(PORT, () => {
   console.log(`🚗 Server running on port ${PORT}`);
   console.log(`📘 Swagger docs available at http://localhost:${PORT}/api-docs`);
+
+  // Start auction scheduler (automatic processing of expired loans & warnings)
+  auctionService.startAuctionScheduler();
 });
