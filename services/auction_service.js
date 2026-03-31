@@ -962,7 +962,6 @@ class AuctionService {
           populate: {
             path: "attachments",
             select: "filename url",
-            match: { category: "asset_photos" },
             // No limit, returns all attachments as a list
           },
         })
