@@ -251,7 +251,7 @@ class AuctionService {
           .populate({
             path: "asset",
             select:
-              "asset_no title description category condition evaluated_value",
+              "asset_no title description category condition evaluated_value attachments",
             populate: {
               path: "attachments",
               select: "filename url mime_type",
