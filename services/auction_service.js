@@ -243,15 +243,7 @@ class AuctionService {
 
       // Fetch auctions without populating attachments yet
       const auctions = await Auction.find(query)
-        .populate({
-          path: "asset",
-          select:
-            "asset_no title description category condition evaluated_value attachments",
-          populate: {
-            path: "owner_user",
-            select: "name email phone",
-          },
-        })
+        .populate("asset")
         .populate("winner_user", "name email")
         .sort(sortOptions)
         .skip(skip)

@@ -220,7 +220,8 @@ router.get(
     'admin_pawn_limited',
     'loan_officer_processor',
     'loan_officer_approval',
-    'management'
+    'management',
+    'customer'
   ),
   attachmentController.getAllAttachments
 );
