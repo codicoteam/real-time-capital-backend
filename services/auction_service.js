@@ -260,7 +260,6 @@ class AuctionService {
       const attachments = await mongoose
         .model("Attachment")
         .find({
-          entity_type: "Asset",
           entity_id: { $in: assetIds },
           category: "asset_photos",
         })
