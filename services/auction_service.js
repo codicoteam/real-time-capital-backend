@@ -3,9 +3,13 @@ const Asset = require("../models/asset.model");
 const Bid = require("../models/bid.model");
 const User = require("../models/user.model");
 const mongoose = require("mongoose");
+const { sendSmsWithMessage } = require("../utils/sms_utils");
+const { sendEmail } = require("../utils/emails_util");
+
 (async () => {
   ({ v4: uuidv4 } = await import("uuid"));
 })();
+
 /**
  * Auction Service
  * Contains all business logic for auctions
@@ -79,7 +83,7 @@ class AuctionService {
       // Validate asset
       const assetValidation = await this.validateAssetForAuction(
         auctionData.asset,
-        createdBy
+        createdBy,
       );
       if (!assetValidation.success) {
         return assetValidation;
@@ -252,7 +256,7 @@ class AuctionService {
               path: "attachments",
               select: "filename url mime_type",
               match: { category: "asset_photos" },
-              limit: 1,
+              // Removed limit: 1 to return all attachments as a list
             },
           })
           .populate("winner_user", "name email")
@@ -455,6 +459,9 @@ class AuctionService {
           await Bid.findByIdAndUpdate(highestBid._id, {
             payment_status: "pending",
           });
+
+          // Notify the winning bidder
+          await this.notifyWinner(auction, highestBid);
         } else {
           // No bids, mark asset as available for re-auction
           await Asset.findByIdAndUpdate(auction.asset, {
@@ -488,6 +495,62 @@ class AuctionService {
     } catch (error) {
       console.error("Update status error:", error);
       throw new Error(error.message || "Failed to update auction status");
+    }
+  }
+
+  /**
+   * Notify the winning bidder via SMS and email
+   * @param {Object} auction - Auction object
+   * @param {Object} winningBid - Winning bid object
+   */
+  static async notifyWinner(auction, winningBid) {
+    try {
+      const winner = await User.findById(auction.winner_user);
+      if (!winner) {
+        console.error("Winner user not found for auction:", auction._id);
+        return;
+      }
+
+      // Prepare the message content
+      const auctionNo = auction.auction_no;
+      const amount = winningBid.amount;
+      const assetTitle = auction.asset?.title || "the asset";
+
+      const smsMessage = `Congratulations! You have won the auction for ${assetTitle} (${auctionNo}) with a bid of ${amount} USD. Please proceed with payment.`;
+      const emailSubject = `You won the auction: ${auctionNo}`;
+      const emailHtml = `
+        <h2>Auction Win Notification</h2>
+        <p>Congratulations! You have won the auction for <strong>${assetTitle}</strong> (${auctionNo}).</p>
+        <p>Your winning bid amount: <strong>${amount} USD</strong>.</p>
+        <p>Please proceed with payment to complete the transaction.</p>
+        <p>Thank you for participating.</p>
+      `;
+
+      // Send SMS if phone number is available
+      if (winner.phone) {
+        try {
+          await sendSmsWithMessage(winner.phone, smsMessage);
+        } catch (smsError) {
+          console.error(`Failed to send SMS to ${winner.phone}:`, smsError);
+        }
+      }
+
+      // Send email if email address is available
+      if (winner.email) {
+        try {
+          await sendEmail({
+            to: winner.email,
+            subject: emailSubject,
+            html: emailHtml,
+            text: smsMessage,
+          });
+        } catch (emailError) {
+          console.error(`Failed to send email to ${winner.email}:`, emailError);
+        }
+      }
+    } catch (error) {
+      console.error("Error in notifyWinner:", error);
+      // Do not throw; notification failure should not break the auction closing process
     }
   }
 
@@ -645,7 +708,7 @@ class AuctionService {
       // Apply category filter if provided
       if (filters.category) {
         const assets = await Asset.find({ category: filters.category }).select(
-          "_id"
+          "_id",
         );
         query.asset = { $in: assets.map((a) => a._id) };
       }
@@ -680,7 +743,7 @@ class AuctionService {
             ...auction.toObject(),
             current_bid: highestBid,
           };
-        })
+        }),
       );
 
       return {
@@ -834,7 +897,7 @@ class AuctionService {
               path: "attachments",
               select: "filename url",
               match: { category: "asset_photos" },
-              limit: 1,
+              // Removed limit: 1 to return all attachments as a list
             },
           },
         })
@@ -900,7 +963,7 @@ class AuctionService {
             path: "attachments",
             select: "filename url",
             match: { category: "asset_photos" },
-            limit: 1,
+            // No limit, returns all attachments as a list
           },
         })
         .limit(20);
