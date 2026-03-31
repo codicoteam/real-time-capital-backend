@@ -178,9 +178,8 @@ class AuctionService {
       .populate("created_by", "name email");
   }
 
-  /**
-   * Get auctions with pagination and filters
-   */
+  // In AuctionService class, replace the getAuctions method with:
+
   static async getAuctions(filters = {}, pagination = {}, user) {
     try {
       const {
@@ -207,7 +206,6 @@ class AuctionService {
       // Build query
       let query = {};
 
-      // Apply filters
       if (status) query.status = status;
       if (auction_type) query.auction_type = auction_type;
       if (asset_id) query.asset = asset_id;
@@ -218,58 +216,84 @@ class AuctionService {
         if (created_from) query.created_at.$gte = new Date(created_from);
         if (created_to) query.created_at.$lte = new Date(created_to);
       }
-
       if (starts_from || starts_to) {
         query.starts_at = {};
         if (starts_from) query.starts_at.$gte = new Date(starts_from);
         if (starts_to) query.starts_at.$lte = new Date(starts_to);
       }
-
       if (ends_from || ends_to) {
         query.ends_at = {};
         if (ends_from) query.ends_at.$gte = new Date(ends_from);
         if (ends_to) query.ends_at.$lte = new Date(ends_to);
       }
 
-      // Search functionality
+      // Search
       if (search && search.length >= 2) {
         query.$or = [{ auction_no: { $regex: search, $options: "i" } }];
       }
 
-      // Category filter - needs to join with asset
+      // Category filter
       if (category) {
         const assets = await Asset.find({ category }).select("_id");
         query.asset = { $in: assets.map((a) => a._id) };
       }
 
-      // Calculate skip
       const skip = (page - 1) * limit;
+      const sortOptions = { [sort_by]: sort_order === "asc" ? 1 : -1 };
 
-      // Execute query
-      const [auctions, total] = await Promise.all([
-        Auction.find(query)
-          .populate({
-            path: "asset",
-            select:
-              "asset_no title description category condition evaluated_value attachments",
-            populate: {
-              path: "attachments",
-              select: "filename url mime_type",
-              match: { category: "asset_photos" },
-              // Removed limit: 1 to return all attachments as a list
-            },
-          })
-          .populate("winner_user", "name email")
-          .sort({ [sort_by]: sort_order === "asc" ? 1 : -1 })
-          .skip(skip)
-          .limit(parseInt(limit)),
-        Auction.countDocuments(query),
-      ]);
+      // Fetch auctions without populating attachments yet
+      const auctions = await Auction.find(query)
+        .populate({
+          path: "asset",
+          select:
+            "asset_no title description category condition evaluated_value attachments",
+          populate: {
+            path: "owner_user",
+            select: "name email phone",
+          },
+        })
+        .populate("winner_user", "name email")
+        .sort(sortOptions)
+        .skip(skip)
+        .limit(parseInt(limit));
+
+      const total = await Auction.countDocuments(query);
+
+      // Collect all asset IDs
+      const assetIds = auctions
+        .map((auction) => auction.asset._id)
+        .filter((id) => id);
+
+      // Fetch attachments for these assets in one query
+      const attachments = await mongoose
+        .model("Attachment")
+        .find({
+          entity_type: "Asset",
+          entity_id: { $in: assetIds },
+          category: "asset_photos",
+        })
+        .select("filename url mime_type");
+
+      // Build a map: assetId -> array of attachments
+      const attachmentMap = {};
+      attachments.forEach((att) => {
+        const assetId = att.entity_id.toString();
+        if (!attachmentMap[assetId]) attachmentMap[assetId] = [];
+        attachmentMap[assetId].push(att);
+      });
+
+      // Enrich each auction's asset with its attachments
+      const enrichedAuctions = auctions.map((auction) => {
+        const auctionObj = auction.toObject();
+        const assetId = auctionObj.asset._id.toString();
+        auctionObj.asset.attachments = attachmentMap[assetId] || [];
+        return auctionObj;
+      });
 
       return {
         success: true,
         data: {
-          auctions,
+          auctions: enrichedAuctions,
           pagination: {
             page: parseInt(page),
             limit: parseInt(limit),
