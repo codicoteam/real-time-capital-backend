@@ -94,6 +94,48 @@ class UserController {
     }
   }
 
+  // controllers/user_controller.js (add the new method, keep everything else)
+
+  /**
+   * Add a new customer (by agent, loan officer, or admin)
+   * Only customer role is allowed.
+   */
+  async addCustomer(req, res) {
+    try {
+      const userData = req.body;
+      const creator = req.user; // logged‑in user
+
+      // Force role to be ["customer"]
+      userData.roles = ["customer"];
+
+      const user = await userService.registerUser(userData, creator);
+
+      res.status(201).json({
+        success: true,
+        message:
+          "Customer account created. Verification OTP sent to their email.",
+        data: {
+          user: {
+            id: user._id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            status: user.status,
+            email_verified: user.email_verified,
+            added_by: user.added_by,
+          },
+        },
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message || "Failed to create customer",
+      });
+    }
+  }
+
+  // Keep all other methods (register, verifyEmail, login, etc.) unchanged
+
   /**
    * Resend verification OTP
    */

@@ -519,4 +519,62 @@ router.patch(
   userController.updateUserStatus,
 );
 
+// routes/user_router.js (add this new route before the admin routes)
+
+/**
+ * @swagger
+ * /api/v1/users/customers:
+ *   post:
+ *     summary: Add a new customer (Agent, Loan Officer, Admin)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - first_name
+ *               - last_name
+ *             properties:
+ *               email:
+ *                 type: string
+ *               first_name:
+ *                 type: string
+ *               last_name:
+ *                 type: string
+ *               phone:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *                 description: Optional – if not provided, user must use email verification flow.
+ *               date_of_birth:
+ *                 type: string
+ *                 format: date
+ *               address:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Customer created, verification OTP sent
+ *       403:
+ *         description: Not authorized to create customers
+ */
+router.post(
+  "/customers",
+  authMiddleware,
+  requireRoles(
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "agent",
+    "loan_officer_processor",
+    "loan_officer_approval",
+  ),
+  userController.addCustomer,
+);
+
+// Keep all existing routes (register, login, etc.) unchanged
+
 module.exports = router;

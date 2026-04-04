@@ -80,12 +80,15 @@ class UserService {
     return await bcrypt.compare(password, hashedPassword);
   }
 
+  // services/user_service.js (only the changed method + a small helper)
+  // ... keep everything else the same ...
+
   /**
-   * Register a new user with role-based logic
+   * Register a new user
    * @param {Object} userData - user fields
-   * @param {string|null} adminUserId - ID of admin creating the user (null for self‑registration)
+   * @param {Object} creator - { _id: string, roles: string[] } or null for self‑registration
    */
-  async registerUser(userData, adminUserId = null) {
+  async registerUser(userData, creator = null) {
     const {
       email,
       password,
@@ -112,69 +115,87 @@ class UserService {
       ...otherData,
     });
 
-    // Set full name
     user.full_name = `${first_name} ${last_name}`.trim();
-
-    // Handle password if provided
     if (password) {
       user.password_hash = await this.hashPassword(password);
     }
 
-    // Set added_by if admin is creating the user
-    if (adminUserId) {
-      user.added_by = adminUserId;
+    // Determine creator type
+    const isSelfRegistration = !creator;
+    const creatorRoles = creator?.roles || [];
+    const isAdminCreator = creatorRoles.some((r) =>
+      ["super_admin_vendor", "admin_pawn_limited"].includes(r),
+    );
+    const isStaffCreator = creatorRoles.some((r) =>
+      ["agent", "loan_officer_processor", "loan_officer_approval"].includes(r),
+    );
+    const isTargetCustomer = roles.includes("customer") && roles.length === 1;
+    const isTargetStaff = !isTargetCustomer && roles.length > 0;
+
+    // Authorization: only admin can create staff, only staff can create customers
+    if (!isSelfRegistration) {
+      if (isTargetStaff && !isAdminCreator) {
+        throw { status: 403, message: "Only admin can create staff accounts." };
+      }
+      if (isTargetCustomer && !isAdminCreator && !isStaffCreator) {
+        throw {
+          status: 403,
+          message: "You are not allowed to create customer accounts.",
+        };
+      }
     }
 
-    // Role-based logic
-    const isCustomer = roles.includes("customer");
-    const isSuperAdmin = roles.includes("super_admin_vendor");
-    const isAdminCreated = !!adminUserId;
+    // Set added_by if creator exists
+    if (creator) {
+      user.added_by = creator._id;
+    }
 
-    if (isCustomer && !isAdminCreated) {
-      // For self-registered customers: generate OTP and set pending
+    // Status & verification logic
+    const isSuperAdmin = roles.includes("super_admin_vendor");
+
+    if (isSuperAdmin) {
+      // Super admin created by system or another super admin
+      user.status = "active";
+      user.email_verified = true;
+    } else if (isTargetStaff && isAdminCreator && !isSelfRegistration) {
+      // Admin creates staff member → active immediately, no OTP
+      user.status = "active";
+      user.email_verified = true;
+    } else {
+      // Customer (self‑registration or staff‑created) → pending + OTP
       user.status = "pending";
       user.email_verification_otp = generateOTP();
       user.email_verification_expires_at = new Date(
         Date.now() + 15 * 60 * 1000,
-      ); // 15 minutes
-    } else if (isAdminCreated && !isCustomer && !isSuperAdmin) {
-      // For admin-created staff: set active immediately
-      user.status = "active";
-      user.email_verified = true;
-    } else if (isSuperAdmin) {
-      // For super admin: set active, no OTP
-      user.status = "active";
-      user.email_verified = true;
+      );
     }
 
-    // Save user
     await user.save();
 
-    // Send appropriate emails and SMS
-    if (isCustomer && !isAdminCreated) {
-      // Email
+    // Send emails / SMS
+    if (isSuperAdmin) {
+      // No email for super admin creation
+    } else if (isTargetStaff && isAdminCreator && !isSelfRegistration) {
+      await sendAdminCreatedAccountEmail({
+        to: email,
+        fullName: user.full_name,
+      });
+    } else if (isTargetCustomer) {
       await sendVerificationEmail({
         to: email,
         fullName: user.full_name,
         otp: user.email_verification_otp,
       });
-      // SMS (if phone exists)
       if (user.phone) {
         const smsMessage = `Your Real Time Capital verification code is: ${user.email_verification_otp}. It expires in 15 minutes.`;
         await sendSmsWithMessage(user.phone, smsMessage);
       }
-    } else if (isAdminCreated && !isCustomer && !isSuperAdmin) {
-      await sendAdminCreatedAccountEmail({
-        to: email,
-        fullName: user.full_name,
-      });
     }
-
-    // Don't send OTP for super admin
 
     return user;
   }
 
+  // ... rest of the service unchanged ...
   /**
    * Verify email with OTP and return token
    */
