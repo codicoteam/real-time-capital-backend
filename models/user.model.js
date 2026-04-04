@@ -10,7 +10,7 @@ const AuthProviderSchema = new mongoose.Schema(
     provider_user_id: { type: String, required: true },
     added_at: { type: Date, default: Date.now },
   },
-  { _id: false }
+  { _id: false },
 );
 
 // Optional KYC/Document uploads (all optional)
@@ -27,31 +27,31 @@ const UserDocumentSchema = new mongoose.Schema(
     uploaded_at: { type: Date, default: Date.now },
     notes: { type: String, trim: true },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const UserSchema = new mongoose.Schema(
   {
     email: { type: String, required: true, lowercase: true, trim: true },
-    phone: { type: String,  trim: true },
+    phone: { type: String, trim: true },
     password_hash: { type: String, select: false },
 
     // Roles
-roles: {
-  type: [String],
-  enum: [
-    "super_admin_vendor",
-    "admin_pawn_limited",
-    "call_centre_support",
-    "loan_officer_processor",
-    "loan_officer_approval",
-    "management",
-    "customer",
-    "agent", // ✅ Added
-  ],
-  default: ["customer"],
-  validate: (v) => Array.isArray(v) && v.length > 0,
-},
+    roles: {
+      type: [String],
+      enum: [
+        "super_admin_vendor",
+        "admin_pawn_limited",
+        "call_centre_support",
+        "loan_officer_processor",
+        "loan_officer_approval",
+        "management",
+        "customer",
+        "agent", // ✅ Added
+      ],
+      default: ["customer"],
+      validate: (v) => Array.isArray(v) && v.length > 0,
+    },
 
     // ✅ Name split
     first_name: { type: String, required: true, trim: true },
@@ -90,10 +90,16 @@ roles: {
 
     reset_password_otp: { type: String },
     reset_password_expires_at: { type: Date },
+    added_by: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
 
     auth_providers: { type: [AuthProviderSchema], default: [] },
   },
-  { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
+  { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } },
 );
 
 UserSchema.index({ email: 1 });

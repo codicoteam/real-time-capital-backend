@@ -1,4 +1,3 @@
-// services/user_service.js
 const User = require("../models/user.model");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -83,8 +82,10 @@ class UserService {
 
   /**
    * Register a new user with role-based logic
+   * @param {Object} userData - user fields
+   * @param {string|null} adminUserId - ID of admin creating the user (null for self‑registration)
    */
-  async registerUser(userData, createdByAdmin = false) {
+  async registerUser(userData, adminUserId = null) {
     const {
       email,
       password,
@@ -119,18 +120,24 @@ class UserService {
       user.password_hash = await this.hashPassword(password);
     }
 
+    // Set added_by if admin is creating the user
+    if (adminUserId) {
+      user.added_by = adminUserId;
+    }
+
     // Role-based logic
     const isCustomer = roles.includes("customer");
     const isSuperAdmin = roles.includes("super_admin_vendor");
+    const isAdminCreated = !!adminUserId;
 
-    if (isCustomer && !createdByAdmin) {
+    if (isCustomer && !isAdminCreated) {
       // For self-registered customers: generate OTP and set pending
       user.status = "pending";
       user.email_verification_otp = generateOTP();
       user.email_verification_expires_at = new Date(
         Date.now() + 15 * 60 * 1000,
       ); // 15 minutes
-    } else if (createdByAdmin && !isCustomer && !isSuperAdmin) {
+    } else if (isAdminCreated && !isCustomer && !isSuperAdmin) {
       // For admin-created staff: set active immediately
       user.status = "active";
       user.email_verified = true;
@@ -144,7 +151,7 @@ class UserService {
     await user.save();
 
     // Send appropriate emails and SMS
-    if (isCustomer && !createdByAdmin) {
+    if (isCustomer && !isAdminCreated) {
       // Email
       await sendVerificationEmail({
         to: email,
@@ -156,7 +163,7 @@ class UserService {
         const smsMessage = `Your Real Time Capital verification code is: ${user.email_verification_otp}. It expires in 15 minutes.`;
         await sendSmsWithMessage(user.phone, smsMessage);
       }
-    } else if (createdByAdmin && !isCustomer && !isSuperAdmin) {
+    } else if (isAdminCreated && !isCustomer && !isSuperAdmin) {
       await sendAdminCreatedAccountEmail({
         to: email,
         fullName: user.full_name,
@@ -469,6 +476,7 @@ class UserService {
 
   /**
    * Get all users (for admin)
+   * Now populates 'added_by' with first_name, last_name, email
    */
   async getAllUsers(filters = {}, page = 1, limit = 20) {
     const query = {};
@@ -488,7 +496,11 @@ class UserService {
     const skip = (page - 1) * limit;
 
     const [users, total] = await Promise.all([
-      User.find(query).sort({ created_at: -1 }).skip(skip).limit(limit),
+      User.find(query)
+        .populate("added_by", "first_name last_name email") // 👈 populate added_by
+        .sort({ created_at: -1 })
+        .skip(skip)
+        .limit(limit),
       User.countDocuments(query),
     ]);
 

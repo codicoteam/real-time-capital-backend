@@ -1,8 +1,10 @@
-// routes/user_router.js
 const express = require("express");
 const router = express.Router();
 const userController = require("../controllers/user_controller");
-const { authMiddleware, requireRoles } = require("../middlewares/auth_middleware");
+const {
+  authMiddleware,
+  requireRoles,
+} = require("../middlewares/auth_middleware");
 
 /**
  * @swagger
@@ -327,7 +329,11 @@ router.post("/documents", authMiddleware, userController.uploadDocument);
  *       404:
  *         description: Document not found
  */
-router.delete("/documents/:documentId", authMiddleware, userController.removeDocument);
+router.delete(
+  "/documents/:documentId",
+  authMiddleware,
+  userController.removeDocument,
+);
 
 /**
  * @swagger
@@ -431,7 +437,7 @@ router.get(
   "/",
   authMiddleware,
   requireRoles("super_admin_vendor", "admin_pawn_limited", "management"),
-  userController.getAllUsers
+  userController.getAllUsers,
 );
 
 /**
@@ -467,7 +473,7 @@ router.post(
   "/admin/register",
   authMiddleware,
   requireRoles("super_admin_vendor", "admin_pawn_limited"),
-  userController.register
+  userController.register,
 );
 
 /**
@@ -510,7 +516,7 @@ router.patch(
   "/:userId/status",
   authMiddleware,
   requireRoles("super_admin_vendor", "admin_pawn_limited"),
-  userController.updateUserStatus
+  userController.updateUserStatus,
 );
 
 module.exports = router;

@@ -1,23 +1,26 @@
-// controllers/user_controller.js
 const userService = require("../services/user_service");
 
 class UserController {
   /**
    * Register new user
+   * Now passes admin user ID to service when an admin creates a user
    */
   async register(req, res) {
     try {
       const userData = req.body;
-      const createdByAdmin = req.user && !req.user.roles.includes("customer");
 
-      const user = await userService.registerUser(userData, createdByAdmin);
+      // Determine if the request is made by an admin (logged in user with no 'customer' role)
+      const isAdminCreating = req.user && !req.user.roles.includes("customer");
+      const adminUserId = isAdminCreating ? req.user._id : null;
+
+      const user = await userService.registerUser(userData, adminUserId);
 
       let message = "Registration successful";
-      if (user.roles.includes("customer") && !createdByAdmin) {
+      if (user.roles.includes("customer") && !isAdminCreating) {
         message =
           "Registration successful. Please check your email for verification OTP.";
       } else if (
-        createdByAdmin &&
+        isAdminCreating &&
         !user.roles.includes("customer") &&
         !user.roles.includes("super_admin_vendor")
       ) {
@@ -37,9 +40,10 @@ class UserController {
             roles: user.roles,
             status: user.status,
             email_verified: user.email_verified,
+            added_by: user.added_by, // optional, can be included
           },
           requiresVerification:
-            user.roles.includes("customer") && !createdByAdmin,
+            user.roles.includes("customer") && !isAdminCreating,
         },
       });
     } catch (error) {
@@ -79,7 +83,7 @@ class UserController {
             status: user.status,
             email_verified: user.email_verified,
           },
-          token: token, // Include the token in the response
+          token: token,
         },
       });
     } catch (error) {
@@ -310,6 +314,7 @@ class UserController {
 
   /**
    * Get all users (admin only)
+   * The service now populates 'added_by'
    */
   async getAllUsers(req, res) {
     try {
@@ -323,7 +328,7 @@ class UserController {
       const result = await userService.getAllUsers(
         filters,
         parseInt(page),
-        parseInt(limit)
+        parseInt(limit),
       );
 
       res.json({
@@ -356,7 +361,7 @@ class UserController {
       const user = await userService.updateUserStatus(
         userId,
         status,
-        req.user._id
+        req.user._id,
       );
 
       res.json({
