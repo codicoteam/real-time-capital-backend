@@ -132,7 +132,7 @@ const LoanApplicationSchema = new mongoose.Schema(
         "rejected",
         "cancelled",
       ],
-      default: "draft",
+      default: "submitted",
       index: true,
     },
 
