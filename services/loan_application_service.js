@@ -121,7 +121,7 @@ class LoanApplicationService {
             customer_user: finalCustomerUserId,
             created_by: createdByUser._id,
             application_source: this.determineApplicationSource(createdByUser),
-            status: "draft",
+            status: "submitted",
             created_at: new Date(),
             updated_at: new Date(),
           });
@@ -151,7 +151,7 @@ class LoanApplicationService {
       return {
         success: true,
         data: loanApplication,
-        message: "Loan application draft created successfully",
+        message: "Loan application submitted created successfully",
       };
     } catch (error) {
       await session.abortTransaction();
