@@ -132,19 +132,6 @@ class UserService {
     const isTargetCustomer = roles.includes("customer") && roles.length === 1;
     const isTargetStaff = !isTargetCustomer && roles.length > 0;
 
-    // Authorization: only admin can create staff, only staff can create customers
-    if (!isSelfRegistration) {
-      if (isTargetStaff && !isAdminCreator) {
-        throw { status: 403, message: "Only admin can create staff accounts." };
-      }
-      if (isTargetCustomer && !isAdminCreator && !isStaffCreator) {
-        throw {
-          status: 403,
-          message: "You are not allowed to create customer accounts.",
-        };
-      }
-    }
-
     // Set added_by if creator exists
     if (creator) {
       user.added_by = creator._id;
