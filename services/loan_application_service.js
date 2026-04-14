@@ -257,6 +257,7 @@ class LoanApplicationService {
 
   /**
    * Get loan applications with pagination and filtering
+   * Now populates created_by, submitted_by, processed_by
    */
   async getLoanApplications(options = {}) {
     try {
@@ -323,6 +324,9 @@ class LoanApplicationService {
             created_at
           `,
           })
+          .populate("created_by", "first_name last_name email roles")
+          .populate("submitted_by", "first_name last_name email roles")
+          .populate("processed_by", "first_name last_name email roles")
           .select(selectFields)
           .sort({ [sortBy]: sortOrder === "desc" ? -1 : 1 })
           .skip(skip)
@@ -359,6 +363,169 @@ class LoanApplicationService {
     } catch (error) {
       console.error("Error fetching loan applications:", error);
       throw new Error(`Failed to fetch loan applications: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get loan applications by agent ID (created_by = agentId and application_source = 'agent')
+   */
+  async getLoanApplicationsByAgentId(agentId, options = {}) {
+    try {
+      const {
+        page = 1,
+        limit = 20,
+        sortBy = "created_at",
+        sortOrder = "desc",
+        status = "",
+        collateral_category = "",
+        search = "",
+        startDate = "",
+        endDate = "",
+      } = options;
+
+      const query = {
+        created_by: agentId,
+        application_source: "agent",
+      };
+
+      if (status) query.status = status;
+      if (collateral_category) query.collateral_category = collateral_category;
+
+      if (search) {
+        query.$or = [
+          { application_no: { $regex: search, $options: "i" } },
+          { full_name: { $regex: search, $options: "i" } },
+          { national_id_number: { $regex: search, $options: "i" } },
+          { email_address: { $regex: search, $options: "i" } },
+        ];
+      }
+
+      if (startDate || endDate) {
+        query.created_at = {};
+        if (startDate) query.created_at.$gte = new Date(startDate);
+        if (endDate) query.created_at.$lte = new Date(endDate);
+      }
+
+      const skip = (page - 1) * limit;
+
+      const [applications, total] = await Promise.all([
+        LoanApplication.find(query)
+          .populate("customer_user", "first_name last_name email phone")
+          .populate("created_by", "first_name last_name email roles")
+          .populate("submitted_by", "first_name last_name email roles")
+          .populate("processed_by", "first_name last_name email roles")
+          .populate("debtor_check.checked_by", "first_name last_name")
+          .populate({
+            path: "attachments",
+            select:
+              "category filename mime_type storage url signed signed_at created_at",
+          })
+          .sort({ [sortBy]: sortOrder === "desc" ? -1 : 1 })
+          .skip(skip)
+          .limit(parseInt(limit))
+          .lean(),
+        LoanApplication.countDocuments(query),
+      ]);
+
+      return {
+        success: true,
+        data: {
+          applications,
+          pagination: {
+            page: parseInt(page),
+            limit: parseInt(limit),
+            total,
+            pages: Math.ceil(total / limit),
+          },
+        },
+        message: "Applications retrieved successfully for agent",
+      };
+    } catch (error) {
+      console.error("Error fetching applications by agent ID:", error);
+      throw new Error(
+        `Failed to fetch applications by agent ID: ${error.message}`,
+      );
+    }
+  }
+
+  /**
+   * Get loan applications by processor ID (processed_by = processorId)
+   */
+  async getLoanApplicationsByProcessorId(processorId, options = {}) {
+    try {
+      const {
+        page = 1,
+        limit = 20,
+        sortBy = "created_at",
+        sortOrder = "desc",
+        status = "",
+        collateral_category = "",
+        search = "",
+        startDate = "",
+        endDate = "",
+      } = options;
+
+      const query = {
+        processed_by: processorId,
+      };
+
+      if (status) query.status = status;
+      if (collateral_category) query.collateral_category = collateral_category;
+
+      if (search) {
+        query.$or = [
+          { application_no: { $regex: search, $options: "i" } },
+          { full_name: { $regex: search, $options: "i" } },
+          { national_id_number: { $regex: search, $options: "i" } },
+          { email_address: { $regex: search, $options: "i" } },
+        ];
+      }
+
+      if (startDate || endDate) {
+        query.created_at = {};
+        if (startDate) query.created_at.$gte = new Date(startDate);
+        if (endDate) query.created_at.$lte = new Date(endDate);
+      }
+
+      const skip = (page - 1) * limit;
+
+      const [applications, total] = await Promise.all([
+        LoanApplication.find(query)
+          .populate("customer_user", "first_name last_name email phone")
+          .populate("created_by", "first_name last_name email roles")
+          .populate("submitted_by", "first_name last_name email roles")
+          .populate("processed_by", "first_name last_name email roles")
+          .populate("debtor_check.checked_by", "first_name last_name")
+          .populate({
+            path: "attachments",
+            select:
+              "category filename mime_type storage url signed signed_at created_at",
+          })
+          .sort({ [sortBy]: sortOrder === "desc" ? -1 : 1 })
+          .skip(skip)
+          .limit(parseInt(limit))
+          .lean(),
+        LoanApplication.countDocuments(query),
+      ]);
+
+      return {
+        success: true,
+        data: {
+          applications,
+          pagination: {
+            page: parseInt(page),
+            limit: parseInt(limit),
+            total,
+            pages: Math.ceil(total / limit),
+          },
+        },
+        message: "Applications retrieved successfully for processor",
+      };
+    } catch (error) {
+      console.error("Error fetching applications by processor ID:", error);
+      throw new Error(
+        `Failed to fetch applications by processor ID: ${error.message}`,
+      );
     }
   }
 

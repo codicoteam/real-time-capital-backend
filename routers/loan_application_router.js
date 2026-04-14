@@ -186,8 +186,8 @@ router.post(
     "super_admin_vendor",
     "admin_pawn_limited",
     "management",
-    "loan_officer_processor", // added
-    "agent"                    // added
+    "loan_officer_processor",
+    "agent"
   ),
   loanApplicationController.createLoanApplicationForCustomer
 );
@@ -281,6 +281,156 @@ router.get(
     "customer"
   ),
   loanApplicationController.getLoanApplications
+);
+
+/**
+ * @swagger
+ * /api/v1/loan-applications/agent/{agentId}:
+ *   get:
+ *     summary: Get loan applications created by a specific agent
+ *     tags: [Loan Applications]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: agentId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Agent user ID
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *       - in: query
+ *         name: sortBy
+ *         schema:
+ *           type: string
+ *           default: created_at
+ *       - in: query
+ *         name: sortOrder
+ *         schema:
+ *           type: string
+ *           enum: [asc, desc]
+ *           default: desc
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [draft, submitted, processing, approved, rejected, cancelled]
+ *       - in: query
+ *         name: collateral_category
+ *         schema:
+ *           type: string
+ *           enum: [small_loans, motor_vehicle, jewellery]
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: startDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: endDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *     responses:
+ *       200:
+ *         description: Applications retrieved successfully
+ *       403:
+ *         description: Not authorized
+ *       500:
+ *         description: Server error
+ */
+router.get(
+  "/agent/:agentId",
+  authMiddleware,
+  requireRoles("agent", "super_admin_vendor", "admin_pawn_limited", "management"),
+  loanApplicationController.getLoanApplicationsByAgentId
+);
+
+/**
+ * @swagger
+ * /api/v1/loan-applications/processor/{processorId}:
+ *   get:
+ *     summary: Get loan applications processed by a specific loan processor
+ *     tags: [Loan Applications]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: processorId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Processor user ID
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *       - in: query
+ *         name: sortBy
+ *         schema:
+ *           type: string
+ *           default: created_at
+ *       - in: query
+ *         name: sortOrder
+ *         schema:
+ *           type: string
+ *           enum: [asc, desc]
+ *           default: desc
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [draft, submitted, processing, approved, rejected, cancelled]
+ *       - in: query
+ *         name: collateral_category
+ *         schema:
+ *           type: string
+ *           enum: [small_loans, motor_vehicle, jewellery]
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: startDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: endDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *     responses:
+ *       200:
+ *         description: Applications retrieved successfully
+ *       403:
+ *         description: Not authorized
+ *       500:
+ *         description: Server error
+ */
+router.get(
+  "/processor/:processorId",
+  authMiddleware,
+  requireRoles("loan_officer_processor", "super_admin_vendor", "admin_pawn_limited", "management"),
+  loanApplicationController.getLoanApplicationsByProcessorId
 );
 
 /**

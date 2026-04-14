@@ -143,6 +143,141 @@ class LoanApplicationController {
   }
 
   /**
+   * Get loan applications by agent ID
+   * Access: Only the agent themselves or admins
+   */
+  async getLoanApplicationsByAgentId(req, res) {
+    try {
+      const { agentId } = req.params;
+      const loggedInUser = req.user;
+      const userRoles = loggedInUser.roles;
+
+      // Allow if user is an admin/manager or the agent themselves
+      const isAdmin = userRoles.some((role) =>
+        ["super_admin_vendor", "admin_pawn_limited", "management"].includes(
+          role,
+        ),
+      );
+      const isSelf =
+        loggedInUser._id.toString() === agentId && userRoles.includes("agent");
+
+      if (!isAdmin && !isSelf) {
+        return res.status(403).json({
+          success: false,
+          error: "You are not authorized to view applications for this agent",
+        });
+      }
+
+      const {
+        page = 1,
+        limit = 20,
+        sortBy = "created_at",
+        sortOrder = "desc",
+        status,
+        collateral_category,
+        search,
+        startDate,
+        endDate,
+      } = req.query;
+
+      const result = await loanApplicationService.getLoanApplicationsByAgentId(
+        agentId,
+        {
+          page,
+          limit,
+          sortBy,
+          sortOrder,
+          status,
+          collateral_category,
+          search,
+          startDate,
+          endDate,
+        },
+      );
+
+      res.status(200).json({
+        success: true,
+        data: result.data,
+        message: result.message,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+
+  /**
+   * Get loan applications by processor ID
+   * Access: Only the processor themselves or admins
+   */
+  async getLoanApplicationsByProcessorId(req, res) {
+    try {
+      const { processorId } = req.params;
+      const loggedInUser = req.user;
+      const userRoles = loggedInUser.roles;
+
+      // Allow if user is an admin/manager or the processor themselves
+      const isAdmin = userRoles.some((role) =>
+        ["super_admin_vendor", "admin_pawn_limited", "management"].includes(
+          role,
+        ),
+      );
+      const isSelf =
+        loggedInUser._id.toString() === processorId &&
+        userRoles.includes("loan_officer_processor");
+
+      if (!isAdmin && !isSelf) {
+        return res.status(403).json({
+          success: false,
+          error:
+            "You are not authorized to view applications for this processor",
+        });
+      }
+
+      const {
+        page = 1,
+        limit = 20,
+        sortBy = "created_at",
+        sortOrder = "desc",
+        status,
+        collateral_category,
+        search,
+        startDate,
+        endDate,
+      } = req.query;
+
+      const result =
+        await loanApplicationService.getLoanApplicationsByProcessorId(
+          processorId,
+          {
+            page,
+            limit,
+            sortBy,
+            sortOrder,
+            status,
+            collateral_category,
+            search,
+            startDate,
+            endDate,
+          },
+        );
+
+      res.status(200).json({
+        success: true,
+        data: result.data,
+        message: result.message,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+
+  /**
    * Get a single loan application by ID
    */
   async getLoanApplicationById(req, res) {
