@@ -318,6 +318,83 @@ class LoanApplicationController {
   }
 
   /**
+   * Add admin note to loan application
+   */
+  async addAdminNote(req, res) {
+    try {
+      const { id } = req.params;
+      const { note } = req.body;
+      const user = req.user;
+
+      if (!note) {
+        return res.status(400).json({
+          success: false,
+          error: "Note content is required",
+        });
+      }
+
+      const result = await loanApplicationService.addAdminNote(id, note, user);
+
+      res.status(200).json({
+        success: true,
+        data: result.data,
+        message: result.message,
+      });
+    } catch (error) {
+      if (error.message === "Loan application not found") {
+        res.status(404).json({
+          success: false,
+          error: error.message,
+        });
+      } else if (error.message === "Invalid application ID") {
+        res.status(400).json({
+          success: false,
+          error: error.message,
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          error: error.message,
+        });
+      }
+    }
+  }
+
+  /**
+   * Get all admin notes for a loan application
+   */
+  async getAdminNotes(req, res) {
+    try {
+      const { id } = req.params;
+
+      const result = await loanApplicationService.getAdminNotes(id);
+
+      res.status(200).json({
+        success: true,
+        data: result.data,
+        message: result.message,
+      });
+    } catch (error) {
+      if (error.message === "Loan application not found") {
+        res.status(404).json({
+          success: false,
+          error: error.message,
+        });
+      } else if (error.message === "Invalid application ID") {
+        res.status(400).json({
+          success: false,
+          error: error.message,
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: error.message,
+        });
+      }
+    }
+  }
+
+  /**
    * Update loan application status
    */
   async updateLoanApplicationStatus(req, res) {

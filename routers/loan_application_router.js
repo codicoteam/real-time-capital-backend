@@ -21,6 +21,34 @@ const {
  *       type: http
  *       scheme: bearer
  *       bearerFormat: JWT
+ *   schemas:
+ *     AdminNote:
+ *       type: object
+ *       properties:
+ *         _id:
+ *           type: string
+ *           description: Auto-generated note ID
+ *         note:
+ *           type: string
+ *           description: Admin note content
+ *         created_by:
+ *           type: object
+ *           properties:
+ *             _id:
+ *               type: string
+ *             first_name:
+ *               type: string
+ *             last_name:
+ *               type: string
+ *             email:
+ *               type: string
+ *             roles:
+ *               type: array
+ *               items:
+ *                 type: string
+ *         created_at:
+ *           type: string
+ *           format: date-time
  */
 
 /**
@@ -104,7 +132,7 @@ router.post(
   "/",
   authMiddleware,
   requireRoles("customer"),
-  loanApplicationController.createLoanApplication
+  loanApplicationController.createLoanApplication,
 );
 
 /**
@@ -187,9 +215,9 @@ router.post(
     "admin_pawn_limited",
     "management",
     "loan_officer_processor",
-    "agent"
+    "agent",
   ),
-  loanApplicationController.createLoanApplicationForCustomer
+  loanApplicationController.createLoanApplicationForCustomer,
 );
 
 /**
@@ -278,9 +306,9 @@ router.get(
     "loan_officer_processor",
     "loan_officer_approval",
     "management",
-    "customer"
+    "customer",
   ),
-  loanApplicationController.getLoanApplications
+  loanApplicationController.getLoanApplications,
 );
 
 /**
@@ -354,8 +382,13 @@ router.get(
 router.get(
   "/agent/:agentId",
   authMiddleware,
-  requireRoles("agent", "super_admin_vendor", "admin_pawn_limited", "management"),
-  loanApplicationController.getLoanApplicationsByAgentId
+  requireRoles(
+    "agent",
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management",
+  ),
+  loanApplicationController.getLoanApplicationsByAgentId,
 );
 
 /**
@@ -429,8 +462,13 @@ router.get(
 router.get(
   "/processor/:processorId",
   authMiddleware,
-  requireRoles("loan_officer_processor", "super_admin_vendor", "admin_pawn_limited", "management"),
-  loanApplicationController.getLoanApplicationsByProcessorId
+  requireRoles(
+    "loan_officer_processor",
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management",
+  ),
+  loanApplicationController.getLoanApplicationsByProcessorId,
 );
 
 /**
@@ -472,9 +510,122 @@ router.get(
     "loan_officer_processor",
     "loan_officer_approval",
     "management",
-    "customer"
+    "customer",
   ),
-  loanApplicationController.getLoanApplicationById
+  loanApplicationController.getLoanApplicationById,
+);
+
+/**
+ * @swagger
+ * /api/v1/loan-applications/{id}/admin-notes:
+ *   post:
+ *     summary: Add an admin note to a loan application (Admin only)
+ *     tags: [Loan Applications]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Loan application ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - note
+ *             properties:
+ *               note:
+ *                 type: string
+ *                 description: Admin note content
+ *     responses:
+ *       200:
+ *         description: Admin note added successfully
+ *       400:
+ *         description: Bad request - note content required
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - insufficient permissions
+ *       404:
+ *         description: Loan application not found
+ *       500:
+ *         description: Server error
+ */
+router.post(
+  "/:id/admin-notes",
+  authMiddleware,
+  requireRoles(
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management",
+    "loan_officer_processor",
+    "loan_officer_approval",
+  ),
+  loanApplicationController.addAdminNote,
+);
+
+/**
+ * @swagger
+ * /api/v1/loan-applications/{id}/admin-notes:
+ *   get:
+ *     summary: Get all admin notes for a loan application
+ *     tags: [Loan Applications]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Loan application ID
+ *     responses:
+ *       200:
+ *         description: Admin notes retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     application_no:
+ *                       type: string
+ *                     notes:
+ *                       type: array
+ *                       items:
+ *                         $ref: '#/components/schemas/AdminNote'
+ *                 message:
+ *                   type: string
+ *       400:
+ *         description: Invalid application ID
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: Loan application not found
+ *       500:
+ *         description: Server error
+ */
+router.get(
+  "/:id/admin-notes",
+  authMiddleware,
+  requireRoles(
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management",
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "call_centre_support",
+  ),
+  loanApplicationController.getAdminNotes,
 );
 
 /**
@@ -552,9 +703,9 @@ router.put(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management"
+    "management",
   ),
-  loanApplicationController.updateLoanApplication
+  loanApplicationController.updateLoanApplication,
 );
 
 /**
@@ -593,9 +744,9 @@ router.post(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management"
+    "management",
   ),
-  loanApplicationController.submitLoanApplication
+  loanApplicationController.submitLoanApplication,
 );
 
 /**
@@ -650,9 +801,9 @@ router.put(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management"
+    "management",
   ),
-  loanApplicationController.updateLoanApplicationStatus
+  loanApplicationController.updateLoanApplicationStatus,
 );
 
 /**
@@ -692,9 +843,9 @@ router.post(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management"
+    "management",
   ),
-  loanApplicationController.performDebtorCheck
+  loanApplicationController.performDebtorCheck,
 );
 
 /**
@@ -745,9 +896,9 @@ router.post(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management"
+    "management",
   ),
-  loanApplicationController.addAttachment
+  loanApplicationController.addAttachment,
 );
 
 /**
@@ -792,9 +943,9 @@ router.delete(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management"
+    "management",
   ),
-  loanApplicationController.removeAttachment
+  loanApplicationController.removeAttachment,
 );
 
 /**
@@ -848,9 +999,9 @@ router.post(
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
-    "management"
+    "management",
   ),
-  loanApplicationController.sendDocumentRequirement
+  loanApplicationController.sendDocumentRequirement,
 );
 
 /**
@@ -878,9 +1029,9 @@ router.get(
     "loan_officer_processor",
     "loan_officer_approval",
     "management",
-    "customer"
+    "customer",
   ),
-  loanApplicationController.getStatistics
+  loanApplicationController.getStatistics,
 );
 
 /**
@@ -934,7 +1085,7 @@ router.get(
       success: true,
       message: "Export endpoint - implement CSV/Excel generation here",
     });
-  }
+  },
 );
 
 module.exports = router;

@@ -327,6 +327,10 @@ class LoanApplicationService {
           .populate("created_by", "first_name last_name email roles")
           .populate("submitted_by", "first_name last_name email roles")
           .populate("processed_by", "first_name last_name email roles")
+          .populate(
+            "admin_notes.created_by",
+            "first_name last_name email roles",
+          )
           .select(selectFields)
           .sort({ [sortBy]: sortOrder === "desc" ? -1 : 1 })
           .skip(skip)
@@ -415,6 +419,10 @@ class LoanApplicationService {
           .populate("submitted_by", "first_name last_name email roles")
           .populate("processed_by", "first_name last_name email roles")
           .populate("debtor_check.checked_by", "first_name last_name")
+          .populate(
+            "admin_notes.created_by",
+            "first_name last_name email roles",
+          )
           .populate({
             path: "attachments",
             select:
@@ -496,6 +504,10 @@ class LoanApplicationService {
           .populate("submitted_by", "first_name last_name email roles")
           .populate("processed_by", "first_name last_name email roles")
           .populate("debtor_check.checked_by", "first_name last_name")
+          .populate(
+            "admin_notes.created_by",
+            "first_name last_name email roles",
+          )
           .populate({
             path: "attachments",
             select:
@@ -552,6 +564,7 @@ class LoanApplicationService {
         .populate("created_by", "first_name last_name email roles")
         .populate("submitted_by", "first_name last_name email roles")
         .populate("processed_by", "first_name last_name email roles")
+        .populate("admin_notes.created_by", "first_name last_name email roles")
         .lean();
 
       if (!application) {
@@ -566,6 +579,85 @@ class LoanApplicationService {
     } catch (error) {
       console.error("Error fetching loan application:", error);
       throw new Error(`Failed to fetch loan application: ${error.message}`);
+    }
+  }
+
+  /**
+   * Add admin note to loan application
+   * @param {String} id - Application ID
+   * @param {String} note - Note content
+   * @param {Object} user - The user adding the note (full object)
+   */
+  async addAdminNote(id, note, user) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw new Error("Invalid application ID");
+      }
+
+      if (!note || note.trim() === "") {
+        throw new Error("Note content is required");
+      }
+
+      const application = await LoanApplication.findById(id);
+
+      if (!application) {
+        throw new Error("Loan application not found");
+      }
+
+      const adminNote = {
+        note: note.trim(),
+        created_by: user._id,
+        created_at: new Date(),
+      };
+
+      application.admin_notes.push(adminNote);
+      await application.save();
+
+      await application.populate(
+        "admin_notes.created_by",
+        "first_name last_name email roles",
+      );
+
+      return {
+        success: true,
+        data: application.admin_notes,
+        message: "Admin note added successfully",
+      };
+    } catch (error) {
+      console.error("Error adding admin note:", error);
+      throw new Error(`Failed to add admin note: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get all admin notes for a loan application
+   * @param {String} id - Application ID
+   */
+  async getAdminNotes(id) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw new Error("Invalid application ID");
+      }
+
+      const application = await LoanApplication.findById(id)
+        .populate("admin_notes.created_by", "first_name last_name email roles")
+        .select("admin_notes application_no");
+
+      if (!application) {
+        throw new Error("Loan application not found");
+      }
+
+      return {
+        success: true,
+        data: {
+          application_no: application.application_no,
+          notes: application.admin_notes,
+        },
+        message: "Admin notes retrieved successfully",
+      };
+    } catch (error) {
+      console.error("Error fetching admin notes:", error);
+      throw new Error(`Failed to fetch admin notes: ${error.message}`);
     }
   }
 
@@ -776,6 +868,7 @@ class LoanApplicationService {
       delete updateData.application_source;
       delete updateData.submitted_by;
       delete updateData.processed_by;
+      delete updateData.admin_notes;
 
       Object.assign(application, updateData);
       application.updated_at = new Date();
@@ -785,6 +878,7 @@ class LoanApplicationService {
       const updatedApplication = await LoanApplication.findOne(query)
         .populate("customer_user", "first_name last_name email phone")
         .populate("debtor_check.checked_by", "first_name last_name")
+        .populate("admin_notes.created_by", "first_name last_name email roles")
         .populate({
           path: "attachments",
           select:

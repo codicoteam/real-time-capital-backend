@@ -23,7 +23,6 @@ const {
  *         - email
  *         - first_name
  *         - last_name
- *         - password
  *       properties:
  *         email:
  *           type: string
@@ -31,6 +30,7 @@ const {
  *         password:
  *           type: string
  *           minLength: 6
+ *           description: Required for self-registration, optional for admin-created users
  *         first_name:
  *           type: string
  *         last_name:
@@ -49,6 +49,7 @@ const {
  *               - loan_officer_approval
  *               - management
  *               - customer
+ *               - agent
  *     Login:
  *       type: object
  *       required:
@@ -88,7 +89,7 @@ const {
  * @swagger
  * /api/v1/users/register:
  *   post:
- *     summary: Register a new user
+ *     summary: Register a new user (self-registration)
  *     tags: [Users]
  *     requestBody:
  *       required: true
@@ -157,7 +158,7 @@ router.post("/resend-verification", userController.resendVerificationOtp);
  * @swagger
  * /api/v1/users/login:
  *   post:
- *     summary: Login user
+ *     summary: Login user (requires email verification)
  *     tags: [Users]
  *     requestBody:
  *       required: true
@@ -171,7 +172,7 @@ router.post("/resend-verification", userController.resendVerificationOtp);
  *       401:
  *         description: Invalid credentials
  *       403:
- *         description: Account not active
+ *         description: Account not active or email not verified
  */
 router.post("/login", userController.login);
 
@@ -339,7 +340,7 @@ router.delete(
  * @swagger
  * /api/v1/users/request-deletion:
  *   post:
- *     summary: Request account deletion
+ *     summary: Request account deletion (user initiated)
  *     tags: [Users]
  *     requestBody:
  *       required: true
@@ -362,7 +363,7 @@ router.post("/request-deletion", userController.requestAccountDeletion);
  * @swagger
  * /api/v1/users/confirm-deletion:
  *   post:
- *     summary: Confirm account deletion with OTP
+ *     summary: Confirm account deletion with OTP (user initiated)
  *     tags: [Users]
  *     requestBody:
  *       required: true
@@ -421,10 +422,16 @@ router.post("/confirm-deletion", userController.confirmAccountDeletion);
  *             - loan_officer_approval
  *             - management
  *             - customer
+ *             - agent
  *       - in: query
  *         name: search
  *         schema:
  *           type: string
+ *       - in: query
+ *         name: includeDeleted
+ *         schema:
+ *           type: boolean
+ *         description: Include soft-deleted users in results
  *     responses:
  *       200:
  *         description: List of users
@@ -519,7 +526,41 @@ router.patch(
   userController.updateUserStatus,
 );
 
-// routes/user_router.js (add this new route before the admin routes)
+/**
+ * @swagger
+ * /api/v1/users/{userId}/delete:
+ *   delete:
+ *     summary: Delete user permanently (Admin only)
+ *     description: |
+ *       Permanently deletes a user account.
+ *       - No notification sent to the customer
+ *       - Cannot delete super admin users
+ *       - User data is anonymized and marked as deleted
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: User deleted successfully
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Admin access required or cannot delete super admin
+ *       404:
+ *         description: User not found
+ */
+router.delete(
+  "/:userId/delete",
+  authMiddleware,
+  requireRoles("super_admin_vendor", "admin_pawn_limited"),
+  userController.adminDeleteUser,
+);
 
 /**
  * @swagger
@@ -574,7 +615,5 @@ router.post(
   ),
   userController.addCustomer,
 );
-
-// Keep all existing routes (register, login, etc.) unchanged
 
 module.exports = router;

@@ -32,7 +32,6 @@ router.use(authMiddleware);
  *             type: object
  *             required:
  *               - customer_user
- *               - asset
  *               - principal_amount
  *               - interest_rate_percent
  *               - start_date
@@ -57,6 +56,9 @@ router.use(authMiddleware);
  *               collateral_category:
  *                 type: string
  *                 enum: [small_loans, motor_vehicle, jewellery]
+ *               create_asset_from_collateral:
+ *                 type: boolean
+ *                 description: Set to true to automatically create an asset from the loan application's collateral
  *     responses:
  *       201:
  *         description: Loan created successfully
@@ -74,6 +76,39 @@ router.post(
     "super_admin_vendor",
   ),
   loanController.createLoan,
+);
+
+/**
+ * @swagger
+ * /api/v1/loans/asset-from-collateral/{applicationId}:
+ *   post:
+ *     summary: Create an asset from a loan application's collateral
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: applicationId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       201:
+ *         description: Asset created successfully
+ *       404:
+ *         description: Application not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.post(
+  "/asset-from-collateral/:applicationId",
+  requireRoles(
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "admin_pawn_limited",
+    "super_admin_vendor",
+  ),
+  loanController.createAssetFromCollateral,
 );
 
 /**
@@ -103,7 +138,12 @@ router.post(
  *         name: status
  *         schema:
  *           type: string
- *           enum: [draft, active, overdue, in_grace, auction, sold, redeemed, closed, cancelled]
+ *           enum: [draft, pending_approval, active, overdue, in_grace, auction, sold, redeemed, closed, cancelled]
+ *       - in: query
+ *         name: approval_status
+ *         schema:
+ *           type: string
+ *           enum: [pending, approved, rejected]
  *       - in: query
  *         name: collateral_category
  *         schema:
@@ -190,7 +230,7 @@ router.get(
  *         name: status
  *         schema:
  *           type: string
- *           enum: [draft, active, overdue, in_grace, auction, sold, redeemed, closed, cancelled]
+ *           enum: [draft, pending_approval, active, overdue, in_grace, auction, sold, redeemed, closed, cancelled]
  *       - in: query
  *         name: collateral_category
  *         schema:
@@ -331,7 +371,7 @@ router.put(
  *             properties:
  *               status:
  *                 type: string
- *                 enum: [draft, active, overdue, in_grace, auction, sold, redeemed, closed, cancelled]
+ *                 enum: [draft, pending_approval, active, overdue, in_grace, auction, sold, redeemed, closed, cancelled]
  *               notes:
  *                 type: string
  *     responses:
@@ -711,7 +751,7 @@ router.get(
  *             properties:
  *               status:
  *                 type: string
- *                 enum: [draft, submitted, processing, approved, rejected, cancelled]
+ *                 enum: [submitted, processing, approved, rejected, cancelled]
  *               internal_notes:
  *                 type: string
  *     responses:

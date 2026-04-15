@@ -3,7 +3,7 @@ const userService = require("../services/user_service");
 class UserController {
   /**
    * Register new user
-   * Now passes admin user ID to service when an admin creates a user
+   * Now passes admin user object to service when an admin creates a user
    */
   async register(req, res) {
     try {
@@ -11,9 +11,9 @@ class UserController {
 
       // Determine if the request is made by an admin (logged in user with no 'customer' role)
       const isAdminCreating = req.user && !req.user.roles.includes("customer");
-      const adminUserId = isAdminCreating ? req.user._id : null;
+      const creator = isAdminCreating ? req.user : null;
 
-      const user = await userService.registerUser(userData, adminUserId);
+      const user = await userService.registerUser(userData, creator);
 
       let message = "Registration successful";
       if (user.roles.includes("customer") && !isAdminCreating) {
@@ -40,7 +40,7 @@ class UserController {
             roles: user.roles,
             status: user.status,
             email_verified: user.email_verified,
-            added_by: user.added_by, // optional, can be included
+            added_by: user.added_by,
           },
           requiresVerification:
             user.roles.includes("customer") && !isAdminCreating,
@@ -68,7 +68,6 @@ class UserController {
         });
       }
 
-      // Now verifyEmail returns { user, token }
       const { user, token } = await userService.verifyEmail(email, otp);
 
       res.json({
@@ -94,8 +93,6 @@ class UserController {
     }
   }
 
-  // controllers/user_controller.js (add the new method, keep everything else)
-
   /**
    * Add a new customer (by agent, loan officer, or admin)
    * Only customer role is allowed.
@@ -103,7 +100,7 @@ class UserController {
   async addCustomer(req, res) {
     try {
       const userData = req.body;
-      const creator = req.user; // logged‑in user
+      const creator = req.user;
 
       // Force role to be ["customer"]
       userData.roles = ["customer"];
@@ -133,8 +130,6 @@ class UserController {
       });
     }
   }
-
-  // Keep all other methods (register, verifyEmail, login, etc.) unchanged
 
   /**
    * Resend verification OTP
@@ -356,16 +351,23 @@ class UserController {
 
   /**
    * Get all users (admin only)
-   * The service now populates 'added_by'
    */
   async getAllUsers(req, res) {
     try {
-      const { page = 1, limit = 20, status, role, search } = req.query;
+      const {
+        page = 1,
+        limit = 20,
+        status,
+        role,
+        search,
+        includeDeleted,
+      } = req.query;
 
       const filters = {};
       if (status) filters.status = status;
       if (role) filters.role = role;
       if (search) filters.search = search;
+      if (includeDeleted === "true") filters.includeDeleted = true;
 
       const result = await userService.getAllUsers(
         filters,
@@ -415,6 +417,27 @@ class UserController {
       res.status(error.status || 500).json({
         success: false,
         message: error.message || "Failed to update user status",
+      });
+    }
+  }
+
+  /**
+   * Admin delete user - hard delete without notifying customer
+   */
+  async adminDeleteUser(req, res) {
+    try {
+      const { userId } = req.params;
+
+      const result = await userService.adminDeleteUser(userId, req.user._id);
+
+      res.json({
+        success: true,
+        message: result.message,
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message || "Failed to delete user",
       });
     }
   }

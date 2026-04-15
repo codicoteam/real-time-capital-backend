@@ -1,28 +1,5 @@
 const mongoose = require("mongoose");
 
-const EmploymentSchema = new mongoose.Schema(
-  {
-    employment_type: { type: String, trim: true },
-    title: { type: String, trim: true },
-    duration: { type: String, trim: true },
-    location: { type: String, trim: true },
-    contacts: { type: String, trim: true },
-  },
-  { _id: false },
-);
-
-// Next of Kin subdocument
-const NextOfKinSchema = new mongoose.Schema(
-  {
-    full_name: { type: String, trim: true },
-    relationship: { type: String, trim: true },
-    phone_number: { type: String, trim: true },
-    email: { type: String, trim: true, lowercase: true },
-    address: { type: String, trim: true },
-  },
-  { _id: false },
-);
-
 // Small loan collateral details
 const SmallLoanDetailsSchema = new mongoose.Schema(
   {
@@ -50,19 +27,34 @@ const MotorVehicleDetailsSchema = new mongoose.Schema(
 // Jewellery collateral details
 const JewelleryDetailsSchema = new mongoose.Schema(
   {
-    type: { type: String, trim: true }, // e.g., ring, necklace, bracelet
+    type: { type: String, trim: true },
     description: { type: String, trim: true },
-    weight: { type: Number }, // in grams or appropriate unit
-    purity: { type: String, trim: true }, // e.g., 18k, 22k, platinum
+    weight: { type: Number },
+    purity: { type: String, trim: true },
     estimated_value: { type: Number, min: 0 },
   },
   { _id: false },
+);
+
+// Admin notes subdocument
+const AdminNoteSchema = new mongoose.Schema(
+  {
+    note: { type: String, required: true, trim: true },
+    created_by: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+    created_at: { type: Date, default: Date.now },
+  },
+  { _id: true },
 );
 
 const LoanApplicationSchema = new mongoose.Schema(
   {
     application_no: { type: String, unique: true, index: true },
 
+    // Reference to the customer – all KYC data is taken from User
     customer_user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -70,73 +62,62 @@ const LoanApplicationSchema = new mongoose.Schema(
       index: true,
     },
 
-    // PERSONAL DETAILS (from form)
-    full_name: { type: String, required: true, trim: true },
-    national_id_number: {
-      type: String,
-      required: true,
-      trim: true,
-      index: true,
-    },
-    gender: { type: String, trim: true },
-    date_of_birth: { type: Date },
-    marital_status: { type: String, trim: true },
-
-    contact_details: { type: String, trim: true },
-    alternative_number: { type: String, trim: true },
-    email_address: { type: String, trim: true, lowercase: true },
-    home_address: { type: String, trim: true },
-
-    // Document URLs (direct links to uploaded files)
-    national_id_url: { type: String, trim: true },
-    passport_url: { type: String, trim: true }, // if user has passport
-    proof_of_resident_url: { type: String, trim: true },
-    proof_of_employment_url: { type: String, trim: true },
-
-    // NEXT OF KIN
-    next_of_kin: { type: NextOfKinSchema, default: {} },
-
-    // EMPLOYMENT DETAILS (from form)
-    employment: { type: EmploymentSchema, default: {} },
-
-    // BASIC INFORMATION (from form)
+    // Loan specific fields
     requested_loan_amount: { type: Number, required: true, min: 0 },
+
+    // Interest and total repayment (set by admin/loan officer)
+    interest_rate: { type: Number, min: 0 }, // percentage, e.g., 5.5
+    interest_amount: { type: Number, min: 0 }, // calculated or entered interest value
+    total_repayable_amount: { type: Number, min: 0 }, // principal + interest
+
     collateral_category: {
       type: String,
       required: true,
       enum: ["small_loans", "motor_vehicle", "jewellery"],
       index: true,
     },
-    collateral_description: { type: String, trim: true }, // "Collateral" / surety description
+    collateral_description: { type: String, trim: true },
     surety_description: { type: String, trim: true },
     declared_asset_value: { type: Number, min: 0 },
 
-    // Collateral-specific details based on category
+    // Collateral details (depending on category)
     small_loan_details: { type: SmallLoanDetailsSchema, default: {} },
     motor_vehicle_details: { type: MotorVehicleDetailsSchema, default: {} },
     jewellery_details: { type: JewelleryDetailsSchema, default: {} },
 
-    // DECLARATION
+    // Collateral images (array of URLs)
+    collateral_images: { type: [String], default: [] },
+
+    // Repayment preferences
+    repayment_type: {
+      type: String,
+      enum: ["once_off", "installment"],
+      default: "once_off",
+    },
+    repayment_days: { type: Number, min: 1 }, // expected days to repay (for once_off or total duration)
+
+    // Installment specific fields (only used if repayment_type = "installment")
+    installment_count: { type: Number, min: 1 },
+    installment_frequency: {
+      type: String,
+      enum: ["weekly", "biweekly", "monthly", "quarterly"],
+    },
+    installment_amount: { type: Number, min: 0 },
+
+    // Declaration (signed by customer)
     declaration_text: { type: String, trim: true },
     declaration_signed_at: { type: Date },
     declaration_signature_name: { type: String, trim: true },
 
-    // Workflow
+    // Workflow status
     status: {
       type: String,
-      enum: [
-        "draft",
-        "submitted",
-        "processing",
-        "approved",
-        "rejected",
-        "cancelled",
-      ],
+      enum: ["submitted", "processing", "approved", "rejected", "cancelled"],
       default: "submitted",
       index: true,
     },
 
-    // Debtors list checks (to be evaluated during processing)
+    // Debtors list check
     debtor_check: {
       checked: { type: Boolean, default: false },
       matched: { type: Boolean, default: false },
@@ -148,52 +129,44 @@ const LoanApplicationSchema = new mongoose.Schema(
       checked_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     },
 
-    // Attachments: ID scans, signed loan request form, etc. (references to Attachment documents)
-    attachments: [{ type: mongoose.Schema.Types.ObjectId, ref: "Attachment" }],
+    // Admin notes (for corrections, problems, etc.)
+    admin_notes: { type: [AdminNoteSchema], default: [] },
+
+    // Custom terms & conditions for this specific loan
+    custom_terms_and_conditions: { type: String, trim: true },
+    terms_accepted_at: { type: Date },
+    terms_accepted_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+
+    // Internal notes (simple string)
+    internal_notes: { type: String, trim: true },
+
     created_by: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
       index: true,
     },
-
-    /**
-     * Source of the application – helps reporting and business rules.
-     */
     application_source: {
       type: String,
       enum: ["customer", "agent", "processor"],
       required: true,
       default: "customer",
     },
-
-    /**
-     * The user who submitted the application (if submission is a distinct action).
-     * Useful when creation and submission are separate steps.
-     */
     submitted_by: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       index: true,
     },
-
-    /**
-     * The user who performed the final approval or rejection.
-     */
     processed_by: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       index: true,
     },
-
-    // Optional internal notes
-    internal_notes: { type: String },
   },
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } },
 );
 
-// Indexes for common queries
+// Indexes
 LoanApplicationSchema.index({ customer_user: 1, created_at: -1 });
-LoanApplicationSchema.index({ national_id_number: 1, created_at: -1 });
 
 module.exports = mongoose.model("LoanApplication", LoanApplicationSchema);

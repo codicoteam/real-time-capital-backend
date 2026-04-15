@@ -52,8 +52,14 @@ class UserService {
 
   /**
    * Generate JWT token for user
+   * Only active and email_verified users can get tokens
    */
   generateToken(user) {
+    // Check if user is eligible for token
+    if (user.status !== "active" || !user.email_verified) {
+      return null;
+    }
+
     return jwt.sign(
       {
         full_name: user.full_name,
@@ -79,9 +85,6 @@ class UserService {
   async comparePassword(password, hashedPassword) {
     return await bcrypt.compare(password, hashedPassword);
   }
-
-  // services/user_service.js (only the changed method + a small helper)
-  // ... keep everything else the same ...
 
   /**
    * Register a new user
@@ -182,7 +185,6 @@ class UserService {
     return user;
   }
 
-  // ... rest of the service unchanged ...
   /**
    * Verify email with OTP and return token
    */
@@ -264,7 +266,7 @@ class UserService {
   }
 
   /**
-   * Login user
+   * Login user - only active and email_verified users can login
    */
   async loginUser(email, password) {
     const user = await User.findOne({ email }).select("+password_hash");
@@ -281,6 +283,14 @@ class UserService {
       };
     }
 
+    // Check if email is verified
+    if (!user.email_verified) {
+      throw {
+        status: 403,
+        message: "Please verify your email before logging in.",
+      };
+    }
+
     // Verify password
     const isValidPassword = await this.comparePassword(
       password,
@@ -292,6 +302,13 @@ class UserService {
 
     // Generate token
     const token = this.generateToken(user);
+
+    if (!token) {
+      throw {
+        status: 403,
+        message: "Unable to generate token. Please contact support.",
+      };
+    }
 
     // Remove sensitive data
     const userResponse = user.toObject();
@@ -438,12 +455,6 @@ class UserService {
       otp: user.delete_account_otp,
     });
 
-    // Optionally also send SMS (uncomment if needed)
-    // if (user.phone) {
-    //   const smsMessage = `Your Real Time Capital account deletion code is: ${user.delete_account_otp}. It expires in 15 minutes.`;
-    //   await this.sendSms(user.phone, smsMessage);
-    // }
-
     return { message: "Account deletion OTP sent to email" };
   }
 
@@ -483,13 +494,53 @@ class UserService {
   }
 
   /**
+   * Admin delete user - hard delete or soft delete without notifying customer
+   */
+  async adminDeleteUser(userId, adminId) {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw { status: 404, message: "User not found" };
+    }
+
+    // Prevent deleting super admin
+    if (user.roles.includes("super_admin_vendor")) {
+      throw { status: 403, message: "Cannot delete super admin user" };
+    }
+
+    // Soft delete - mark as deleted and anonymize
+    user.status = "deleted";
+    user.email = `deleted_${Date.now()}_${user.email}`;
+    user.phone = user.phone ? `deleted_${Date.now()}_${user.phone}` : null;
+    user.national_id_number = null;
+    user.password_hash = null;
+    user.email_verified = false;
+
+    // Clear all OTPs
+    user.email_verification_otp = null;
+    user.email_verification_expires_at = null;
+    user.delete_account_otp = null;
+    user.delete_account_otp_expires_at = null;
+    user.reset_password_otp = null;
+    user.reset_password_expires_at = null;
+
+    await user.save();
+
+    return { message: "User deleted successfully" };
+  }
+
+  /**
    * Get all users (for admin)
    * Now populates 'added_by' with first_name, last_name, email
    */
   async getAllUsers(filters = {}, page = 1, limit = 20) {
     const query = {};
 
-    // Apply filters
+    // Apply filters - exclude deleted users by default unless specifically requested
+    if (filters.includeDeleted !== true) {
+      query.status = { $ne: "deleted" };
+    }
+
     if (filters.status) query.status = filters.status;
     if (filters.role) query.roles = { $in: [filters.role] };
     if (filters.search) {
@@ -505,7 +556,7 @@ class UserService {
 
     const [users, total] = await Promise.all([
       User.find(query)
-        .populate("added_by", "first_name last_name email") // 👈 populate added_by
+        .populate("added_by", "first_name last_name email")
         .sort({ created_at: -1 })
         .skip(skip)
         .limit(limit),
@@ -537,6 +588,11 @@ class UserService {
 
     if (!user) {
       throw { status: 404, message: "User not found" };
+    }
+
+    // Prevent modifying super admin status
+    if (user.roles.includes("super_admin_vendor") && status !== "active") {
+      throw { status: 403, message: "Cannot modify super admin status" };
     }
 
     user.status = status;

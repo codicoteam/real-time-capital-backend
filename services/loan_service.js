@@ -8,7 +8,8 @@ const { sendEmail } = require("../utils/emails_util");
 
 class LoanService {
   /**
-   * Create a new loan
+   * Create a new loan from an approved loan application
+   * This creates both the loan and converts collateral to an asset
    */
   async createLoan(loanData, userId) {
     try {
@@ -35,14 +36,88 @@ class LoanService {
       if (loanData.principal_amount > 500) {
         loanData.requires_super_admin_approval = true;
         loanData.approval_status = "pending";
-        loanData.status = "pending_approval"; // Override default status
+        loanData.status = "pending_approval";
       } else {
-        // For amounts <= 500, automatically approved (approval_status = "approved")
+        // For amounts <= 500, automatically approved
         loanData.approval_status = "approved";
       }
 
       // Validate required dates
       this.validateLoanDates(loanData);
+
+      // If an application is provided, validate and fetch data
+      if (loanData.application) {
+        const application = await LoanApplication.findById(
+          loanData.application,
+        );
+        if (!application) {
+          throw {
+            status: 404,
+            message: `Loan application with ID ${loanData.application} not found`,
+          };
+        }
+
+        // Validate application is approved
+        if (application.status !== "approved") {
+          throw {
+            status: 400,
+            message:
+              "Cannot create loan from unapproved application. Application status must be 'approved'.",
+          };
+        }
+
+        // Auto-fill loan data from application if not provided
+        if (!loanData.customer_user && application.customer_user) {
+          loanData.customer_user = application.customer_user;
+        }
+        if (!loanData.principal_amount && application.requested_loan_amount) {
+          loanData.principal_amount = application.requested_loan_amount;
+        }
+        if (!loanData.collateral_category && application.collateral_category) {
+          loanData.collateral_category = application.collateral_category;
+        }
+        if (
+          !loanData.collateral_description &&
+          application.collateral_description
+        ) {
+          loanData.collateral_description = application.collateral_description;
+        }
+        if (!loanData.surety_description && application.surety_description) {
+          loanData.surety_description = application.surety_description;
+        }
+        if (
+          !loanData.declared_asset_value &&
+          application.declared_asset_value
+        ) {
+          loanData.declared_asset_value = application.declared_asset_value;
+        }
+      }
+
+      // Create or associate asset from collateral
+      if (loanData.create_asset_from_collateral && loanData.application) {
+        const asset = await this.createAssetFromCollateral(
+          loanData.application,
+          loanData,
+        );
+        if (asset && asset.success) {
+          loanData.asset = asset.data._id;
+        }
+      } else if (loanData.asset) {
+        // Verify asset exists and is available
+        const asset = await Asset.findById(loanData.asset);
+        if (!asset) {
+          throw {
+            status: 404,
+            message: `Asset with ID ${loanData.asset} not found`,
+          };
+        }
+        if (asset.status === "pawned" && asset.active_loan) {
+          throw {
+            status: 400,
+            message: "Asset is already pawned under another active loan",
+          };
+        }
+      }
 
       const loan = new Loan(loanData);
       await loan.save();
@@ -51,16 +126,18 @@ class LoanService {
       const populatedLoan = await loan.populate([
         {
           path: "customer_user",
-          select: "first_name last_name email phone national_id_number address",
+          select:
+            "first_name last_name email phone national_id_number address profile_pic_url",
         },
         {
           path: "asset",
-          select: "asset_no title category evaluated_value status",
+          select:
+            "asset_no title category evaluated_value status storage_location",
         },
         {
           path: "application",
           select:
-            "application_no requested_loan_amount collateral_description status",
+            "application_no requested_loan_amount collateral_category collateral_description status",
         },
         {
           path: "created_by",
@@ -76,6 +153,16 @@ class LoanService {
         });
       }
 
+      // Update application status to indicate loan created
+      if (loanData.application) {
+        await LoanApplication.findByIdAndUpdate(loanData.application, {
+          $set: {
+            loan_created: true,
+            loan_id: loan._id,
+          },
+        });
+      }
+
       return {
         success: true,
         data: populatedLoan,
@@ -84,6 +171,151 @@ class LoanService {
     } catch (error) {
       throw this.handleMongoError(error);
     }
+  }
+
+  /**
+   * Create an asset from a loan application's collateral details
+   */
+  async createAssetFromCollateral(applicationId, loanData = {}) {
+    try {
+      const application = await LoanApplication.findById(
+        applicationId,
+      ).populate(
+        "customer_user",
+        "first_name last_name email phone national_id_number",
+      );
+
+      if (!application) {
+        throw { status: 404, message: "Loan application not found" };
+      }
+
+      // Generate asset number
+      const date = new Date();
+      const year = date.getFullYear().toString().slice(-2);
+      const month = (date.getMonth() + 1).toString().padStart(2, "0");
+      const random = Math.floor(1000 + Math.random() * 9000);
+      const assetNo = `AST${year}${month}${random}`;
+
+      // Build asset data based on collateral category
+      let assetData = {
+        asset_no: assetNo,
+        customer_user: application.customer_user._id,
+        category: this.mapCollateralCategoryToAssetCategory(
+          application.collateral_category,
+        ),
+        title: this.generateAssetTitle(application),
+        description: application.collateral_description || "",
+        declared_value:
+          application.declared_asset_value || application.requested_loan_amount,
+        evaluated_value:
+          application.declared_asset_value || application.requested_loan_amount,
+        status: "available",
+        source: "loan_application",
+        source_id: application._id,
+        storage_location: "pending_assignment",
+        condition: "good",
+      };
+
+      // Add category-specific details
+      if (
+        application.collateral_category === "small_loans" &&
+        application.small_loan_details
+      ) {
+        assetData.small_loan_details = {
+          type: application.small_loan_details.type,
+          model: application.small_loan_details.model,
+          serial_no: application.small_loan_details.serial_no,
+        };
+        assetData.title =
+          assetData.title ||
+          application.small_loan_details.model ||
+          "Small Loan Item";
+      } else if (
+        application.collateral_category === "motor_vehicle" &&
+        application.motor_vehicle_details
+      ) {
+        assetData.motor_vehicle_details = {
+          make: application.motor_vehicle_details.make,
+          model: application.motor_vehicle_details.model,
+          registration_no: application.motor_vehicle_details.registration_no,
+          cc_serial_no: application.motor_vehicle_details.cc_serial_no,
+          engine_no: application.motor_vehicle_details.engine_no,
+          chassis_no: application.motor_vehicle_details.chassis_no,
+          year: application.motor_vehicle_details.year,
+        };
+        assetData.title = `${application.motor_vehicle_details.make} ${application.motor_vehicle_details.model}`;
+      } else if (
+        application.collateral_category === "jewellery" &&
+        application.jewellery_details
+      ) {
+        assetData.jewellery_details = {
+          type: application.jewellery_details.type,
+          description: application.jewellery_details.description,
+          weight: application.jewellery_details.weight,
+          purity: application.jewellery_details.purity,
+          estimated_value: application.jewellery_details.estimated_value,
+        };
+        assetData.title = `${application.jewellery_details.type || "Jewellery"} - ${application.jewellery_details.purity || ""}`;
+      }
+
+      // Add collateral images as asset attachments
+      if (
+        application.collateral_images &&
+        application.collateral_images.length > 0
+      ) {
+        assetData.images = application.collateral_images;
+      }
+
+      const asset = new Asset(assetData);
+      await asset.save();
+
+      return {
+        success: true,
+        data: asset,
+        message: "Asset created from collateral successfully",
+      };
+    } catch (error) {
+      throw this.handleMongoError(error);
+    }
+  }
+
+  /**
+   * Map collateral category to asset category
+   */
+  mapCollateralCategoryToAssetCategory(collateralCategory) {
+    const mapping = {
+      small_loans: "electronics",
+      motor_vehicle: "vehicle",
+      jewellery: "jewellery",
+    };
+    return mapping[collateralCategory] || "other";
+  }
+
+  /**
+   * Generate asset title from application data
+   */
+  generateAssetTitle(application) {
+    if (
+      application.collateral_category === "motor_vehicle" &&
+      application.motor_vehicle_details
+    ) {
+      const { make, model, registration_no } =
+        application.motor_vehicle_details;
+      return `${make || ""} ${model || ""} (${registration_no || "No Reg"})`.trim();
+    }
+    if (
+      application.collateral_category === "jewellery" &&
+      application.jewellery_details
+    ) {
+      return `${application.jewellery_details.type || "Jewellery"} - ${application.jewellery_details.purity || ""} (${application.jewellery_details.weight || "?"}g)`.trim();
+    }
+    if (
+      application.collateral_category === "small_loans" &&
+      application.small_loan_details
+    ) {
+      return `${application.small_loan_details.type || "Item"} ${application.small_loan_details.model || ""}`.trim();
+    }
+    return "Collateral Asset";
   }
 
   /**
@@ -100,10 +332,12 @@ class LoanService {
         {
           path: "asset",
           select:
-            "asset_no title category evaluated_value declared_value status storage_location attachments",
+            "asset_no title category evaluated_value declared_value status storage_location attachments images small_loan_details motor_vehicle_details jewellery_details",
         },
         {
           path: "application",
+          select:
+            "application_no requested_loan_amount collateral_category collateral_description declared_asset_value small_loan_details motor_vehicle_details jewellery_details collateral_images repayment_type installment_count installment_frequency",
         },
         {
           path: "attachments",
@@ -169,6 +403,8 @@ class LoanService {
         query.collateral_category = filters.collateral_category;
       if (filters.loan_no)
         query.loan_no = { $regex: filters.loan_no, $options: "i" };
+      if (filters.approval_status)
+        query.approval_status = filters.approval_status;
 
       // Date range filters
       if (filters.created_from || filters.created_to) {
@@ -205,10 +441,12 @@ class LoanService {
             },
             {
               path: "asset",
-              select: "asset_no title category evaluated_value",
+              select: "asset_no title category evaluated_value status",
             },
             {
               path: "application",
+              select:
+                "application_no requested_loan_amount collateral_category status",
             },
           ])
           .sort(sort)
@@ -262,10 +500,11 @@ class LoanService {
           },
           {
             path: "asset",
-            select: "asset_no title category evaluated_value",
+            select: "asset_no title category evaluated_value status",
           },
           {
             path: "application",
+            select: "application_no requested_loan_amount collateral_category",
           },
         ])
         .sort(sort)
@@ -328,7 +567,11 @@ class LoanService {
         },
         {
           path: "asset",
-          select: "asset_no title category",
+          select: "asset_no title category status",
+        },
+        {
+          path: "application",
+          select: "application_no status",
         },
       ]);
 
@@ -349,6 +592,7 @@ class LoanService {
     try {
       const validStatuses = [
         "draft",
+        "pending_approval",
         "active",
         "overdue",
         "in_grace",
@@ -421,6 +665,7 @@ class LoanService {
         new: true,
       }).populate([
         { path: "customer_user", select: "first_name last_name email phone" },
+        { path: "asset", select: "asset_no title status" },
       ]);
 
       // Update associated asset status
@@ -438,9 +683,6 @@ class LoanService {
 
   /**
    * Request super admin approval for a loan (amount > $500)
-   * @param {string} loanId - Loan ID
-   * @param {Array} superAdminIds - Array of User IDs (must have role super_admin_vendor)
-   * @param {string} requesterId - User ID of loan processor
    */
   async requestSuperAdminApproval(loanId, superAdminIds, requesterId) {
     try {
@@ -461,8 +703,8 @@ class LoanService {
         };
       }
 
-      // Validate loan status: must be pending_approval
-      if (loan.status !== "pending_approval") {
+      // Validate loan status: must be pending_approval or draft
+      if (!["pending_approval", "draft"].includes(loan.status)) {
         throw {
           status: 400,
           message: "Loan cannot request approval in current status",
@@ -496,6 +738,7 @@ class LoanService {
       loan.requested_super_admins = requestedAdmins;
       loan.requires_super_admin_approval = true;
       loan.approval_status = "pending";
+      loan.status = "pending_approval";
       await loan.save();
 
       // Prepare notification content
@@ -507,7 +750,6 @@ class LoanService {
 
       // Send notifications to each super admin
       for (const sa of superAdmins) {
-        // Email
         if (sa.email) {
           await sendEmail({
             to: sa.email,
@@ -518,7 +760,6 @@ class LoanService {
             console.error(`Failed to send email to ${sa.email}:`, err),
           );
         }
-        // SMS
         if (sa.phone) {
           try {
             await sendSmsWithMessage(
@@ -531,7 +772,7 @@ class LoanService {
         }
       }
 
-      // Notify requester (loan processor) that request was sent
+      // Notify requester
       const requester = await User.findById(requesterId);
       if (requester && requester.email) {
         await sendEmail({
@@ -556,8 +797,6 @@ class LoanService {
 
   /**
    * Super admin approves a loan
-   * @param {string} loanId - Loan ID
-   * @param {string} superAdminId - ID of approving super admin
    */
   async approveLoanBySuperAdmin(loanId, superAdminId) {
     try {
@@ -612,7 +851,7 @@ class LoanService {
 
       await loan.save();
 
-      // Notify loan processor (created_by)
+      // Notify loan processor
       const processorId = loan.processed_by || loan.created_by;
       if (processorId) {
         const processor = await User.findById(processorId);
@@ -633,7 +872,7 @@ class LoanService {
         }
       }
 
-      // Also notify the approving super admin
+      // Notify the approving super admin
       const approver = await User.findById(superAdminId);
       if (approver) {
         const thankYouMessage = `You have approved loan ${loan.loan_no} for $${loan.principal_amount}.`;
@@ -693,7 +932,7 @@ class LoanService {
       if (loan.asset) {
         await Asset.findByIdAndUpdate(loan.asset, {
           $unset: { active_loan: "" },
-          status: "closed",
+          status: "available",
         });
       }
 
@@ -796,7 +1035,15 @@ class LoanService {
         due_date: { $lt: new Date() },
       });
 
-      // Convert aggregates to objects
+      const pendingApproval = await Loan.countDocuments({
+        status: "pending_approval",
+        requires_super_admin_approval: true,
+      });
+
+      const byApprovalStatus = await Loan.aggregate([
+        { $group: { _id: "$approval_status", count: { $sum: 1 } } },
+      ]);
+
       const statusStats = {};
       byStatus.forEach((item) => {
         statusStats[item._id] = item.count;
@@ -807,13 +1054,20 @@ class LoanService {
         categoryStats[item._id] = item.count;
       });
 
+      const approvalStats = {};
+      byApprovalStatus.forEach((item) => {
+        approvalStats[item._id] = item.count;
+      });
+
       return {
         total,
         by_status: statusStats,
         by_category: categoryStats,
+        by_approval_status: approvalStats,
         total_principal_amount: totalPrincipal[0]?.total || 0,
         total_current_balance: totalBalance[0]?.total || 0,
         overdue_count: overdueLoans,
+        pending_approval_count: pendingApproval,
         active_loans_count: statusStats.active || 0,
         closed_loans_count: statusStats.closed || 0,
         redeemed_loans_count: statusStats.redeemed || 0,
@@ -987,7 +1241,7 @@ class LoanService {
    */
   validateStatusTransition(currentStatus, newStatus, loan) {
     const validTransitions = {
-      draft: ["active", "cancelled"],
+      draft: ["pending_approval", "active", "cancelled"],
       pending_approval: ["active", "cancelled"],
       approved: ["active", "cancelled"],
       active: ["overdue", "in_grace", "redeemed", "closed"],
@@ -996,8 +1250,8 @@ class LoanService {
       auction: ["sold", "closed"],
       sold: ["closed"],
       redeemed: ["closed"],
-      closed: [], // Cannot change from closed
-      cancelled: [], // Cannot change from cancelled
+      closed: [],
+      cancelled: [],
     };
 
     if (!validTransitions[currentStatus]?.includes(newStatus)) {
@@ -1027,8 +1281,8 @@ class LoanService {
       auction: "auction",
       sold: "sold",
       redeemed: "redeemed",
-      closed: "closed",
-      cancelled: "closed",
+      closed: "available",
+      cancelled: "available",
     };
 
     if (assetStatusMap[loan.status] && loan.asset) {
@@ -1061,12 +1315,10 @@ class LoanService {
   handleMongoError(error) {
     console.error("Loan Service Error:", error);
 
-    // If it's already a custom error, return it
     if (error.status && error.message) {
       return error;
     }
 
-    // Handle duplicate key errors
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
       return {
@@ -1076,7 +1328,6 @@ class LoanService {
       };
     }
 
-    // Handle validation errors
     if (error.name === "ValidationError") {
       const errors = Object.values(error.errors).map((err) => err.message);
       return {
@@ -1086,7 +1337,6 @@ class LoanService {
       };
     }
 
-    // Handle CastError (invalid ObjectId)
     if (error.name === "CastError") {
       return {
         status: 400,
@@ -1094,7 +1344,6 @@ class LoanService {
       };
     }
 
-    // Default error
     return {
       status: 500,
       message: "Internal server error",

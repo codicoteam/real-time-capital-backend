@@ -10,22 +10,37 @@ const BaseAssetSchema = new mongoose.Schema(
     category: {
       type: String,
       required: true,
-      enum: ["electronics", "vehicle", "jewellery"],
+      enum: ["small_loans", "motor_vehicle", "jewellery"], // matches LoanApplication categories
       index: true,
     },
 
     title: { type: String, required: true, trim: true }, // e.g. "Dell Laptop", "Toyota Hilux", "Gold Ring"
     description: { type: String, trim: true },
-
     condition: { type: String, trim: true }, // "good/fair/needs repair"
+
+    // Asset images (derived from collateral_images in LoanApplication)
+    asset_images: { type: [String], default: [] }, // array of image URLs
+
+    // Asset status lifecycle (aligned with loan status)
     status: {
       type: String,
-      enum: ["submitted", "valuating", "pawned", "active", "overdue", "in_repair", "auction", "sold", "redeemed", "closed"],
+      enum: [
+        "submitted",      // initially when created from application
+        "valuating",      // under valuation
+        "pawned",         // active loan, asset held as collateral
+        "active",         // alias for pawned
+        "overdue",        // loan overdue but asset still held
+        "in_repair",      // optional
+        "auction",        // loan defaulted → asset moved to auction
+        "sold",           // sold at auction
+        "redeemed",       // loan fully paid, asset returned to customer
+        "closed",         // final state (either redeemed or sold)
+      ],
       default: "submitted",
       index: true,
     },
 
-    storage_location: { type: String, trim: true }, // shelf/bin/vault/yard etc
+    storage_location: { type: String, trim: true }, // shelf/bin/vault/yard
 
     // Valuation lifecycle
     declared_value: { type: Number, min: 0 },
@@ -34,21 +49,22 @@ const BaseAssetSchema = new mongoose.Schema(
     evaluated_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     evaluated_at: { type: Date },
 
-    // Attach photos/docs
-    attachments: [{ type: mongoose.Schema.Types.ObjectId, ref: "Attachment" }],
-
     // Link to active loan if pawned
     active_loan: { type: mongoose.Schema.Types.ObjectId, ref: "Loan" },
   },
-  { timestamps: { createdAt: "created_at", updatedAt: "updated_at" }, discriminatorKey: "asset_type" }
+  {
+    timestamps: { createdAt: "created_at", updatedAt: "updated_at" },
+    discriminatorKey: "asset_type",
+  }
 );
-// Helpful indexes for asset tracking & reporting
+
+// Indexes
 BaseAssetSchema.index({ category: 1, status: 1, created_at: -1 });
 BaseAssetSchema.index({ storage_location: 1, status: 1 });
 
 const Asset = mongoose.model("Asset", BaseAssetSchema);
 
-// ELECTRONICS / SMALL LOANS
+// Discriminators for specific asset types (optional – keep for flexibility)
 const ElectronicsAssetSchema = new mongoose.Schema(
   {
     brand: { type: String, trim: true },
@@ -58,9 +74,8 @@ const ElectronicsAssetSchema = new mongoose.Schema(
   },
   { _id: false }
 );
-Asset.discriminator("ElectronicsAsset", ElectronicsAssetSchema);
+Asset.discriminator("small_loans", ElectronicsAssetSchema); // category "small_loans"
 
-// VEHICLES
 const VehicleAssetSchema = new mongoose.Schema(
   {
     make: { type: String, trim: true },
@@ -72,20 +87,19 @@ const VehicleAssetSchema = new mongoose.Schema(
   },
   { _id: false }
 );
-Asset.discriminator("VehicleAsset", VehicleAssetSchema);
+Asset.discriminator("motor_vehicle", VehicleAssetSchema);
 
-// JEWELLERY
 const JewelleryAssetSchema = new mongoose.Schema(
   {
-    metal_type: { type: String, trim: true }, // gold/silver/platinum
-    purity: { type: String, trim: true },     // e.g. 18K
+    metal_type: { type: String, trim: true },
+    purity: { type: String, trim: true },
     weight_grams: { type: Number, min: 0 },
-    stone_type: { type: String, trim: true }, // diamond etc
+    stone_type: { type: String, trim: true },
     stone_details: { type: String, trim: true },
     certificate_no: { type: String, trim: true, index: true, sparse: true },
   },
   { _id: false }
 );
-Asset.discriminator("JewelleryAsset", JewelleryAssetSchema);
+Asset.discriminator("jewellery", JewelleryAssetSchema);
 
 module.exports = Asset;

@@ -28,6 +28,30 @@ class LoanController {
   }
 
   /**
+   * Create asset from collateral (utility endpoint)
+   */
+  async createAssetFromCollateral(req, res) {
+    try {
+      const { applicationId } = req.params;
+
+      const result = await loanService.createAssetFromCollateral(applicationId);
+
+      res.status(201).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to create asset from collateral",
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
    * Get loan by ID
    */
   async getLoan(req, res) {
@@ -63,6 +87,7 @@ class LoanController {
         status,
         collateral_category,
         loan_no,
+        approval_status,
         created_from,
         created_to,
         due_from,
@@ -73,11 +98,9 @@ class LoanController {
         sort_order = "desc",
       } = req.query;
 
-      // Parse page and limit
       const pageNum = parseInt(page);
       const limitNum = parseInt(limit);
 
-      // Validate pagination params
       if (pageNum < 1 || limitNum < 1 || limitNum > 100) {
         return res.status(400).json({
           success: false,
@@ -86,15 +109,14 @@ class LoanController {
         });
       }
 
-      // Build sort object
       const sort = { [sort_by]: sort_order === "asc" ? 1 : -1 };
 
-      // Build filters
       const filters = {
         customer_user,
         status,
         collateral_category,
         loan_no,
+        approval_status,
         created_from,
         created_to,
         due_from,
@@ -138,10 +160,7 @@ class LoanController {
         sort_order = "desc",
       } = req.query;
 
-      // Build sort object
       const sort = { [sort_by]: sort_order === "asc" ? 1 : -1 };
-
-      // Build filters
       const filters = { customer_user, status, collateral_category };
 
       const result = await loanService.getAllLoans(filters, sort);
@@ -470,7 +489,7 @@ class LoanController {
     try {
       const { id } = req.params;
 
-      const loanApplication = await require("../models/loan_application_model")
+      const loanApplication = await require("../models/loanApplication.model")
         .findById(id)
         .populate([
           {
@@ -531,7 +550,6 @@ class LoanController {
       }
 
       const validStatuses = [
-        "draft",
         "submitted",
         "processing",
         "approved",
@@ -545,7 +563,7 @@ class LoanController {
         });
       }
 
-      const LoanApplication = require("../models/loan_application_model");
+      const LoanApplication = require("../models/loanApplication.model");
       const loanApplication = await LoanApplication.findById(id);
 
       if (!loanApplication) {
@@ -555,14 +573,12 @@ class LoanController {
         });
       }
 
-      // Update status and notes
       loanApplication.status = status;
       if (internal_notes) {
         loanApplication.internal_notes = internal_notes;
       }
       loanApplication.updated_at = new Date();
 
-      // Add status history
       loanApplication.status_history = loanApplication.status_history || [];
       loanApplication.status_history.push({
         from: loanApplication.status,
@@ -574,7 +590,6 @@ class LoanController {
 
       await loanApplication.save();
 
-      // Populate before returning
       await loanApplication.populate([
         { path: "customer_user", select: "first_name last_name email phone" },
       ]);
