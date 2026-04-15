@@ -2,17 +2,17 @@ const loanApplicationService = require("../services/loan_application_service");
 
 class LoanApplicationController {
   /**
-   * Create a new loan application (draft) – for customers themselves
+   * Create a new loan application – for customers themselves
    */
   async createLoanApplication(req, res) {
     try {
       const applicationData = req.body;
-      const user = req.user; // full user object with roles
+      const user = req.user;
 
       const result = await loanApplicationService.createLoanApplication(
         applicationData,
         user,
-        null, // no separate customer – it's self‑service
+        null,
       );
 
       res.status(201).json({
@@ -42,10 +42,9 @@ class LoanApplicationController {
         });
       }
 
-      const user = req.user; // staff user (agent/processor)
+      const user = req.user;
       const customerUserId = applicationData.customer_user_id;
 
-      // Remove the separate field from the data that goes into the application
       delete applicationData.customer_user_id;
 
       const result = await loanApplicationService.createLoanApplication(
@@ -55,32 +54,6 @@ class LoanApplicationController {
       );
 
       res.status(201).json({
-        success: true,
-        data: result.data,
-        message: result.message,
-      });
-    } catch (error) {
-      res.status(400).json({
-        success: false,
-        error: error.message,
-      });
-    }
-  }
-
-  /**
-   * Submit a draft loan application
-   */
-  async submitLoanApplication(req, res) {
-    try {
-      const { id } = req.params;
-      const user = req.user;
-
-      const result = await loanApplicationService.submitLoanApplication(
-        id,
-        user,
-      );
-
-      res.status(200).json({
         success: true,
         data: result.data,
         message: result.message,
@@ -144,7 +117,6 @@ class LoanApplicationController {
 
   /**
    * Get loan applications by agent ID
-   * Access: Only the agent themselves or admins
    */
   async getLoanApplicationsByAgentId(req, res) {
     try {
@@ -152,7 +124,6 @@ class LoanApplicationController {
       const loggedInUser = req.user;
       const userRoles = loggedInUser.roles;
 
-      // Allow if user is an admin/manager or the agent themselves
       const isAdmin = userRoles.some((role) =>
         ["super_admin_vendor", "admin_pawn_limited", "management"].includes(
           role,
@@ -210,7 +181,6 @@ class LoanApplicationController {
 
   /**
    * Get loan applications by processor ID
-   * Access: Only the processor themselves or admins
    */
   async getLoanApplicationsByProcessorId(req, res) {
     try {
@@ -218,7 +188,6 @@ class LoanApplicationController {
       const loggedInUser = req.user;
       const userRoles = loggedInUser.roles;
 
-      // Allow if user is an admin/manager or the processor themselves
       const isAdmin = userRoles.some((role) =>
         ["super_admin_vendor", "admin_pawn_limited", "management"].includes(
           role,
@@ -291,83 +260,6 @@ class LoanApplicationController {
         userRole,
         userId,
       );
-
-      res.status(200).json({
-        success: true,
-        data: result.data,
-        message: result.message,
-      });
-    } catch (error) {
-      if (error.message === "Loan application not found") {
-        res.status(404).json({
-          success: false,
-          error: error.message,
-        });
-      } else if (error.message === "Invalid application ID") {
-        res.status(400).json({
-          success: false,
-          error: error.message,
-        });
-      } else {
-        res.status(500).json({
-          success: false,
-          error: error.message,
-        });
-      }
-    }
-  }
-
-  /**
-   * Add admin note to loan application
-   */
-  async addAdminNote(req, res) {
-    try {
-      const { id } = req.params;
-      const { note } = req.body;
-      const user = req.user;
-
-      if (!note) {
-        return res.status(400).json({
-          success: false,
-          error: "Note content is required",
-        });
-      }
-
-      const result = await loanApplicationService.addAdminNote(id, note, user);
-
-      res.status(200).json({
-        success: true,
-        data: result.data,
-        message: result.message,
-      });
-    } catch (error) {
-      if (error.message === "Loan application not found") {
-        res.status(404).json({
-          success: false,
-          error: error.message,
-        });
-      } else if (error.message === "Invalid application ID") {
-        res.status(400).json({
-          success: false,
-          error: error.message,
-        });
-      } else {
-        res.status(400).json({
-          success: false,
-          error: error.message,
-        });
-      }
-    }
-  }
-
-  /**
-   * Get all admin notes for a loan application
-   */
-  async getAdminNotes(req, res) {
-    try {
-      const { id } = req.params;
-
-      const result = await loanApplicationService.getAdminNotes(id);
 
       res.status(200).json({
         success: true,
@@ -523,30 +415,24 @@ class LoanApplicationController {
   }
 
   /**
-   * Add attachment to loan application
+   * Add admin note to loan application
    */
-  async addAttachment(req, res) {
+  async addAdminNote(req, res) {
     try {
       const { id } = req.params;
-      const { attachmentId } = req.body;
-      const userRole = req.user.roles[0];
-      const userId = req.user._id;
+      const { note } = req.body;
+      const user = req.user;
 
-      if (!attachmentId) {
+      if (!note) {
         return res.status(400).json({
           success: false,
-          error: "Attachment ID is required",
+          error: "Note text is required",
         });
       }
 
-      const result = await loanApplicationService.addAttachment(
-        id,
-        attachmentId,
-        userRole,
-        userId,
-      );
+      const result = await loanApplicationService.addAdminNote(id, note, user);
 
-      res.status(200).json({
+      res.status(201).json({
         success: true,
         data: result.data,
         message: result.message,
@@ -557,7 +443,7 @@ class LoanApplicationController {
           success: false,
           error: error.message,
         });
-      } else if (error.message === "Invalid application or attachment ID") {
+      } else if (error.message === "Invalid application ID") {
         res.status(400).json({
           success: false,
           error: error.message,
@@ -572,19 +458,60 @@ class LoanApplicationController {
   }
 
   /**
-   * Remove attachment from loan application
+   * Get all admin notes for a loan application
    */
-  async removeAttachment(req, res) {
+  async getAdminNotes(req, res) {
     try {
-      const { id, attachmentId } = req.params;
-      const userRole = req.user.roles[0];
-      const userId = req.user._id;
+      const { id } = req.params;
 
-      const result = await loanApplicationService.removeAttachment(
+      const result = await loanApplicationService.getAdminNotes(id);
+
+      res.status(200).json({
+        success: true,
+        data: result.data,
+        message: result.message,
+      });
+    } catch (error) {
+      if (error.message === "Loan application not found") {
+        res.status(404).json({
+          success: false,
+          error: error.message,
+        });
+      } else if (error.message === "Invalid application ID") {
+        res.status(400).json({
+          success: false,
+          error: error.message,
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: error.message,
+        });
+      }
+    }
+  }
+
+  /**
+   * Update an admin note
+   */
+  async updateAdminNote(req, res) {
+    try {
+      const { id, noteId } = req.params;
+      const { note } = req.body;
+      const user = req.user;
+
+      if (!note) {
+        return res.status(400).json({
+          success: false,
+          error: "Note text is required",
+        });
+      }
+
+      const result = await loanApplicationService.updateAdminNote(
         id,
-        attachmentId,
-        userRole,
-        userId,
+        noteId,
+        note,
+        user,
       );
 
       res.status(200).json({
@@ -593,20 +520,80 @@ class LoanApplicationController {
         message: result.message,
       });
     } catch (error) {
-      if (
-        error.message === "Loan application not found or cannot be modified"
-      ) {
+      if (error.message === "Loan application not found") {
         res.status(404).json({
           success: false,
           error: error.message,
         });
-      } else if (error.message === "Invalid application or attachment ID") {
+      } else if (error.message === "Admin note not found") {
+        res.status(404).json({
+          success: false,
+          error: error.message,
+        });
+      } else if (error.message === "Invalid application or note ID") {
         res.status(400).json({
+          success: false,
+          error: error.message,
+        });
+      } else if (
+        error.message === "You are not authorized to update this note"
+      ) {
+        res.status(403).json({
           success: false,
           error: error.message,
         });
       } else {
         res.status(400).json({
+          success: false,
+          error: error.message,
+        });
+      }
+    }
+  }
+
+  /**
+   * Delete an admin note
+   */
+  async deleteAdminNote(req, res) {
+    try {
+      const { id, noteId } = req.params;
+      const user = req.user;
+
+      const result = await loanApplicationService.deleteAdminNote(
+        id,
+        noteId,
+        user,
+      );
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+      });
+    } catch (error) {
+      if (error.message === "Loan application not found") {
+        res.status(404).json({
+          success: false,
+          error: error.message,
+        });
+      } else if (error.message === "Admin note not found") {
+        res.status(404).json({
+          success: false,
+          error: error.message,
+        });
+      } else if (error.message === "Invalid application or note ID") {
+        res.status(400).json({
+          success: false,
+          error: error.message,
+        });
+      } else if (
+        error.message === "You are not authorized to delete this note"
+      ) {
+        res.status(403).json({
+          success: false,
+          error: error.message,
+        });
+      } else {
+        res.status(500).json({
           success: false,
           error: error.message,
         });

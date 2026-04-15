@@ -70,7 +70,7 @@ class LoanApplicationService {
   }
 
   /**
-   * Create a new loan application (draft)
+   * Create a new loan application
    * @param {Object} applicationData - The application data from request body
    * @param {Object} createdByUser - The user performing the creation (full user object)
    * @param {String} customerUserId - Optional: the ID of the customer (if staff is creating on behalf)
@@ -85,12 +85,7 @@ class LoanApplicationService {
 
     try {
       // Validate required fields
-      const requiredFields = [
-        "full_name",
-        "national_id_number",
-        "requested_loan_amount",
-        "collateral_category",
-      ];
+      const requiredFields = ["requested_loan_amount", "collateral_category"];
       for (const field of requiredFields) {
         if (!applicationData[field]) {
           throw new Error(`${field.replace("_", " ")} is required`);
@@ -106,6 +101,13 @@ class LoanApplicationService {
 
       // Determine the customer (borrower)
       const finalCustomerUserId = customerUserId || createdByUser._id;
+
+      // Verify customer exists
+      const customer =
+        await User.findById(finalCustomerUserId).session(session);
+      if (!customer) {
+        throw new Error("Customer user not found");
+      }
 
       let loanApplication;
       let attempts = 0;
@@ -145,102 +147,8 @@ class LoanApplicationService {
 
       await loanApplication.populate(
         "customer_user",
-        "first_name last_name email phone",
+        "first_name last_name email phone national_id_number date_of_birth address gender marital_status",
       );
-
-      return {
-        success: true,
-        data: loanApplication,
-        message: "Loan application submitted created successfully",
-      };
-    } catch (error) {
-      await session.abortTransaction();
-      session.endSession();
-      throw new Error(`Failed to create loan application: ${error.message}`);
-    }
-  }
-
-  /**
-   * Submit a draft loan application
-   * @param {String} applicationId - The ID of the application
-   * @param {Object} user - The user performing the submission (full user object)
-   */
-  async submitLoanApplication(applicationId, user) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
-    try {
-      // Build query: if user is customer, restrict to their own; if staff, allow any draft
-      const query = { _id: applicationId, status: "draft" };
-      const isCustomer = user.roles.includes("customer");
-      if (isCustomer) {
-        query.customer_user = user._id;
-      }
-
-      const loanApplication =
-        await LoanApplication.findOne(query).session(session);
-
-      if (!loanApplication) {
-        throw new Error("Loan application not found or cannot be submitted");
-      }
-
-      // Check if all required fields are filled (same as before)
-      const requiredFields = [
-        "full_name",
-        "national_id_number",
-        "date_of_birth",
-        "contact_details",
-        "home_address",
-        "employment.employment_type",
-        "employment.title",
-        "employment.duration",
-        "collateral_description",
-        "declaration_signed_at",
-        "declaration_signature_name",
-      ];
-      for (const field of requiredFields) {
-        const value = field
-          .split(".")
-          .reduce((obj, key) => obj && obj[key], loanApplication);
-        if (!value) {
-          throw new Error(`Missing required field: ${field}`);
-        }
-      }
-
-      // Update status and submission audit
-      loanApplication.status = "submitted";
-      loanApplication.submitted_by = user._id;
-      await loanApplication.save({ session });
-
-      // Get customer details for email
-      await loanApplication.populate(
-        "customer_user",
-        "first_name last_name email",
-      );
-
-      await session.commitTransaction();
-      session.endSession();
-
-      // Send email notifications
-      try {
-        // Send to customer
-        await emailService.sendLoanApplicationSubmittedEmail({
-          to: loanApplication.customer_user.email,
-          fullName: loanApplication.full_name,
-          applicationNo: loanApplication.application_no,
-        });
-
-        // Send to admin team
-        await emailService.sendLoanApplicationAdminNotification({
-          applicationNo: loanApplication.application_no,
-          customerName: loanApplication.full_name,
-          requestedAmount: loanApplication.requested_loan_amount,
-          collateralCategory: loanApplication.collateral_category,
-        });
-      } catch (emailError) {
-        console.error("Failed to send email notifications:", emailError);
-        // Don't throw – email failure shouldn't break the application
-      }
 
       return {
         success: true,
@@ -250,14 +158,12 @@ class LoanApplicationService {
     } catch (error) {
       await session.abortTransaction();
       session.endSession();
-      console.error("Error submitting loan application:", error);
-      throw new Error(`Failed to submit loan application: ${error.message}`);
+      throw new Error(`Failed to create loan application: ${error.message}`);
     }
   }
 
   /**
    * Get loan applications with pagination and filtering
-   * Now populates created_by, submitted_by, processed_by
    */
   async getLoanApplications(options = {}) {
     try {
@@ -291,12 +197,8 @@ class LoanApplicationService {
       if (customer_user) query.customer_user = customer_user;
 
       if (search) {
-        query.$or = [
-          { application_no: { $regex: search, $options: "i" } },
-          { full_name: { $regex: search, $options: "i" } },
-          { national_id_number: { $regex: search, $options: "i" } },
-          { email_address: { $regex: search, $options: "i" } },
-        ];
+        // Search by application number only since customer data is in User model
+        query.application_no = { $regex: search, $options: "i" };
       }
 
       if (startDate || endDate) {
@@ -307,23 +209,13 @@ class LoanApplicationService {
 
       const skip = (page - 1) * limit;
 
-      const selectFields =
-        userRole === "call_centre_support"
-          ? "application_no full_name status collateral_category requested_loan_amount created_at attachments"
-          : "";
-
       const [applications, total] = await Promise.all([
         LoanApplication.find(query)
-          .populate("customer_user", "first_name last_name email phone")
+          .populate(
+            "customer_user",
+            "first_name last_name email phone national_id_number date_of_birth address gender marital_status",
+          )
           .populate("debtor_check.checked_by", "first_name last_name")
-          .populate({
-            path: "attachments",
-            select: `
-            category filename mime_type storage url
-            signed signed_at
-            created_at
-          `,
-          })
           .populate("created_by", "first_name last_name email roles")
           .populate("submitted_by", "first_name last_name email roles")
           .populate("processed_by", "first_name last_name email roles")
@@ -331,7 +223,6 @@ class LoanApplicationService {
             "admin_notes.created_by",
             "first_name last_name email roles",
           )
-          .select(selectFields)
           .sort({ [sortBy]: sortOrder === "desc" ? -1 : 1 })
           .skip(skip)
           .limit(parseInt(limit))
@@ -396,12 +287,7 @@ class LoanApplicationService {
       if (collateral_category) query.collateral_category = collateral_category;
 
       if (search) {
-        query.$or = [
-          { application_no: { $regex: search, $options: "i" } },
-          { full_name: { $regex: search, $options: "i" } },
-          { national_id_number: { $regex: search, $options: "i" } },
-          { email_address: { $regex: search, $options: "i" } },
-        ];
+        query.application_no = { $regex: search, $options: "i" };
       }
 
       if (startDate || endDate) {
@@ -414,7 +300,10 @@ class LoanApplicationService {
 
       const [applications, total] = await Promise.all([
         LoanApplication.find(query)
-          .populate("customer_user", "first_name last_name email phone")
+          .populate(
+            "customer_user",
+            "first_name last_name email phone national_id_number",
+          )
           .populate("created_by", "first_name last_name email roles")
           .populate("submitted_by", "first_name last_name email roles")
           .populate("processed_by", "first_name last_name email roles")
@@ -423,11 +312,6 @@ class LoanApplicationService {
             "admin_notes.created_by",
             "first_name last_name email roles",
           )
-          .populate({
-            path: "attachments",
-            select:
-              "category filename mime_type storage url signed signed_at created_at",
-          })
           .sort({ [sortBy]: sortOrder === "desc" ? -1 : 1 })
           .skip(skip)
           .limit(parseInt(limit))
@@ -481,12 +365,7 @@ class LoanApplicationService {
       if (collateral_category) query.collateral_category = collateral_category;
 
       if (search) {
-        query.$or = [
-          { application_no: { $regex: search, $options: "i" } },
-          { full_name: { $regex: search, $options: "i" } },
-          { national_id_number: { $regex: search, $options: "i" } },
-          { email_address: { $regex: search, $options: "i" } },
-        ];
+        query.application_no = { $regex: search, $options: "i" };
       }
 
       if (startDate || endDate) {
@@ -499,7 +378,10 @@ class LoanApplicationService {
 
       const [applications, total] = await Promise.all([
         LoanApplication.find(query)
-          .populate("customer_user", "first_name last_name email phone")
+          .populate(
+            "customer_user",
+            "first_name last_name email phone national_id_number",
+          )
           .populate("created_by", "first_name last_name email roles")
           .populate("submitted_by", "first_name last_name email roles")
           .populate("processed_by", "first_name last_name email roles")
@@ -508,11 +390,6 @@ class LoanApplicationService {
             "admin_notes.created_by",
             "first_name last_name email roles",
           )
-          .populate({
-            path: "attachments",
-            select:
-              "category filename mime_type storage url signed signed_at created_at",
-          })
           .sort({ [sortBy]: sortOrder === "desc" ? -1 : 1 })
           .skip(skip)
           .limit(parseInt(limit))
@@ -559,7 +436,7 @@ class LoanApplicationService {
       const application = await LoanApplication.findOne(query)
         .populate(
           "customer_user",
-          "first_name last_name email phone national_id_number date_of_birth address",
+          "first_name last_name email phone national_id_number date_of_birth address gender marital_status alternative_phone employment_details next_of_kin",
         )
         .populate("created_by", "first_name last_name email roles")
         .populate("submitted_by", "first_name last_name email roles")
@@ -583,90 +460,7 @@ class LoanApplicationService {
   }
 
   /**
-   * Add admin note to loan application
-   * @param {String} id - Application ID
-   * @param {String} note - Note content
-   * @param {Object} user - The user adding the note (full object)
-   */
-  async addAdminNote(id, note, user) {
-    try {
-      if (!mongoose.Types.ObjectId.isValid(id)) {
-        throw new Error("Invalid application ID");
-      }
-
-      if (!note || note.trim() === "") {
-        throw new Error("Note content is required");
-      }
-
-      const application = await LoanApplication.findById(id);
-
-      if (!application) {
-        throw new Error("Loan application not found");
-      }
-
-      const adminNote = {
-        note: note.trim(),
-        created_by: user._id,
-        created_at: new Date(),
-      };
-
-      application.admin_notes.push(adminNote);
-      await application.save();
-
-      await application.populate(
-        "admin_notes.created_by",
-        "first_name last_name email roles",
-      );
-
-      return {
-        success: true,
-        data: application.admin_notes,
-        message: "Admin note added successfully",
-      };
-    } catch (error) {
-      console.error("Error adding admin note:", error);
-      throw new Error(`Failed to add admin note: ${error.message}`);
-    }
-  }
-
-  /**
-   * Get all admin notes for a loan application
-   * @param {String} id - Application ID
-   */
-  async getAdminNotes(id) {
-    try {
-      if (!mongoose.Types.ObjectId.isValid(id)) {
-        throw new Error("Invalid application ID");
-      }
-
-      const application = await LoanApplication.findById(id)
-        .populate("admin_notes.created_by", "first_name last_name email roles")
-        .select("admin_notes application_no");
-
-      if (!application) {
-        throw new Error("Loan application not found");
-      }
-
-      return {
-        success: true,
-        data: {
-          application_no: application.application_no,
-          notes: application.admin_notes,
-        },
-        message: "Admin notes retrieved successfully",
-      };
-    } catch (error) {
-      console.error("Error fetching admin notes:", error);
-      throw new Error(`Failed to fetch admin notes: ${error.message}`);
-    }
-  }
-
-  /**
    * Update loan application status (for loan officers)
-   * @param {String} id - Application ID
-   * @param {String} status - New status
-   * @param {Object} user - The user performing the update (full object)
-   * @param {String} notes - Optional internal notes
    */
   async updateLoanApplicationStatus(id, status, user, notes = "") {
     try {
@@ -718,9 +512,10 @@ class LoanApplicationService {
 
         // Send status update email to customer
         try {
+          const customerFullName = `${application.customer_user.first_name} ${application.customer_user.last_name}`;
           await emailService.sendLoanApplicationStatusUpdateEmail({
             to: application.customer_user.email,
-            fullName: application.full_name,
+            fullName: customerFullName,
             applicationNo: application.application_no,
             status,
             notes,
@@ -769,8 +564,9 @@ class LoanApplicationService {
       session.startTransaction();
 
       try {
-        const application =
-          await LoanApplication.findById(applicationId).session(session);
+        const application = await LoanApplication.findById(applicationId)
+          .populate("customer_user", "first_name last_name national_id_number")
+          .session(session);
 
         if (!application) {
           throw new Error("Loan application not found");
@@ -780,9 +576,11 @@ class LoanApplicationService {
           throw new Error("Debtor check already performed on this application");
         }
 
+        const customerFullName = `${application.customer_user.first_name} ${application.customer_user.last_name}`;
+
         const searchCriteria = [
-          { client_name: { $regex: application.full_name, $options: "i" } },
-          { national_id_number: application.national_id_number },
+          { client_name: { $regex: customerFullName, $options: "i" } },
+          { national_id_number: application.customer_user.national_id_number },
         ].filter((criteria) => {
           const value = Object.values(criteria)[0];
           return value && value !== "";
@@ -848,7 +646,6 @@ class LoanApplicationService {
 
       if (userRole === "customer") {
         query.customer_user = userId;
-        query.status = "draft";
       }
 
       const application = await LoanApplication.findOne(query);
@@ -862,7 +659,7 @@ class LoanApplicationService {
       delete updateData.customer_user;
       delete updateData.status;
       delete updateData.debtor_check;
-      delete updateData.attachments;
+      delete updateData.collateral_images;
       delete updateData.internal_notes;
       delete updateData.created_by;
       delete updateData.application_source;
@@ -870,20 +667,48 @@ class LoanApplicationService {
       delete updateData.processed_by;
       delete updateData.admin_notes;
 
-      Object.assign(application, updateData);
-      application.updated_at = new Date();
+      // Only allow updating these fields
+      const allowedFields = [
+        "requested_loan_amount",
+        "interest_rate",
+        "interest_amount",
+        "total_repayable_amount",
+        "collateral_category",
+        "collateral_description",
+        "surety_description",
+        "declared_asset_value",
+        "small_loan_details",
+        "motor_vehicle_details",
+        "jewellery_details",
+        "repayment_type",
+        "repayment_days",
+        "installment_count",
+        "installment_frequency",
+        "installment_amount",
+        "declaration_text",
+        "declaration_signed_at",
+        "declaration_signature_name",
+        "custom_terms_and_conditions",
+        "terms_accepted_at",
+        "terms_accepted_by",
+      ];
 
+      for (const field of allowedFields) {
+        if (updateData[field] !== undefined) {
+          application[field] = updateData[field];
+        }
+      }
+
+      application.updated_at = new Date();
       await application.save();
 
       const updatedApplication = await LoanApplication.findOne(query)
-        .populate("customer_user", "first_name last_name email phone")
+        .populate(
+          "customer_user",
+          "first_name last_name email phone national_id_number",
+        )
         .populate("debtor_check.checked_by", "first_name last_name")
-        .populate("admin_notes.created_by", "first_name last_name email roles")
-        .populate({
-          path: "attachments",
-          select:
-            "category filename mime_type storage url signed signed_at created_at",
-        })
+        .populate("admin_notes.created_by", "first_name last_name email")
         .lean();
 
       return {
@@ -898,92 +723,196 @@ class LoanApplicationService {
   }
 
   /**
-   * Add attachment to loan application
+   * Add admin note to loan application
    */
-  async addAttachment(applicationId, attachmentId, userRole, userId) {
+  async addAdminNote(applicationId, noteText, user) {
     try {
-      if (
-        !mongoose.Types.ObjectId.isValid(applicationId) ||
-        !mongoose.Types.ObjectId.isValid(attachmentId)
-      ) {
-        throw new Error("Invalid application or attachment ID");
+      if (!mongoose.Types.ObjectId.isValid(applicationId)) {
+        throw new Error("Invalid application ID");
       }
 
-      const query = { _id: applicationId };
-
-      if (userRole === "customer") {
-        query.customer_user = userId;
+      if (!noteText || noteText.trim() === "") {
+        throw new Error("Note text is required");
       }
 
-      const application = await LoanApplication.findOne(query);
+      const application = await LoanApplication.findById(applicationId);
 
       if (!application) {
         throw new Error("Loan application not found");
       }
 
-      if (application.attachments.includes(attachmentId)) {
-        throw new Error("Attachment already added to this application");
-      }
+      const adminNote = {
+        note: noteText.trim(),
+        created_by: user._id,
+        created_at: new Date(),
+      };
 
-      application.attachments.push(attachmentId);
+      application.admin_notes.push(adminNote);
       application.updated_at = new Date();
-
       await application.save();
+
+      await application.populate(
+        "admin_notes.created_by",
+        "first_name last_name email roles",
+      );
 
       return {
         success: true,
-        data: application,
-        message: "Attachment added to loan application successfully",
+        data: application.admin_notes[application.admin_notes.length - 1],
+        message: "Admin note added successfully",
       };
     } catch (error) {
-      console.error("Error adding attachment:", error);
-      throw new Error(`Failed to add attachment: ${error.message}`);
+      console.error("Error adding admin note:", error);
+      throw new Error(`Failed to add admin note: ${error.message}`);
     }
   }
 
   /**
-   * Remove attachment from loan application
+   * Get all admin notes for a loan application
    */
-  async removeAttachment(applicationId, attachmentId, userRole, userId) {
+  async getAdminNotes(applicationId) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(applicationId)) {
+        throw new Error("Invalid application ID");
+      }
+
+      const application = await LoanApplication.findById(applicationId)
+        .populate("admin_notes.created_by", "first_name last_name email roles")
+        .select("admin_notes application_no");
+
+      if (!application) {
+        throw new Error("Loan application not found");
+      }
+
+      return {
+        success: true,
+        data: {
+          application_no: application.application_no,
+          notes: application.admin_notes,
+        },
+        message: "Admin notes retrieved successfully",
+      };
+    } catch (error) {
+      console.error("Error fetching admin notes:", error);
+      throw new Error(`Failed to fetch admin notes: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update an admin note
+   */
+  async updateAdminNote(applicationId, noteId, noteText, user) {
     try {
       if (
         !mongoose.Types.ObjectId.isValid(applicationId) ||
-        !mongoose.Types.ObjectId.isValid(attachmentId)
+        !mongoose.Types.ObjectId.isValid(noteId)
       ) {
-        throw new Error("Invalid application or attachment ID");
+        throw new Error("Invalid application or note ID");
       }
 
-      const query = { _id: applicationId };
-
-      if (userRole === "customer") {
-        query.customer_user = userId;
-        query.status = "draft";
+      if (!noteText || noteText.trim() === "") {
+        throw new Error("Note text is required");
       }
 
-      const application = await LoanApplication.findOne(query);
+      const application = await LoanApplication.findById(applicationId);
 
       if (!application) {
-        throw new Error("Loan application not found or cannot be modified");
+        throw new Error("Loan application not found");
       }
 
-      const attachmentIndex = application.attachments.indexOf(attachmentId);
-      if (attachmentIndex === -1) {
-        throw new Error("Attachment not found in this application");
+      const noteIndex = application.admin_notes.findIndex(
+        (note) => note._id.toString() === noteId,
+      );
+
+      if (noteIndex === -1) {
+        throw new Error("Admin note not found");
       }
 
-      application.attachments.splice(attachmentIndex, 1);
+      // Check if user is authorized to update (only the creator or admin)
+      const isCreator =
+        application.admin_notes[noteIndex].created_by.toString() ===
+        user._id.toString();
+      const isAdmin = user.roles.some((role) =>
+        ["super_admin_vendor", "admin_pawn_limited", "management"].includes(
+          role,
+        ),
+      );
+
+      if (!isCreator && !isAdmin) {
+        throw new Error("You are not authorized to update this note");
+      }
+
+      application.admin_notes[noteIndex].note = noteText.trim();
       application.updated_at = new Date();
+      await application.save();
 
+      await application.populate(
+        "admin_notes.created_by",
+        "first_name last_name email roles",
+      );
+
+      return {
+        success: true,
+        data: application.admin_notes[noteIndex],
+        message: "Admin note updated successfully",
+      };
+    } catch (error) {
+      console.error("Error updating admin note:", error);
+      throw new Error(`Failed to update admin note: ${error.message}`);
+    }
+  }
+
+  /**
+   * Delete an admin note
+   */
+  async deleteAdminNote(applicationId, noteId, user) {
+    try {
+      if (
+        !mongoose.Types.ObjectId.isValid(applicationId) ||
+        !mongoose.Types.ObjectId.isValid(noteId)
+      ) {
+        throw new Error("Invalid application or note ID");
+      }
+
+      const application = await LoanApplication.findById(applicationId);
+
+      if (!application) {
+        throw new Error("Loan application not found");
+      }
+
+      const noteIndex = application.admin_notes.findIndex(
+        (note) => note._id.toString() === noteId,
+      );
+
+      if (noteIndex === -1) {
+        throw new Error("Admin note not found");
+      }
+
+      // Check if user is authorized to delete (only the creator or admin)
+      const isCreator =
+        application.admin_notes[noteIndex].created_by.toString() ===
+        user._id.toString();
+      const isAdmin = user.roles.some((role) =>
+        ["super_admin_vendor", "admin_pawn_limited", "management"].includes(
+          role,
+        ),
+      );
+
+      if (!isCreator && !isAdmin) {
+        throw new Error("You are not authorized to delete this note");
+      }
+
+      application.admin_notes.splice(noteIndex, 1);
+      application.updated_at = new Date();
       await application.save();
 
       return {
         success: true,
-        data: application,
-        message: "Attachment removed from loan application successfully",
+        message: "Admin note deleted successfully",
       };
     } catch (error) {
-      console.error("Error removing attachment:", error);
-      throw new Error(`Failed to remove attachment: ${error.message}`);
+      console.error("Error deleting admin note:", error);
+      throw new Error(`Failed to delete admin note: ${error.message}`);
     }
   }
 
@@ -1006,9 +935,6 @@ class LoanApplicationService {
             totalApplications: { $sum: 1 },
             totalRequestedAmount: { $sum: "$requested_loan_amount" },
             avgRequestedAmount: { $avg: "$requested_loan_amount" },
-            draftCount: {
-              $sum: { $cond: [{ $eq: ["$status", "draft"] }, 1, 0] },
-            },
             submittedCount: {
               $sum: { $cond: [{ $eq: ["$status", "submitted"] }, 1, 0] },
             },
@@ -1077,7 +1003,6 @@ class LoanApplicationService {
             totalApplications: 0,
             totalRequestedAmount: 0,
             avgRequestedAmount: 0,
-            draftCount: 0,
             submittedCount: 0,
             processingCount: 0,
             approvedCount: 0,
@@ -1122,9 +1047,11 @@ class LoanApplicationService {
         throw new Error("You do not have permission to request documents");
       }
 
+      const customerFullName = `${application.customer_user.first_name} ${application.customer_user.last_name}`;
+
       await emailService.sendDocumentRequirementEmail({
         to: application.customer_user.email,
-        fullName: application.full_name,
+        fullName: customerFullName,
         applicationNo: application.application_no,
         requiredDocuments,
       });

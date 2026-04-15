@@ -22,15 +22,52 @@ const {
  *       scheme: bearer
  *       bearerFormat: JWT
  *   schemas:
+ *     SmallLoanDetails:
+ *       type: object
+ *       properties:
+ *         type:
+ *           type: string
+ *         model:
+ *           type: string
+ *         serial_no:
+ *           type: string
+ *     MotorVehicleDetails:
+ *       type: object
+ *       properties:
+ *         make:
+ *           type: string
+ *         model:
+ *           type: string
+ *         registration_no:
+ *           type: string
+ *         cc_serial_no:
+ *           type: string
+ *         engine_no:
+ *           type: string
+ *         chassis_no:
+ *           type: string
+ *         year:
+ *           type: number
+ *     JewelleryDetails:
+ *       type: object
+ *       properties:
+ *         type:
+ *           type: string
+ *         description:
+ *           type: string
+ *         weight:
+ *           type: number
+ *         purity:
+ *           type: string
+ *         estimated_value:
+ *           type: number
  *     AdminNote:
  *       type: object
  *       properties:
  *         _id:
  *           type: string
- *           description: Auto-generated note ID
  *         note:
  *           type: string
- *           description: Admin note content
  *         created_by:
  *           type: object
  *           properties:
@@ -42,11 +79,68 @@ const {
  *               type: string
  *             email:
  *               type: string
- *             roles:
- *               type: array
- *               items:
- *                 type: string
  *         created_at:
+ *           type: string
+ *           format: date-time
+ *     LoanApplication:
+ *       type: object
+ *       properties:
+ *         _id:
+ *           type: string
+ *         application_no:
+ *           type: string
+ *         customer_user:
+ *           type: object
+ *         requested_loan_amount:
+ *           type: number
+ *         interest_rate:
+ *           type: number
+ *         interest_amount:
+ *           type: number
+ *         total_repayable_amount:
+ *           type: number
+ *         collateral_category:
+ *           type: string
+ *           enum: [small_loans, motor_vehicle, jewellery]
+ *         collateral_description:
+ *           type: string
+ *         surety_description:
+ *           type: string
+ *         declared_asset_value:
+ *           type: number
+ *         small_loan_details:
+ *           $ref: '#/components/schemas/SmallLoanDetails'
+ *         motor_vehicle_details:
+ *           $ref: '#/components/schemas/MotorVehicleDetails'
+ *         jewellery_details:
+ *           $ref: '#/components/schemas/JewelleryDetails'
+ *         collateral_images:
+ *           type: array
+ *           items:
+ *             type: string
+ *         repayment_type:
+ *           type: string
+ *           enum: [once_off, installment]
+ *         repayment_days:
+ *           type: number
+ *         installment_count:
+ *           type: number
+ *         installment_frequency:
+ *           type: string
+ *           enum: [weekly, biweekly, monthly, quarterly]
+ *         installment_amount:
+ *           type: number
+ *         status:
+ *           type: string
+ *           enum: [submitted, processing, approved, rejected, cancelled]
+ *         admin_notes:
+ *           type: array
+ *           items:
+ *             $ref: '#/components/schemas/AdminNote'
+ *         created_at:
+ *           type: string
+ *           format: date-time
+ *         updated_at:
  *           type: string
  *           format: date-time
  */
@@ -55,7 +149,7 @@ const {
  * @swagger
  * /api/v1/loan-applications:
  *   post:
- *     summary: Create a new loan application (draft) – for customers
+ *     summary: Create a new loan application – for customers
  *     tags: [Loan Applications]
  *     security:
  *       - bearerAuth: []
@@ -66,61 +160,73 @@ const {
  *           schema:
  *             type: object
  *             required:
- *               - full_name
- *               - national_id_number
  *               - requested_loan_amount
  *               - collateral_category
  *             properties:
- *               full_name:
- *                 type: string
- *               national_id_number:
- *                 type: string
- *               gender:
- *                 type: string
- *               date_of_birth:
- *                 type: string
- *                 format: date
- *               marital_status:
- *                 type: string
- *               contact_details:
- *                 type: string
- *               alternative_number:
- *                 type: string
- *               email_address:
- *                 type: string
- *                 format: email
- *               home_address:
- *                 type: string
- *               employment:
- *                 type: object
- *                 properties:
- *                   employment_type:
- *                     type: string
- *                   title:
- *                     type: string
- *                   duration:
- *                     type: string
- *                   location:
- *                     type: string
- *                   contacts:
- *                     type: string
  *               requested_loan_amount:
  *                 type: number
  *                 minimum: 0
+ *                 description: Amount requested for the loan
  *               collateral_category:
  *                 type: string
  *                 enum: [small_loans, motor_vehicle, jewellery]
+ *                 description: Type of collateral being offered
  *               collateral_description:
  *                 type: string
+ *                 description: Description of the collateral
  *               surety_description:
  *                 type: string
+ *                 description: Details of surety/guarantor if any
  *               declared_asset_value:
  *                 type: number
+ *                 minimum: 0
+ *                 description: Declared value of the collateral
+ *               small_loan_details:
+ *                 $ref: '#/components/schemas/SmallLoanDetails'
+ *               motor_vehicle_details:
+ *                 $ref: '#/components/schemas/MotorVehicleDetails'
+ *               jewellery_details:
+ *                 $ref: '#/components/schemas/JewelleryDetails'
+ *               repayment_type:
+ *                 type: string
+ *                 enum: [once_off, installment]
+ *                 default: once_off
+ *               repayment_days:
+ *                 type: number
+ *                 minimum: 1
+ *                 description: Expected days to repay (for once_off or total duration)
+ *               installment_count:
+ *                 type: number
+ *                 minimum: 1
+ *               installment_frequency:
+ *                 type: string
+ *                 enum: [weekly, biweekly, monthly, quarterly]
+ *               installment_amount:
+ *                 type: number
+ *                 minimum: 0
  *               declaration_text:
+ *                 type: string
+ *               declaration_signed_at:
+ *                 type: string
+ *                 format: date-time
+ *               declaration_signature_name:
+ *                 type: string
+ *               custom_terms_and_conditions:
  *                 type: string
  *     responses:
  *       201:
- *         description: Loan application draft created successfully
+ *         description: Loan application created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   $ref: '#/components/schemas/LoanApplication'
+ *                 message:
+ *                   type: string
  *       400:
  *         description: Validation error
  *       401:
@@ -151,38 +257,15 @@ router.post(
  *             type: object
  *             required:
  *               - customer_user_id
- *               - full_name
- *               - national_id_number
  *               - requested_loan_amount
  *               - collateral_category
  *             properties:
  *               customer_user_id:
  *                 type: string
- *                 description: ID of the customer for whom the application is created
- *               full_name:
- *                 type: string
- *               national_id_number:
- *                 type: string
- *               gender:
- *                 type: string
- *               date_of_birth:
- *                 type: string
- *                 format: date
- *               marital_status:
- *                 type: string
- *               contact_details:
- *                 type: string
- *               alternative_number:
- *                 type: string
- *               email_address:
- *                 type: string
- *                 format: email
- *               home_address:
- *                 type: string
- *               employment:
- *                 type: object
+ *                 description: ID of the customer from User model
  *               requested_loan_amount:
  *                 type: number
+ *                 minimum: 0
  *               collateral_category:
  *                 type: string
  *                 enum: [small_loans, motor_vehicle, jewellery]
@@ -192,13 +275,42 @@ router.post(
  *                 type: string
  *               declared_asset_value:
  *                 type: number
+ *               small_loan_details:
+ *                 $ref: '#/components/schemas/SmallLoanDetails'
+ *               motor_vehicle_details:
+ *                 $ref: '#/components/schemas/MotorVehicleDetails'
+ *               jewellery_details:
+ *                 $ref: '#/components/schemas/JewelleryDetails'
+ *               repayment_type:
+ *                 type: string
+ *                 enum: [once_off, installment]
+ *                 default: once_off
+ *               repayment_days:
+ *                 type: number
+ *                 minimum: 1
+ *               installment_count:
+ *                 type: number
+ *                 minimum: 1
+ *               installment_frequency:
+ *                 type: string
+ *                 enum: [weekly, biweekly, monthly, quarterly]
+ *               installment_amount:
+ *                 type: number
+ *                 minimum: 0
  *               declaration_text:
+ *                 type: string
+ *               declaration_signed_at:
+ *                 type: string
+ *                 format: date-time
+ *               declaration_signature_name:
+ *                 type: string
+ *               custom_terms_and_conditions:
  *                 type: string
  *     responses:
  *       201:
- *         description: Loan application created successfully for the customer
+ *         description: Loan application created successfully
  *       400:
- *         description: Validation error or missing customer_user_id
+ *         description: Validation error
  *       401:
  *         description: Unauthorized
  *       403:
@@ -258,7 +370,7 @@ router.post(
  *         name: status
  *         schema:
  *           type: string
- *           enum: [draft, submitted, processing, approved, rejected, cancelled]
+ *           enum: [submitted, processing, approved, rejected, cancelled]
  *         description: Filter by status
  *       - in: query
  *         name: collateral_category
@@ -270,7 +382,7 @@ router.post(
  *         name: search
  *         schema:
  *           type: string
- *         description: Search in application number, name, or ID
+ *         description: Search by application number
  *       - in: query
  *         name: customer_user
  *         schema:
@@ -351,7 +463,7 @@ router.get(
  *         name: status
  *         schema:
  *           type: string
- *           enum: [draft, submitted, processing, approved, rejected, cancelled]
+ *           enum: [submitted, processing, approved, rejected, cancelled]
  *       - in: query
  *         name: collateral_category
  *         schema:
@@ -431,7 +543,7 @@ router.get(
  *         name: status
  *         schema:
  *           type: string
- *           enum: [draft, submitted, processing, approved, rejected, cancelled]
+ *           enum: [submitted, processing, approved, rejected, cancelled]
  *       - in: query
  *         name: collateral_category
  *         schema:
@@ -517,119 +629,6 @@ router.get(
 
 /**
  * @swagger
- * /api/v1/loan-applications/{id}/admin-notes:
- *   post:
- *     summary: Add an admin note to a loan application (Admin only)
- *     tags: [Loan Applications]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: Loan application ID
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - note
- *             properties:
- *               note:
- *                 type: string
- *                 description: Admin note content
- *     responses:
- *       200:
- *         description: Admin note added successfully
- *       400:
- *         description: Bad request - note content required
- *       401:
- *         description: Unauthorized
- *       403:
- *         description: Forbidden - insufficient permissions
- *       404:
- *         description: Loan application not found
- *       500:
- *         description: Server error
- */
-router.post(
-  "/:id/admin-notes",
-  authMiddleware,
-  requireRoles(
-    "super_admin_vendor",
-    "admin_pawn_limited",
-    "management",
-    "loan_officer_processor",
-    "loan_officer_approval",
-  ),
-  loanApplicationController.addAdminNote,
-);
-
-/**
- * @swagger
- * /api/v1/loan-applications/{id}/admin-notes:
- *   get:
- *     summary: Get all admin notes for a loan application
- *     tags: [Loan Applications]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: Loan application ID
- *     responses:
- *       200:
- *         description: Admin notes retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     application_no:
- *                       type: string
- *                     notes:
- *                       type: array
- *                       items:
- *                         $ref: '#/components/schemas/AdminNote'
- *                 message:
- *                   type: string
- *       400:
- *         description: Invalid application ID
- *       401:
- *         description: Unauthorized
- *       404:
- *         description: Loan application not found
- *       500:
- *         description: Server error
- */
-router.get(
-  "/:id/admin-notes",
-  authMiddleware,
-  requireRoles(
-    "super_admin_vendor",
-    "admin_pawn_limited",
-    "management",
-    "loan_officer_processor",
-    "loan_officer_approval",
-    "call_centre_support",
-  ),
-  loanApplicationController.getAdminNotes,
-);
-
-/**
- * @swagger
  * /api/v1/loan-applications/{id}:
  *   put:
  *     summary: Update loan application details
@@ -650,29 +649,13 @@ router.get(
  *           schema:
  *             type: object
  *             properties:
- *               full_name:
- *                 type: string
- *               national_id_number:
- *                 type: string
- *               gender:
- *                 type: string
- *               date_of_birth:
- *                 type: string
- *                 format: date
- *               marital_status:
- *                 type: string
- *               contact_details:
- *                 type: string
- *               alternative_number:
- *                 type: string
- *               email_address:
- *                 type: string
- *                 format: email
- *               home_address:
- *                 type: string
- *               employment:
- *                 type: object
  *               requested_loan_amount:
+ *                 type: number
+ *               interest_rate:
+ *                 type: number
+ *               interest_amount:
+ *                 type: number
+ *               total_repayable_amount:
  *                 type: number
  *               collateral_description:
  *                 type: string
@@ -680,7 +663,32 @@ router.get(
  *                 type: string
  *               declared_asset_value:
  *                 type: number
+ *               small_loan_details:
+ *                 $ref: '#/components/schemas/SmallLoanDetails'
+ *               motor_vehicle_details:
+ *                 $ref: '#/components/schemas/MotorVehicleDetails'
+ *               jewellery_details:
+ *                 $ref: '#/components/schemas/JewelleryDetails'
+ *               repayment_type:
+ *                 type: string
+ *                 enum: [once_off, installment]
+ *               repayment_days:
+ *                 type: number
+ *               installment_count:
+ *                 type: number
+ *               installment_frequency:
+ *                 type: string
+ *                 enum: [weekly, biweekly, monthly, quarterly]
+ *               installment_amount:
+ *                 type: number
  *               declaration_text:
+ *                 type: string
+ *               declaration_signed_at:
+ *                 type: string
+ *                 format: date-time
+ *               declaration_signature_name:
+ *                 type: string
+ *               custom_terms_and_conditions:
  *                 type: string
  *     responses:
  *       200:
@@ -706,47 +714,6 @@ router.put(
     "management",
   ),
   loanApplicationController.updateLoanApplication,
-);
-
-/**
- * @swagger
- * /api/v1/loan-applications/{id}/submit:
- *   post:
- *     summary: Submit a draft loan application
- *     tags: [Loan Applications]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: Loan application ID
- *     responses:
- *       200:
- *         description: Loan application submitted successfully
- *       400:
- *         description: Bad request or missing required fields
- *       404:
- *         description: Loan application not found
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Server error
- */
-router.post(
-  "/:id/submit",
-  authMiddleware,
-  requireRoles(
-    "customer",
-    "loan_officer_processor",
-    "loan_officer_approval",
-    "super_admin_vendor",
-    "admin_pawn_limited",
-    "management",
-  ),
-  loanApplicationController.submitLoanApplication,
 );
 
 /**
@@ -850,9 +817,49 @@ router.post(
 
 /**
  * @swagger
- * /api/v1/loan-applications/{id}/attachments:
+ * /api/v1/loan-applications/{id}/admin-notes:
+ *   get:
+ *     summary: Get all admin notes for a loan application
+ *     tags: [Loan Applications]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Loan application ID
+ *     responses:
+ *       200:
+ *         description: Admin notes retrieved successfully
+ *       400:
+ *         description: Invalid application ID
+ *       404:
+ *         description: Loan application not found
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Server error
+ */
+router.get(
+  "/:id/admin-notes",
+  authMiddleware,
+  requireRoles(
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management",
+  ),
+  loanApplicationController.getAdminNotes,
+);
+
+/**
+ * @swagger
+ * /api/v1/loan-applications/{id}/admin-notes:
  *   post:
- *     summary: Add attachment to loan application
+ *     summary: Add an admin note to a loan application
  *     tags: [Loan Applications]
  *     security:
  *       - bearerAuth: []
@@ -870,42 +877,43 @@ router.post(
  *           schema:
  *             type: object
  *             required:
- *               - attachmentId
+ *               - note
  *             properties:
- *               attachmentId:
+ *               note:
  *                 type: string
- *                 description: ID of the attachment to add
+ *                 description: Admin note text
  *     responses:
- *       200:
- *         description: Attachment added successfully
+ *       201:
+ *         description: Admin note added successfully
  *       400:
  *         description: Bad request
  *       401:
  *         description: Unauthorized
+ *       403:
+ *         description: Insufficient permissions
  *       404:
- *         description: Loan application or attachment not found
+ *         description: Loan application not found
  *       500:
  *         description: Server error
  */
 router.post(
-  "/:id/attachments",
+  "/:id/admin-notes",
   authMiddleware,
   requireRoles(
-    "customer",
     "loan_officer_processor",
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
     "management",
   ),
-  loanApplicationController.addAttachment,
+  loanApplicationController.addAdminNote,
 );
 
 /**
  * @swagger
- * /api/v1/loan-applications/{id}/attachments/{attachmentId}:
- *   delete:
- *     summary: Remove attachment from loan application
+ * /api/v1/loan-applications/{id}/admin-notes/{noteId}:
+ *   put:
+ *     summary: Update an admin note
  *     tags: [Loan Applications]
  *     security:
  *       - bearerAuth: []
@@ -917,35 +925,96 @@ router.post(
  *           type: string
  *         description: Loan application ID
  *       - in: path
- *         name: attachmentId
+ *         name: noteId
  *         required: true
  *         schema:
  *           type: string
- *         description: Attachment ID to remove
+ *         description: Admin note ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - note
+ *             properties:
+ *               note:
+ *                 type: string
+ *                 description: Updated admin note text
  *     responses:
  *       200:
- *         description: Attachment removed successfully
+ *         description: Admin note updated successfully
  *       400:
  *         description: Bad request
  *       401:
  *         description: Unauthorized
+ *       403:
+ *         description: Not authorized to update this note
  *       404:
- *         description: Loan application or attachment not found
+ *         description: Loan application or note not found
  *       500:
  *         description: Server error
  */
-router.delete(
-  "/:id/attachments/:attachmentId",
+router.put(
+  "/:id/admin-notes/:noteId",
   authMiddleware,
   requireRoles(
-    "customer",
     "loan_officer_processor",
     "loan_officer_approval",
     "super_admin_vendor",
     "admin_pawn_limited",
     "management",
   ),
-  loanApplicationController.removeAttachment,
+  loanApplicationController.updateAdminNote,
+);
+
+/**
+ * @swagger
+ * /api/v1/loan-applications/{id}/admin-notes/{noteId}:
+ *   delete:
+ *     summary: Delete an admin note
+ *     tags: [Loan Applications]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Loan application ID
+ *       - in: path
+ *         name: noteId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Admin note ID
+ *     responses:
+ *       200:
+ *         description: Admin note deleted successfully
+ *       400:
+ *         description: Bad request
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Not authorized to delete this note
+ *       404:
+ *         description: Loan application or note not found
+ *       500:
+ *         description: Server error
+ */
+router.delete(
+  "/:id/admin-notes/:noteId",
+  authMiddleware,
+  requireRoles(
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management",
+  ),
+  loanApplicationController.deleteAdminNote,
 );
 
 /**
