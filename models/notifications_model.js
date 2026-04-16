@@ -1,6 +1,9 @@
-// models/notification_model.js
 const mongoose = require("mongoose");
 const { Schema } = mongoose;
+
+/**
+ * Acknowledgement: tracks which users have read/acted on a notification
+ */
 const AcknowledgementSchema = new Schema(
   {
     user_id: {
@@ -11,38 +14,54 @@ const AcknowledgementSchema = new Schema(
     },
     read_at: { type: Date, default: null },
     acted_at: { type: Date, default: null }, // e.g., clicked CTA
-    action: { type: String, trim: true, default: null }, // optional custom action label
+    action: { type: String, trim: true, default: null },
   },
-  { _id: false }
+  { _id: false },
 );
+
+/**
+ * Audience: defines who receives the notification
+ */
 const AudienceSchema = new Schema(
   {
     scope: {
       type: String,
-      enum: ["all", "user", "roles"],
+      enum: ["all", "user", "users", "roles"],
       required: true,
       default: "all",
       index: true,
     },
+    // For scope = "user" (single user)
     user_id: {
       type: Schema.Types.ObjectId,
       ref: "User",
-      default: null, // required when scope === "user"
+      default: null,
       index: true,
     },
+    // For scope = "users" (multiple specific users)
+    user_ids: {
+      type: [Schema.Types.ObjectId],
+      ref: "User",
+      default: null,
+      index: true,
+    },
+    // For scope = "roles" (all users with any of these roles)
     roles: {
       type: [String],
       enum: [
+        "super_admin_vendor",
+        "admin_pawn_limited",
         "call_centre_support",
         "loan_officer_processor",
         "loan_officer_approval",
         "management",
         "customer",
+        "agent",
       ],
-      default: undefined, // required non-empty when scope === "roles"
+      default: undefined,
     },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const NotificationSchema = new Schema(
@@ -53,39 +72,40 @@ const NotificationSchema = new Schema(
     type: {
       type: String,
       enum: [
-        // ─── Loan lifecycle ─────────────────────────────
-        "loan_application", // loan created / submitted
-        "loan_approved", // loan approved
-        "loan_rejected", // loan rejected
-        "loan_disbursed", // funds released
-        "repayment_due", // upcoming repayment reminder
-        "repayment_overdue", // missed repayment
-        "repayment_received", // payment confirmed
-        "loan_closed", // loan fully settled
-        // ─── Collateral lifecycle ───────────────────────
-        "collateral_received", // item received & logged
-        "collateral_verified", // item verified / valued
-        "collateral_at_risk", // nearing default / auction risk
-        "collateral_auctioned", // collateral moved to auction
-        "collateral_released", // returned to customer
-        // ─── Auctions & bidding ─────────────────────────
-        "auction_created", // auction opened
-        "auction_started", // auction is live
-        "auction_ending_soon", // auction about to close
-        "auction_closed", // auction closed
-        "auction_won", // user won auction
-        "auction_lost", // user lost auction
-        "bid_placed", // bid placed successfully
-        "bid_outbid", // user has been outbid
-        "bid_winning", // currently highest bid
-        "bid_won", // bid won (final)
-        "bid_payment_due", // winner must pay
-        "bid_payment_received", // auction payment confirmed
-        // ─── Account / compliance ───────────────────────
-        "account_kyc", // KYC required / approved / rejected
-        "account_status", // account suspended / activated
-        "system_notice", // system-wide notices
-        "security_alert", // suspicious activity / OTP
+        // Loan lifecycle
+        "loan_application",
+        "loan_approved",
+        "loan_rejected",
+        "loan_disbursed",
+        "repayment_due",
+        "repayment_overdue",
+        "repayment_received",
+        "loan_closed",
+        // Collateral lifecycle
+        "collateral_received",
+        "collateral_verified",
+        "collateral_at_risk",
+        "collateral_auctioned",
+        "collateral_released",
+        // Auctions & bidding
+        "auction_created",
+        "auction_started",
+        "auction_ending_soon",
+        "auction_closed",
+        "auction_won",
+        "auction_lost",
+        "bid_placed",
+        "bid_outbid",
+        "bid_winning",
+        "bid_won",
+        "bid_payment_due",
+        "bid_payment_received",
+        // Account / compliance
+        "account_kyc",
+        "account_status",
+        "system_notice",
+        "security_alert",
+        "others"
       ],
       default: "system_notice",
       index: true,
@@ -111,10 +131,24 @@ const NotificationSchema = new Schema(
       validate: (v) => Array.isArray(v) && v.length > 0,
     },
 
+    // Link to related entity (loan, loan application, auction)
+    entity_type: {
+      type: String,
+      enum: ["loan", "loan_application", "auction", null],
+      default: null,
+      index: true,
+    },
+    entity_id: {
+      type: Schema.Types.ObjectId,
+      refPath: "entity_type", // dynamic reference
+      default: null,
+      index: true,
+    },
+
     // Scheduling & lifecycle
-    send_at: { type: Date, default: null, index: true }, // when to start dispatch
+    send_at: { type: Date, default: null, index: true },
     sent_at: { type: Date, default: null },
-    expires_at: { type: Date, default: null, index: true }, // optional TTL (see index below)
+    expires_at: { type: Date, default: null, index: true },
     status: {
       type: String,
       enum: ["draft", "scheduled", "sent", "cancelled"],
@@ -123,14 +157,14 @@ const NotificationSchema = new Schema(
     },
     is_active: { type: Boolean, default: true, index: true },
 
-    // Optional CTA / link
+    // Optional CTA
     action_text: { type: String, trim: true, default: null },
     action_url: { type: String, trim: true, default: null },
 
-    // Arbitrary payload (safe, non-sensitive)
+    // Arbitrary payload (safe, non‑sensitive)
     data: { type: Schema.Types.Mixed, default: {} },
 
-    // Read receipts (only stored for users who have interacted/seen it)
+    // Read receipts
     acknowledgements: { type: [AcknowledgementSchema], default: [] },
 
     // Audit
@@ -139,20 +173,7 @@ const NotificationSchema = new Schema(
   {
     timestamps: { createdAt: "created_at", updatedAt: "updated_at" },
     collection: "notifications",
-  }
-);
-
-/** Helpful compound indexes */
-NotificationSchema.index({ "audience.scope": 1, status: 1, send_at: 1 });
-NotificationSchema.index({ type: 1, priority: 1, created_at: -1 });
-NotificationSchema.index({ is_active: 1, created_at: -1 });
-
-NotificationSchema.index(
-  { expires_at: 1 },
-  {
-    expireAfterSeconds: 0,
-    partialFilterExpression: { expires_at: { $type: "date" } },
-  }
+  },
 );
 
 module.exports = mongoose.model("Notification", NotificationSchema);
