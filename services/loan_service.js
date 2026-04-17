@@ -103,7 +103,6 @@ class LoanService {
           loanData.asset = asset.data._id;
         }
       } else if (loanData.asset) {
-        // Verify asset exists and is available
         const asset = await Asset.findById(loanData.asset);
         if (!asset) {
           throw {
@@ -209,7 +208,7 @@ class LoanService {
           application.declared_asset_value || application.requested_loan_amount,
         evaluated_value:
           application.declared_asset_value || application.requested_loan_amount,
-        status: "available",
+        status: "approved",
         source: "loan_application",
         source_id: application._id,
         storage_location: "pending_assignment",
