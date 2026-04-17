@@ -208,7 +208,7 @@ class LoanService {
           application.declared_asset_value || application.requested_loan_amount,
         evaluated_value:
           application.declared_asset_value || application.requested_loan_amount,
-        status: "approved",
+        status: "submitted",
         source: "loan_application",
         source_id: application._id,
         storage_location: "pending_assignment",
