@@ -462,95 +462,110 @@ class LoanApplicationService {
   /**
    * Update loan application status (for loan officers)
    */
-  async updateLoanApplicationStatus(id, status, user, notes = "") {
-    try {
-      if (!mongoose.Types.ObjectId.isValid(id)) {
-        throw new Error("Invalid application ID");
-      }
+/**
+ * Update loan application status (for loan officers)
+ */
+async updateLoanApplicationStatus(id, status, user, notes = "") {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      throw new Error("Invalid application ID");
+    }
 
-      const validStatuses = ["processing", "approved", "rejected", "cancelled"];
-      if (!validStatuses.includes(status)) {
-        throw new Error(
-          `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
-        );
-      }
-
-      const session = await mongoose.startSession();
-      session.startTransaction();
-
-      try {
-        const application = await LoanApplication.findById(id).session(session);
-
-        if (!application) {
-          throw new Error("Loan application not found");
-        }
-
-        // Update application
-        application.status = status;
-        application.updated_at = new Date();
-
-        // Set processed_by only for final decisions
-        if (status === "approved" || status === "rejected") {
-          application.processed_by = user._id;
-        }
-
-        if (notes) {
-          application.internal_notes = application.internal_notes
-            ? `${application.internal_notes}\n[${new Date().toISOString()}] ${user.first_name}: ${notes}`
-            : `[${new Date().toISOString()}] ${user.first_name}: ${notes}`;
-        }
-
-        await application.save({ session });
-
-        await application.populate(
-          "customer_user",
-          "first_name last_name email phone",
-        );
-
-        await session.commitTransaction();
-        session.endSession();
-
-        // Send status update email to customer
-        try {
-          const customerFullName = `${application.customer_user.first_name} ${application.customer_user.last_name}`;
-          await emailService.sendLoanApplicationStatusUpdateEmail({
-            to: application.customer_user.email,
-            fullName: customerFullName,
-            applicationNo: application.application_no,
-            status,
-            notes,
-            officerName: `${user.first_name} ${user.last_name}`,
-            contactDetails:
-              "Please contact our loan department at +263 xxx xxx xxx for any questions.",
-          });
-        } catch (emailError) {
-          console.error("Failed to send status update email:", emailError);
-        }
-
-        // If status is approved, also send an SMS notification
-        if (status === "approved" && application.customer_user.phone) {
-          const smsMessage = `Your loan application (${application.application_no}) has been APPROVED. Please contact our loan department for further steps.`;
-          await sendSmsWithMessage(application.customer_user.phone, smsMessage);
-        }
-
-        return {
-          success: true,
-          data: application,
-          message: `Loan application status updated to ${status}`,
-        };
-      } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
-        throw error;
-      }
-    } catch (error) {
-      console.error("Error updating loan application status:", error);
+    const validStatuses = ["processing", "approved", "rejected", "cancelled"];
+    if (!validStatuses.includes(status)) {
       throw new Error(
-        `Failed to update loan application status: ${error.message}`,
+        `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
       );
     }
-  }
 
+    const session = await mongoose.startSession();
+    let application = null;
+    
+    try {
+      await session.startTransaction();
+
+      application = await LoanApplication.findById(id).session(session);
+
+      if (!application) {
+        throw new Error("Loan application not found");
+      }
+
+      // Update application
+      application.status = status;
+      application.updated_at = new Date();
+
+      // Set processed_by only for final decisions
+      if (status === "approved" || status === "rejected") {
+        application.processed_by = user._id;
+      }
+
+      if (notes) {
+        application.internal_notes = application.internal_notes
+          ? `${application.internal_notes}\n[${new Date().toISOString()}] ${user.first_name}: ${notes}`
+          : `[${new Date().toISOString()}] ${user.first_name}: ${notes}`;
+      }
+
+      await application.save({ session });
+
+      await application.populate(
+        "customer_user",
+        "first_name last_name email phone",
+      );
+
+      await session.commitTransaction();
+      
+    } catch (error) {
+      // Only abort if we're in a transaction
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
+      throw error;
+    } finally {
+      await session.endSession();
+    }
+
+    // Send notifications AFTER transaction is complete
+    // These should not be part of the transaction as they're external operations
+    try {
+      const customerFullName = `${application.customer_user.first_name} ${application.customer_user.last_name}`;
+      await emailService.sendLoanApplicationStatusUpdateEmail({
+        to: application.customer_user.email,
+        fullName: customerFullName,
+        applicationNo: application.application_no,
+        status,
+        notes,
+        officerName: `${user.first_name} ${user.last_name}`,
+        contactDetails:
+          "Please contact our loan department at +263 xxx xxx xxx for any questions.",
+      });
+    } catch (emailError) {
+      console.error("Failed to send status update email:", emailError);
+      // Don't throw - email failure shouldn't break the status update
+    }
+
+    // If status is approved, also send an SMS notification
+    if (status === "approved" && application.customer_user.phone) {
+      try {
+        const smsMessage = `Your loan application (${application.application_no}) has been APPROVED. Please contact our loan department for further steps.`;
+        await sendSmsWithMessage(application.customer_user.phone, smsMessage);
+      } catch (smsError) {
+        console.error("Failed to send SMS notification:", smsError);
+        // Don't throw - SMS failure shouldn't break the status update
+      }
+    }
+
+    return {
+      success: true,
+      data: application,
+      message: `Loan application status updated to ${status}`,
+    };
+  } catch (error) {
+    console.error("Error updating loan application status:", error);
+    throw new Error(
+      `Failed to update loan application status: ${error.message}`,
+    );
+  }
+}
   /**
    * Perform debtor check on loan application
    */
@@ -1074,3 +1089,5 @@ class LoanApplicationService {
 }
 
 module.exports = new LoanApplicationService();
+
+
