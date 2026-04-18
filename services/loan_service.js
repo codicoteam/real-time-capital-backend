@@ -7,7 +7,7 @@ const { sendSmsWithMessage } = require("../utils/sms_utils");
 const { sendEmail } = require("../utils/emails_util");
 
 // Define the complete list of application fields to populate
-const LOAN_APPLICATION_SELECT_FIELDS = 
+const LOAN_APPLICATION_SELECT_FIELDS =
   "application_no requested_loan_amount collateral_category collateral_description " +
   "declared_asset_value collateral_images repayment_type " +
   "total_repayable_amount repayment_days " +
@@ -16,44 +16,46 @@ const LOAN_APPLICATION_SELECT_FIELDS =
 // Define customer user populate fields
 const CUSTOMER_USER_POPULATE_FIELDS = {
   path: "customer_user",
-  select: "first_name last_name email phone national_id_number address profile_pic_url date_of_birth gender"
+  select:
+    "first_name last_name email phone national_id_number address profile_pic_url date_of_birth gender",
 };
 
 // Define asset populate fields
 const ASSET_POPULATE_FIELDS = {
   path: "asset",
-  select: "asset_no title category evaluated_value declared_value status storage_location condition " +
-          "asset_images active_loan small_loan_details motor_vehicle_details jewellery_details " +
-          "valuation_notes evaluated_value evaluated_by evaluated_at"
+  select:
+    "asset_no title category evaluated_value declared_value status storage_location condition " +
+    "asset_images active_loan small_loan_details motor_vehicle_details jewellery_details " +
+    "valuation_notes evaluated_value evaluated_by evaluated_at",
 };
 
 // Define created_by populate fields
 const CREATED_BY_POPULATE_FIELDS = {
   path: "created_by",
-  select: "first_name last_name email roles phone"
+  select: "first_name last_name email roles phone",
 };
 
 // Define processed_by populate fields
 const PROCESSED_BY_POPULATE_FIELDS = {
   path: "processed_by",
-  select: "first_name last_name email roles"
+  select: "first_name last_name email roles",
 };
 
 // Define approved_by populate fields
 const APPROVED_BY_POPULATE_FIELDS = {
   path: "approved_by",
-  select: "first_name last_name email roles"
+  select: "first_name last_name email roles",
 };
 
 // Define super admin populate fields
 const SUPER_ADMIN_POPULATE_FIELDS = {
   path: "requested_super_admins.super_admin",
-  select: "first_name last_name email phone roles"
+  select: "first_name last_name email phone roles",
 };
 
 const SUPER_ADMIN_APPROVALS_POPULATE_FIELDS = {
   path: "super_admin_approvals.approved_by",
-  select: "first_name last_name email"
+  select: "first_name last_name email",
 };
 
 class LoanService {
@@ -99,8 +101,11 @@ class LoanService {
       if (loanData.application) {
         const application = await LoanApplication.findById(
           loanData.application,
-        ).populate("customer_user", "first_name last_name email phone national_id_number");
-        
+        ).populate(
+          "customer_user",
+          "first_name last_name email phone national_id_number",
+        );
+
         if (!application) {
           throw {
             status: 404,
@@ -142,7 +147,7 @@ class LoanService {
         ) {
           loanData.declared_asset_value = application.declared_asset_value;
         }
-        
+
         // Copy repayment structure from application
         if (application.repayment_type) {
           loanData.repayment_type = application.repayment_type;
@@ -230,17 +235,17 @@ class LoanService {
         populate: [
           {
             path: "created_by",
-            select: "first_name last_name email"
+            select: "first_name last_name email",
           },
           {
             path: "processed_by",
-            select: "first_name last_name email"
+            select: "first_name last_name email",
           },
           {
             path: "customer_user",
-            select: "first_name last_name email phone national_id_number"
-          }
-        ]
+            select: "first_name last_name email phone national_id_number",
+          },
+        ],
       })
       .populate({
         path: "attachments",
@@ -253,7 +258,7 @@ class LoanService {
       .populate(SUPER_ADMIN_APPROVALS_POPULATE_FIELDS)
       .populate({
         path: "payments.received_by",
-        select: "first_name last_name email"
+        select: "first_name last_name email",
       })
       .lean();
 
@@ -265,7 +270,7 @@ class LoanService {
    */
   ensureApplicationFields(loan) {
     if (!loan) return loan;
-    
+
     // Define default values for all application fields
     const defaultApplicationFields = {
       application_no: null,
@@ -292,14 +297,14 @@ class LoanService {
       debtor_check: null,
       admin_notes: [],
       custom_terms_and_conditions: null,
-      internal_notes: null
+      internal_notes: null,
     };
 
     // If application exists, ensure all fields are present
     if (loan.application) {
       loan.application = {
         ...defaultApplicationFields,
-        ...loan.application
+        ...loan.application,
       };
     } else {
       loan.application = defaultApplicationFields;
@@ -537,7 +542,9 @@ class LoanService {
       ]);
 
       // Ensure all application fields are present for each loan
-      const formattedLoans = loans.map(loan => this.ensureApplicationFields(loan));
+      const formattedLoans = loans.map((loan) =>
+        this.ensureApplicationFields(loan),
+      );
 
       const totalPages = Math.ceil(total / limit);
       const hasNextPage = page < totalPages;
@@ -587,7 +594,9 @@ class LoanService {
         .sort(sort)
         .lean();
 
-      const formattedLoans = loans.map(loan => this.ensureApplicationFields(loan));
+      const formattedLoans = loans.map((loan) =>
+        this.ensureApplicationFields(loan),
+      );
 
       return {
         success: true,
@@ -1045,9 +1054,7 @@ class LoanService {
   async searchLoans(searchTerm, page = 1, limit = 10) {
     try {
       const query = {
-        $or: [
-          { loan_no: { $regex: searchTerm, $options: "i" } },
-        ],
+        $or: [{ loan_no: { $regex: searchTerm, $options: "i" } }],
       };
 
       // Try to find users matching search term
@@ -1227,7 +1234,11 @@ class LoanService {
         };
       }
 
-      if (loan.status !== "active" && loan.status !== "overdue" && loan.status !== "partially_paid") {
+      if (
+        loan.status !== "active" &&
+        loan.status !== "overdue" &&
+        loan.status !== "partially_paid"
+      ) {
         throw {
           status: 400,
           message: `Cannot process payment for loan with status: ${loan.status}`,
@@ -1387,10 +1398,38 @@ class LoanService {
       draft: ["pending_approval", "approved", "active", "cancelled"],
       pending_approval: ["approved", "active", "cancelled"],
       approved: ["active", "cancelled"],
-      active: ["overdue", "in_grace", "partially_paid", "redeemed", "closed", "defaulted"],
-      partially_paid: ["active", "overdue", "in_grace", "redeemed", "closed", "defaulted"],
-      overdue: ["in_grace", "partially_paid", "redeemed", "closed", "defaulted", "auction"],
-      in_grace: ["active", "partially_paid", "overdue", "redeemed", "closed", "defaulted"],
+      active: [
+        "overdue",
+        "in_grace",
+        "partially_paid",
+        "redeemed",
+        "closed",
+        "defaulted",
+      ],
+      partially_paid: [
+        "active",
+        "overdue",
+        "in_grace",
+        "redeemed",
+        "closed",
+        "defaulted",
+      ],
+      overdue: [
+        "in_grace",
+        "partially_paid",
+        "redeemed",
+        "closed",
+        "defaulted",
+        "auction",
+      ],
+      in_grace: [
+        "active",
+        "partially_paid",
+        "overdue",
+        "redeemed",
+        "closed",
+        "defaulted",
+      ],
       defaulted: ["auction", "written_off", "closed"],
       auction: ["sold", "closed"],
       sold: ["closed"],
