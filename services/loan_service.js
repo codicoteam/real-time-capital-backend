@@ -10,11 +10,8 @@ const { sendEmail } = require("../utils/emails_util");
 const LOAN_APPLICATION_SELECT_FIELDS = 
   "application_no requested_loan_amount collateral_category collateral_description " +
   "declared_asset_value collateral_images repayment_type " +
-  "installment_count installment_frequency installment_amount " +
-  "interest_rate interest_amount total_repayable_amount repayment_days " +
-  "status small_loan_details motor_vehicle_details jewellery_details " +
-  "declaration_signed_at declaration_signature_name created_at " +
-  "debtor_check admin_notes custom_terms_and_conditions internal_notes";
+  "total_repayable_amount repayment_days " +
+  "declaration_signed_at declaration_signature_name created_at ";
 
 // Define customer user populate fields
 const CUSTOMER_USER_POPULATE_FIELDS = {
