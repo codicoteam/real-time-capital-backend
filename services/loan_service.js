@@ -1150,6 +1150,9 @@ class LoanService {
   /**
    * Process loan payment
    */
+  /**
+   * Process loan payment
+   */
   async processPayment(loanId, paymentData) {
     try {
       const loan = await Loan.findById(loanId);
@@ -1167,7 +1170,8 @@ class LoanService {
         };
       }
 
-      const { amount, payment_method, notes } = paymentData;
+      const { amount, payment_method, notes, reference_no, received_by } =
+        paymentData;
 
       if (!amount || amount <= 0) {
         throw {
@@ -1176,36 +1180,110 @@ class LoanService {
         };
       }
 
-      // Calculate charges first
-      const charges = await this.calculateLoanCharges(loanId);
+      if (!payment_method) {
+        throw {
+          status: 400,
+          message: "Payment method is required",
+        };
+      }
 
-      // Update loan balance
+      // Validate payment method
+      const validPaymentMethods = [
+        "cash",
+        "bank_transfer",
+        "mobile_money",
+        "cheque",
+      ];
+      if (!validPaymentMethods.includes(payment_method)) {
+        throw {
+          status: 400,
+          message: `Invalid payment method. Must be one of: ${validPaymentMethods.join(", ")}`,
+        };
+      }
+
+      // Calculate new balance
       const newBalance = Math.max(0, loan.current_balance - amount);
+      const newTotalPaid = loan.total_paid + amount;
+
+      // Create payment record matching the schema
+      const paymentRecord = {
+        amount: amount,
+        payment_date: new Date(),
+        payment_method: payment_method,
+        reference_no: reference_no || `PAY-${Date.now()}`,
+        received_by: received_by || loan.processed_by || loan.created_by,
+        notes: notes || null,
+      };
 
       const updateData = {
         current_balance: newBalance,
+        total_paid: newTotalPaid,
         updated_at: new Date(),
         $push: {
-          payment_history: {
-            amount,
-            payment_method,
-            notes,
-            paid_at: new Date(),
-            previous_balance: loan.current_balance,
-            new_balance: newBalance,
-          },
+          payments: paymentRecord,
         },
       };
 
-      // Update status if fully paid
+      // Update status based on payment
       if (newBalance === 0) {
         updateData.status = "redeemed";
-        updateData.closed_at = new Date();
+      } else if (newBalance > 0 && loan.status === "overdue") {
+        // If still has balance but was overdue, check if should remain overdue
+        const now = new Date();
+        const dueDate = new Date(loan.due_date);
+        if (now <= dueDate) {
+          updateData.status = "active";
+        }
+      } else if (
+        newBalance > 0 &&
+        loan.current_balance > newBalance &&
+        newBalance < loan.current_balance
+      ) {
+        updateData.status = "partially_paid";
+      }
+
+      // Update installment tracking if applicable
+      if (loan.repayment_type === "installment" && loan.installment_amount) {
+        const installmentsPaid = Math.floor(
+          newTotalPaid / loan.installment_amount,
+        );
+        const remainingInstallments = Math.max(
+          0,
+          loan.installment_count - installmentsPaid,
+        );
+        updateData.remaining_installments = remainingInstallments;
+
+        // Calculate next installment due date
+        if (remainingInstallments > 0 && loan.installment_frequency) {
+          const lastPaymentDate = new Date();
+          let nextDueDate = new Date();
+
+          switch (loan.installment_frequency) {
+            case "weekly":
+              nextDueDate.setDate(lastPaymentDate.getDate() + 7);
+              break;
+            case "biweekly":
+              nextDueDate.setDate(lastPaymentDate.getDate() + 14);
+              break;
+            case "monthly":
+              nextDueDate.setMonth(lastPaymentDate.getMonth() + 1);
+              break;
+            case "quarterly":
+              nextDueDate.setMonth(lastPaymentDate.getMonth() + 3);
+              break;
+          }
+          updateData.next_installment_due_date = nextDueDate;
+        }
       }
 
       const updatedLoan = await Loan.findByIdAndUpdate(loanId, updateData, {
         new: true,
-      });
+        runValidators: true,
+      }).populate([
+        { path: "customer_user", select: "first_name last_name email phone" },
+        { path: "asset", select: "asset_no title status" },
+        { path: "payments.received_by", select: "first_name last_name email" },
+      ]);
 
       // Update asset status if loan is redeemed
       if (newBalance === 0 && loan.asset) {
@@ -1219,11 +1297,12 @@ class LoanService {
         success: true,
         data: {
           loan: updatedLoan,
-          payment: {
-            amount,
-            payment_method,
+          payment: paymentRecord,
+          summary: {
+            amount_paid: amount,
             previous_balance: loan.current_balance,
             new_balance: newBalance,
+            total_paid_to_date: newTotalPaid,
             remaining_balance: newBalance,
             fully_paid: newBalance === 0,
           },
@@ -1234,7 +1313,6 @@ class LoanService {
       throw this.handleMongoError(error);
     }
   }
-
   /**
    * Validate loan status transition
    */
