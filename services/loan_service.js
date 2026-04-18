@@ -284,7 +284,7 @@ class LoanService {
   mapCollateralCategoryToAssetCategory(collateralCategory) {
     const mapping = {
       small_loans: "electronics",
-      motor_vehicle: "vehicle",
+      motor_vehicle: "motor_vehicle",
       jewellery: "jewellery",
     };
     return mapping[collateralCategory] || "other";
