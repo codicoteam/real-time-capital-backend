@@ -6,6 +6,68 @@ const Attachment = require("../models/attachment.model");
 const { sendSmsWithMessage } = require("../utils/sms_utils");
 const { sendEmail } = require("../utils/emails_util");
 
+// Define the 10 key fields that should always be populated from LoanApplication
+const LOAN_APPLICATION_POPULATE_FIELDS = [
+  {
+    path: "application",
+    select:
+      "application_no requested_loan_amount collateral_category collateral_description declared_asset_value " +
+      "small_loan_details motor_vehicle_details jewellery_details collateral_images " +
+      "repayment_type installment_count installment_frequency installment_amount " +
+      "interest_rate interest_amount total_repayable_amount repayment_days " +
+      "status declaration_signed_at declaration_signature_name created_at",
+    populate: {
+      path: "created_by",
+      select: "first_name last_name email",
+    },
+  },
+];
+
+// Define customer user populate fields
+const CUSTOMER_USER_POPULATE_FIELDS = {
+  path: "customer_user",
+  select:
+    "first_name last_name email phone national_id_number address profile_pic_url date_of_birth gender",
+};
+
+// Define asset populate fields
+const ASSET_POPULATE_FIELDS = {
+  path: "asset",
+  select:
+    "asset_no title category evaluated_value declared_value status storage_location condition " +
+    "asset_images active_loan small_loan_details motor_vehicle_details jewellery_details " +
+    "valuation_notes evaluated_value evaluated_by evaluated_at",
+};
+
+// Define created_by populate fields
+const CREATED_BY_POPULATE_FIELDS = {
+  path: "created_by",
+  select: "first_name last_name email roles phone",
+};
+
+// Define processed_by populate fields
+const PROCESSED_BY_POPULATE_FIELDS = {
+  path: "processed_by",
+  select: "first_name last_name email roles",
+};
+
+// Define approved_by populate fields
+const APPROVED_BY_POPULATE_FIELDS = {
+  path: "approved_by",
+  select: "first_name last_name email roles",
+};
+
+// Define super admin populate fields
+const SUPER_ADMIN_POPULATE_FIELDS = {
+  path: "requested_super_admins.super_admin",
+  select: "first_name last_name email phone roles",
+};
+
+const SUPER_ADMIN_APPROVALS_POPULATE_FIELDS = {
+  path: "super_admin_approvals.approved_by",
+  select: "first_name last_name email",
+};
+
 class LoanService {
   /**
    * Create a new loan from an approved loan application
@@ -49,7 +111,11 @@ class LoanService {
       if (loanData.application) {
         const application = await LoanApplication.findById(
           loanData.application,
+        ).populate(
+          "customer_user",
+          "first_name last_name email phone national_id_number",
         );
+
         if (!application) {
           throw {
             status: 404,
@@ -68,7 +134,7 @@ class LoanService {
 
         // Auto-fill loan data from application if not provided
         if (!loanData.customer_user && application.customer_user) {
-          loanData.customer_user = application.customer_user;
+          loanData.customer_user = application.customer_user._id;
         }
         if (!loanData.principal_amount && application.requested_loan_amount) {
           loanData.principal_amount = application.requested_loan_amount;
@@ -90,6 +156,20 @@ class LoanService {
           application.declared_asset_value
         ) {
           loanData.declared_asset_value = application.declared_asset_value;
+        }
+
+        // Copy repayment structure from application
+        if (application.repayment_type) {
+          loanData.repayment_type = application.repayment_type;
+        }
+        if (application.installment_count) {
+          loanData.installment_count = application.installment_count;
+        }
+        if (application.installment_frequency) {
+          loanData.installment_frequency = application.installment_frequency;
+        }
+        if (application.installment_amount) {
+          loanData.installment_amount = application.installment_amount;
         }
       }
 
@@ -121,28 +201,8 @@ class LoanService {
       const loan = new Loan(loanData);
       await loan.save();
 
-      // Populate necessary fields
-      const populatedLoan = await loan.populate([
-        {
-          path: "customer_user",
-          select:
-            "first_name last_name email phone national_id_number address profile_pic_url",
-        },
-        {
-          path: "asset",
-          select:
-            "asset_no title category evaluated_value status storage_location",
-        },
-        {
-          path: "application",
-          select:
-            "application_no requested_loan_amount collateral_category collateral_description status",
-        },
-        {
-          path: "created_by",
-          select: "first_name last_name email roles",
-        },
-      ]);
+      // Populate necessary fields with all 10 key fields from application
+      const populatedLoan = await this.getPopulatedLoan(loan._id);
 
       // Update asset status to 'pawned' if loan is being created as active
       if (loanData.status === "active" && loanData.asset) {
@@ -173,7 +233,54 @@ class LoanService {
   }
 
   /**
+   * Get populated loan with all necessary fields including 10 key application fields
+   */
+  async getPopulatedLoan(loanId) {
+    return await Loan.findById(loanId)
+      .populate(CUSTOMER_USER_POPULATE_FIELDS)
+      .populate(ASSET_POPULATE_FIELDS)
+      .populate({
+        path: "application",
+        select:
+          "application_no requested_loan_amount collateral_category collateral_description declared_asset_value " +
+          "small_loan_details motor_vehicle_details jewellery_details collateral_images " +
+          "repayment_type installment_count installment_frequency installment_amount " +
+          "interest_rate interest_amount total_repayable_amount repayment_days " +
+          "status declaration_signed_at declaration_signature_name created_at debtor_check " +
+          "admin_notes custom_terms_and_conditions internal_notes",
+        populate: [
+          {
+            path: "created_by",
+            select: "first_name last_name email",
+          },
+          {
+            path: "processed_by",
+            select: "first_name last_name email",
+          },
+          {
+            path: "customer_user",
+            select: "first_name last_name email phone national_id_number",
+          },
+        ],
+      })
+      .populate({
+        path: "attachments",
+        select: "filename url mime_type category signed signed_at",
+      })
+      .populate(CREATED_BY_POPULATE_FIELDS)
+      .populate(PROCESSED_BY_POPULATE_FIELDS)
+      .populate(APPROVED_BY_POPULATE_FIELDS)
+      .populate(SUPER_ADMIN_POPULATE_FIELDS)
+      .populate(SUPER_ADMIN_APPROVALS_POPULATE_FIELDS)
+      .populate({
+        path: "payments.received_by",
+        select: "first_name last_name email",
+      });
+  }
+
+  /**
    * Create an asset from a loan application's collateral details
+   * Transfers collateral images to asset_images
    */
   async createAssetFromCollateral(applicationId, loanData = {}) {
     try {
@@ -198,7 +305,7 @@ class LoanService {
       // Build asset data based on collateral category
       let assetData = {
         asset_no: assetNo,
-        customer_user: application.customer_user._id,
+        owner_user: application.customer_user._id,
         category: this.mapCollateralCategoryToAssetCategory(
           application.collateral_category,
         ),
@@ -209,10 +316,10 @@ class LoanService {
         evaluated_value:
           application.declared_asset_value || application.requested_loan_amount,
         status: "submitted",
-        source: "loan_application",
-        source_id: application._id,
         storage_location: "pending_assignment",
         condition: "good",
+        // Transfer collateral images to asset_images
+        asset_images: application.collateral_images || [],
       };
 
       // Add category-specific details
@@ -257,14 +364,6 @@ class LoanService {
         assetData.title = `${application.jewellery_details.type || "Jewellery"} - ${application.jewellery_details.purity || ""}`;
       }
 
-      // Add collateral images as asset attachments
-      if (
-        application.collateral_images &&
-        application.collateral_images.length > 0
-      ) {
-        assetData.images = application.collateral_images;
-      }
-
       const asset = new Asset(assetData);
       await asset.save();
 
@@ -283,11 +382,11 @@ class LoanService {
    */
   mapCollateralCategoryToAssetCategory(collateralCategory) {
     const mapping = {
-      small_loans: "electronics",
+      small_loans: "small_loans",
       motor_vehicle: "motor_vehicle",
       jewellery: "jewellery",
     };
-    return mapping[collateralCategory] || "other";
+    return mapping[collateralCategory] || "small_loans";
   }
 
   /**
@@ -318,51 +417,11 @@ class LoanService {
   }
 
   /**
-   * Get loan by ID with full population
+   * Get loan by ID with full population including all 10 key application fields
    */
   async getLoanById(loanId) {
     try {
-      const loan = await Loan.findById(loanId).populate([
-        {
-          path: "customer_user",
-          select:
-            "first_name last_name email phone national_id_number address profile_pic_url",
-        },
-        {
-          path: "asset",
-          select:
-            "asset_no title category evaluated_value declared_value status storage_location attachments images small_loan_details motor_vehicle_details jewellery_details",
-        },
-        {
-          path: "application",
-          select:
-            "application_no requested_loan_amount collateral_category collateral_description declared_asset_value small_loan_details motor_vehicle_details jewellery_details collateral_images repayment_type installment_count installment_frequency",
-        },
-        {
-          path: "attachments",
-          select: "filename url mime_type category signed signed_at",
-        },
-        {
-          path: "created_by",
-          select: "first_name last_name email roles",
-        },
-        {
-          path: "processed_by",
-          select: "first_name last_name email roles",
-        },
-        {
-          path: "approved_by",
-          select: "first_name last_name email roles",
-        },
-        {
-          path: "requested_super_admins.super_admin",
-          select: "first_name last_name email phone",
-        },
-        {
-          path: "super_admin_approvals.approved_by",
-          select: "first_name last_name email",
-        },
-      ]);
+      const loan = await this.getPopulatedLoan(loanId);
 
       if (!loan) {
         throw {
@@ -371,18 +430,67 @@ class LoanService {
         };
       }
 
-      return {
+      // Ensure all 10 key application fields are present in the response
+      const response = {
         success: true,
-        data: loan,
+        data: this.formatLoanResponse(loan),
         message: "Loan retrieved successfully",
       };
+
+      return response;
     } catch (error) {
       throw this.handleMongoError(error);
     }
   }
 
   /**
-   * Get loans with pagination
+   * Format loan response to ensure all key fields are present
+   */
+  formatLoanResponse(loan) {
+    const loanObj = loan.toObject ? loan.toObject() : loan;
+
+    // Ensure application data has all key fields
+    if (loanObj.application) {
+      loanObj.application = {
+        ...loanObj.application,
+        // Ensure these 10 key fields are always present
+        application_no: loanObj.application.application_no || null,
+        requested_loan_amount:
+          loanObj.application.requested_loan_amount || null,
+        collateral_category: loanObj.application.collateral_category || null,
+        collateral_description:
+          loanObj.application.collateral_description || null,
+        declared_asset_value: loanObj.application.declared_asset_value || null,
+        collateral_images: loanObj.application.collateral_images || [],
+        repayment_type: loanObj.application.repayment_type || null,
+        installment_count: loanObj.application.installment_count || null,
+        installment_frequency:
+          loanObj.application.installment_frequency || null,
+        installment_amount: loanObj.application.installment_amount || null,
+        // Additional useful fields
+        small_loan_details: loanObj.application.small_loan_details || null,
+        motor_vehicle_details:
+          loanObj.application.motor_vehicle_details || null,
+        jewellery_details: loanObj.application.jewellery_details || null,
+        interest_rate: loanObj.application.interest_rate || null,
+        interest_amount: loanObj.application.interest_amount || null,
+        total_repayable_amount:
+          loanObj.application.total_repayable_amount || null,
+        repayment_days: loanObj.application.repayment_days || null,
+        status: loanObj.application.status || null,
+        declaration_signed_at:
+          loanObj.application.declaration_signed_at || null,
+        declaration_signature_name:
+          loanObj.application.declaration_signature_name || null,
+        created_at: loanObj.application.created_at || null,
+      };
+    }
+
+    return loanObj;
+  }
+
+  /**
+   * Get loans with pagination including all 10 key application fields
    */
   async getLoansPaginated(
     filters = {},
@@ -433,27 +541,26 @@ class LoanService {
       // Execute query with pagination
       const [loans, total] = await Promise.all([
         Loan.find(query)
-          .populate([
-            {
-              path: "customer_user",
-              select: "first_name last_name email phone",
-            },
-            {
-              path: "asset",
-              select: "asset_no title category evaluated_value status",
-            },
-            {
-              path: "application",
-              select:
-                "application_no requested_loan_amount collateral_category status",
-            },
-          ])
+          .populate(CUSTOMER_USER_POPULATE_FIELDS)
+          .populate(ASSET_POPULATE_FIELDS)
+          .populate({
+            path: "application",
+            select:
+              "application_no requested_loan_amount collateral_category collateral_description " +
+              "declared_asset_value collateral_images repayment_type installment_count " +
+              "installment_frequency installment_amount interest_rate interest_amount " +
+              "total_repayable_amount repayment_days status",
+          })
+          .populate(CREATED_BY_POPULATE_FIELDS)
           .sort(sort)
           .skip(skip)
           .limit(limit)
           .lean(),
         Loan.countDocuments(query),
       ]);
+
+      // Format each loan to ensure all key fields are present
+      const formattedLoans = loans.map((loan) => this.formatLoanResponse(loan));
 
       const totalPages = Math.ceil(total / limit);
       const hasNextPage = page < totalPages;
@@ -462,7 +569,7 @@ class LoanService {
       return {
         success: true,
         data: {
-          loans,
+          loans: formattedLoans,
           pagination: {
             total,
             page,
@@ -481,6 +588,7 @@ class LoanService {
 
   /**
    * Get all loans without pagination (for exports, reports, etc.)
+   * Includes all 10 key application fields
    */
   async getAllLoans(filters = {}, sort = { created_at: -1 }) {
     try {
@@ -492,28 +600,28 @@ class LoanService {
         query.collateral_category = filters.collateral_category;
 
       const loans = await Loan.find(query)
-        .populate([
-          {
-            path: "customer_user",
-            select: "first_name last_name email phone national_id_number",
-          },
-          {
-            path: "asset",
-            select: "asset_no title category evaluated_value status",
-          },
-          {
-            path: "application",
-            select: "application_no requested_loan_amount collateral_category",
-          },
-        ])
+        .populate(CUSTOMER_USER_POPULATE_FIELDS)
+        .populate(ASSET_POPULATE_FIELDS)
+        .populate({
+          path: "application",
+          select:
+            "application_no requested_loan_amount collateral_category collateral_description " +
+            "declared_asset_value collateral_images repayment_type installment_count " +
+            "installment_frequency installment_amount interest_rate interest_amount " +
+            "total_repayable_amount repayment_days status small_loan_details " +
+            "motor_vehicle_details jewellery_details",
+        })
+        .populate(CREATED_BY_POPULATE_FIELDS)
         .sort(sort)
         .lean();
 
+      const formattedLoans = loans.map((loan) => this.formatLoanResponse(loan));
+
       return {
         success: true,
-        data: loans,
+        data: formattedLoans,
         message: "All loans retrieved successfully",
-        count: loans.length,
+        count: formattedLoans.length,
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -559,24 +667,14 @@ class LoanService {
       const updatedLoan = await Loan.findByIdAndUpdate(loanId, updateData, {
         new: true,
         runValidators: true,
-      }).populate([
-        {
-          path: "customer_user",
-          select: "first_name last_name email phone",
-        },
-        {
-          path: "asset",
-          select: "asset_no title category status",
-        },
-        {
-          path: "application",
-          select: "application_no status",
-        },
-      ]);
+      });
+
+      // Get populated loan with all fields
+      const populatedLoan = await this.getPopulatedLoan(loanId);
 
       return {
         success: true,
-        data: updatedLoan,
+        data: this.formatLoanResponse(populatedLoan),
         message: "Loan updated successfully",
       };
     } catch (error) {
@@ -592,11 +690,13 @@ class LoanService {
       const validStatuses = [
         "draft",
         "pending_approval",
+        "approved",
         "active",
         "overdue",
         "in_grace",
-        "auction",
-        "sold",
+        "partially_paid",
+        "defaulted",
+        "written_off",
         "redeemed",
         "closed",
         "cancelled",
@@ -653,7 +753,7 @@ class LoanService {
       // Set approval/processing user based on status
       if (status === "active" && !loan.processed_by && userId) {
         updateData.processed_by = userId;
-        updateData.disbursed_at = new Date();
+        updateData.disbursement_date = new Date();
       }
 
       if (status === "active" && !loan.approved_by && userId) {
@@ -662,17 +762,17 @@ class LoanService {
 
       const updatedLoan = await Loan.findByIdAndUpdate(loanId, updateData, {
         new: true,
-      }).populate([
-        { path: "customer_user", select: "first_name last_name email phone" },
-        { path: "asset", select: "asset_no title status" },
-      ]);
+      });
+
+      // Get populated loan
+      const populatedLoan = await this.getPopulatedLoan(loanId);
 
       // Update associated asset status
-      await this.updateAssetStatusBasedOnLoan(updatedLoan);
+      await this.updateAssetStatusBasedOnLoan(populatedLoan);
 
       return {
         success: true,
-        data: updatedLoan,
+        data: this.formatLoanResponse(populatedLoan),
         message: `Loan status updated to ${status}`,
       };
     } catch (error) {
@@ -781,13 +881,13 @@ class LoanService {
         });
       }
 
+      // Get populated loan
+      const populatedLoan = await this.getPopulatedLoan(loanId);
+
       return {
         success: true,
         message: `Approval request sent to ${superAdmins.length} super admin(s)`,
-        data: {
-          loanId: loan._id,
-          requestedAdmins: requestedAdmins.map((a) => a.super_admin),
-        },
+        data: this.formatLoanResponse(populatedLoan),
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -889,10 +989,13 @@ class LoanService {
         }
       }
 
+      // Get populated loan
+      const populatedLoan = await this.getPopulatedLoan(loanId);
+
       return {
         success: true,
         message: "Loan approved successfully",
-        data: { loanId: loan._id, approvedBy: superAdminId },
+        data: this.formatLoanResponse(populatedLoan),
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -970,17 +1073,7 @@ class LoanService {
   async searchLoans(searchTerm, page = 1, limit = 10) {
     try {
       const query = {
-        $or: [
-          { loan_no: { $regex: searchTerm, $options: "i" } },
-          { "customer_user.name": { $regex: searchTerm, $options: "i" } },
-          { "customer_user.email": { $regex: searchTerm, $options: "i" } },
-          {
-            "customer_user.national_id_number": {
-              $regex: searchTerm,
-              $options: "i",
-            },
-          },
-        ],
+        $or: [{ loan_no: { $regex: searchTerm, $options: "i" } }],
       };
 
       // Try to find users matching search term
@@ -1150,9 +1243,6 @@ class LoanService {
   /**
    * Process loan payment
    */
-  /**
-   * Process loan payment
-   */
   async processPayment(loanId, paymentData) {
     try {
       const loan = await Loan.findById(loanId);
@@ -1163,7 +1253,11 @@ class LoanService {
         };
       }
 
-      if (loan.status !== "active" && loan.status !== "overdue") {
+      if (
+        loan.status !== "active" &&
+        loan.status !== "overdue" &&
+        loan.status !== "partially_paid"
+      ) {
         throw {
           status: 400,
           message: `Cannot process payment for loan with status: ${loan.status}`,
@@ -1233,6 +1327,8 @@ class LoanService {
         const dueDate = new Date(loan.due_date);
         if (now <= dueDate) {
           updateData.status = "active";
+        } else {
+          updateData.status = "partially_paid";
         }
       } else if (
         newBalance > 0 &&
@@ -1279,11 +1375,10 @@ class LoanService {
       const updatedLoan = await Loan.findByIdAndUpdate(loanId, updateData, {
         new: true,
         runValidators: true,
-      }).populate([
-        { path: "customer_user", select: "first_name last_name email phone" },
-        { path: "asset", select: "asset_no title status" },
-        { path: "payments.received_by", select: "first_name last_name email" },
-      ]);
+      });
+
+      // Get populated loan
+      const populatedLoan = await this.getPopulatedLoan(loanId);
 
       // Update asset status if loan is redeemed
       if (newBalance === 0 && loan.asset) {
@@ -1296,7 +1391,7 @@ class LoanService {
       return {
         success: true,
         data: {
-          loan: updatedLoan,
+          loan: this.formatLoanResponse(populatedLoan),
           payment: paymentRecord,
           summary: {
             amount_paid: amount,
@@ -1313,22 +1408,54 @@ class LoanService {
       throw this.handleMongoError(error);
     }
   }
+
   /**
    * Validate loan status transition
    */
   validateStatusTransition(currentStatus, newStatus, loan) {
     const validTransitions = {
-      draft: ["pending_approval", "active", "cancelled"],
-      pending_approval: ["active", "cancelled"],
+      draft: ["pending_approval", "approved", "active", "cancelled"],
+      pending_approval: ["approved", "active", "cancelled"],
       approved: ["active", "cancelled"],
-      active: ["overdue", "in_grace", "redeemed", "closed"],
-      overdue: ["in_grace", "auction", "redeemed", "closed"],
-      in_grace: ["auction", "redeemed", "closed"],
+      active: [
+        "overdue",
+        "in_grace",
+        "partially_paid",
+        "redeemed",
+        "closed",
+        "defaulted",
+      ],
+      partially_paid: [
+        "active",
+        "overdue",
+        "in_grace",
+        "redeemed",
+        "closed",
+        "defaulted",
+      ],
+      overdue: [
+        "in_grace",
+        "partially_paid",
+        "redeemed",
+        "closed",
+        "defaulted",
+        "auction",
+      ],
+      in_grace: [
+        "active",
+        "partially_paid",
+        "overdue",
+        "redeemed",
+        "closed",
+        "defaulted",
+      ],
+      defaulted: ["auction", "written_off", "closed"],
       auction: ["sold", "closed"],
       sold: ["closed"],
       redeemed: ["closed"],
       closed: [],
       cancelled: [],
+      written_off: ["closed"],
     };
 
     if (!validTransitions[currentStatus]?.includes(newStatus)) {
@@ -1355,11 +1482,14 @@ class LoanService {
       active: "pawned",
       overdue: "overdue",
       in_grace: "overdue",
+      partially_paid: "pawned",
+      defaulted: "auction",
       auction: "auction",
       sold: "sold",
       redeemed: "redeemed",
       closed: "available",
       cancelled: "available",
+      written_off: "available",
     };
 
     if (assetStatusMap[loan.status] && loan.asset) {
