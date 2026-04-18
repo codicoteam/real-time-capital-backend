@@ -231,21 +231,6 @@ class LoanService {
       .populate(ASSET_POPULATE_FIELDS)
       .populate({
         path: "application",
-        select: LOAN_APPLICATION_SELECT_FIELDS,
-        populate: [
-          {
-            path: "created_by",
-            select: "first_name last_name email",
-          },
-          {
-            path: "processed_by",
-            select: "first_name last_name email",
-          },
-          {
-            path: "customer_user",
-            select: "first_name last_name email phone national_id_number",
-          },
-        ],
       })
       .populate({
         path: "attachments",
@@ -530,9 +515,7 @@ class LoanService {
           .populate(CUSTOMER_USER_POPULATE_FIELDS)
           .populate(ASSET_POPULATE_FIELDS)
           .populate({
-            path: "application",
-            select: LOAN_APPLICATION_SELECT_FIELDS,
-          })
+            path: "application"          })
           .populate(CREATED_BY_POPULATE_FIELDS)
           .sort(sort)
           .skip(skip)
@@ -587,9 +570,7 @@ class LoanService {
         .populate(CUSTOMER_USER_POPULATE_FIELDS)
         .populate(ASSET_POPULATE_FIELDS)
         .populate({
-          path: "application",
-          select: LOAN_APPLICATION_SELECT_FIELDS,
-        })
+          path: "application"        })
         .populate(CREATED_BY_POPULATE_FIELDS)
         .sort(sort)
         .lean();
