@@ -91,6 +91,23 @@ class LoanService {
         ) {
           loanData.declared_asset_value = application.declared_asset_value;
         }
+
+        // Populate repayment terms from application
+        if (!loanData.repayment_type && application.repayment_type) {
+          loanData.repayment_type = application.repayment_type;
+        }
+        if (!loanData.installment_count && application.installment_count) {
+          loanData.installment_count = application.installment_count;
+        }
+        if (
+          !loanData.installment_frequency &&
+          application.installment_frequency
+        ) {
+          loanData.installment_frequency = application.installment_frequency;
+        }
+        if (!loanData.installment_amount && application.installment_amount) {
+          loanData.installment_amount = application.installment_amount;
+        }
       }
 
       // Create or associate asset from collateral
@@ -121,7 +138,7 @@ class LoanService {
       const loan = new Loan(loanData);
       await loan.save();
 
-      // Populate necessary fields
+      // Populate necessary fields with all 7 key fields from application
       const populatedLoan = await loan.populate([
         {
           path: "customer_user",
@@ -131,12 +148,12 @@ class LoanService {
         {
           path: "asset",
           select:
-            "asset_no title category evaluated_value status storage_location",
+            "asset_no title category evaluated_value status storage_location asset_images",
         },
         {
           path: "application",
           select:
-            "application_no requested_loan_amount collateral_category collateral_description status",
+            "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type installment_count installment_frequency interest_rate interest_amount total_repayable_amount",
         },
         {
           path: "created_by",
@@ -174,6 +191,7 @@ class LoanService {
 
   /**
    * Create an asset from a loan application's collateral details
+   * Transfer collateral images to asset_images
    */
   async createAssetFromCollateral(applicationId, loanData = {}) {
     try {
@@ -195,10 +213,13 @@ class LoanService {
       const random = Math.floor(1000 + Math.random() * 9000);
       const assetNo = `AST${year}${month}${random}`;
 
+      // Transfer collateral images to asset_images
+      const assetImages = application.collateral_images || [];
+
       // Build asset data based on collateral category
       let assetData = {
         asset_no: assetNo,
-        customer_user: application.customer_user._id,
+        owner_user: application.customer_user._id,
         category: this.mapCollateralCategoryToAssetCategory(
           application.collateral_category,
         ),
@@ -209,10 +230,9 @@ class LoanService {
         evaluated_value:
           application.declared_asset_value || application.requested_loan_amount,
         status: "submitted",
-        source: "loan_application",
-        source_id: application._id,
         storage_location: "pending_assignment",
         condition: "good",
+        asset_images: assetImages, // Transfer images from application
       };
 
       // Add category-specific details
@@ -220,11 +240,9 @@ class LoanService {
         application.collateral_category === "small_loans" &&
         application.small_loan_details
       ) {
-        assetData.small_loan_details = {
-          type: application.small_loan_details.type,
-          model: application.small_loan_details.model,
-          serial_no: application.small_loan_details.serial_no,
-        };
+        assetData.brand = application.small_loan_details.type;
+        assetData.model = application.small_loan_details.model;
+        assetData.serial_no = application.small_loan_details.serial_no;
         assetData.title =
           assetData.title ||
           application.small_loan_details.model ||
@@ -233,36 +251,22 @@ class LoanService {
         application.collateral_category === "motor_vehicle" &&
         application.motor_vehicle_details
       ) {
-        assetData.motor_vehicle_details = {
-          make: application.motor_vehicle_details.make,
-          model: application.motor_vehicle_details.model,
-          registration_no: application.motor_vehicle_details.registration_no,
-          cc_serial_no: application.motor_vehicle_details.cc_serial_no,
-          engine_no: application.motor_vehicle_details.engine_no,
-          chassis_no: application.motor_vehicle_details.chassis_no,
-          year: application.motor_vehicle_details.year,
-        };
+        assetData.make = application.motor_vehicle_details.make;
+        assetData.model = application.motor_vehicle_details.model;
+        assetData.registration_no =
+          application.motor_vehicle_details.registration_no;
+        assetData.engine_no = application.motor_vehicle_details.engine_no;
+        assetData.chassis_no = application.motor_vehicle_details.chassis_no;
+        assetData.cc_serial_no = application.motor_vehicle_details.cc_serial_no;
         assetData.title = `${application.motor_vehicle_details.make} ${application.motor_vehicle_details.model}`;
       } else if (
         application.collateral_category === "jewellery" &&
         application.jewellery_details
       ) {
-        assetData.jewellery_details = {
-          type: application.jewellery_details.type,
-          description: application.jewellery_details.description,
-          weight: application.jewellery_details.weight,
-          purity: application.jewellery_details.purity,
-          estimated_value: application.jewellery_details.estimated_value,
-        };
+        assetData.metal_type = application.jewellery_details.type;
+        assetData.purity = application.jewellery_details.purity;
+        assetData.weight_grams = application.jewellery_details.weight;
         assetData.title = `${application.jewellery_details.type || "Jewellery"} - ${application.jewellery_details.purity || ""}`;
-      }
-
-      // Add collateral images as asset attachments
-      if (
-        application.collateral_images &&
-        application.collateral_images.length > 0
-      ) {
-        assetData.images = application.collateral_images;
       }
 
       const asset = new Asset(assetData);
@@ -283,11 +287,11 @@ class LoanService {
    */
   mapCollateralCategoryToAssetCategory(collateralCategory) {
     const mapping = {
-      small_loans: "electronics",
+      small_loans: "small_loans",
       motor_vehicle: "motor_vehicle",
       jewellery: "jewellery",
     };
-    return mapping[collateralCategory] || "other";
+    return mapping[collateralCategory] || "small_loans";
   }
 
   /**
@@ -318,7 +322,7 @@ class LoanService {
   }
 
   /**
-   * Get loan by ID with full population
+   * Get loan by ID with full population including all 7 key fields from application
    */
   async getLoanById(loanId) {
     try {
@@ -331,12 +335,12 @@ class LoanService {
         {
           path: "asset",
           select:
-            "asset_no title category evaluated_value declared_value status storage_location attachments images small_loan_details motor_vehicle_details jewellery_details",
+            "asset_no title category evaluated_value declared_value status storage_location asset_images brand model serial_no make registration_no engine_no chassis_no metal_type purity weight_grams",
         },
         {
           path: "application",
           select:
-            "application_no requested_loan_amount collateral_category collateral_description declared_asset_value small_loan_details motor_vehicle_details jewellery_details collateral_images repayment_type installment_count installment_frequency",
+            "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type installment_count installment_frequency interest_rate interest_amount total_repayable_amount small_loan_details motor_vehicle_details jewellery_details collateral_images surety_description",
         },
         {
           path: "attachments",
@@ -362,6 +366,10 @@ class LoanService {
           path: "super_admin_approvals.approved_by",
           select: "first_name last_name email",
         },
+        {
+          path: "payments.received_by",
+          select: "first_name last_name email",
+        },
       ]);
 
       if (!loan) {
@@ -382,7 +390,7 @@ class LoanService {
   }
 
   /**
-   * Get loans with pagination
+   * Get loans with pagination - includes all 7 key fields from application
    */
   async getLoansPaginated(
     filters = {},
@@ -436,16 +444,17 @@ class LoanService {
           .populate([
             {
               path: "customer_user",
-              select: "first_name last_name email phone",
+              select: "first_name last_name email phone national_id_number",
             },
             {
               path: "asset",
-              select: "asset_no title category evaluated_value status",
+              select:
+                "asset_no title category evaluated_value status asset_images",
             },
             {
               path: "application",
               select:
-                "application_no requested_loan_amount collateral_category status",
+                "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type installment_count installment_frequency interest_rate interest_amount total_repayable_amount",
             },
           ])
           .sort(sort)
@@ -481,6 +490,7 @@ class LoanService {
 
   /**
    * Get all loans without pagination (for exports, reports, etc.)
+   * Includes all 7 key fields from application
    */
   async getAllLoans(filters = {}, sort = { created_at: -1 }) {
     try {
@@ -499,11 +509,13 @@ class LoanService {
           },
           {
             path: "asset",
-            select: "asset_no title category evaluated_value status",
+            select:
+              "asset_no title category evaluated_value status asset_images",
           },
           {
             path: "application",
-            select: "application_no requested_loan_amount collateral_category",
+            select:
+              "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type installment_count installment_frequency interest_rate interest_amount total_repayable_amount",
           },
         ])
         .sort(sort)
@@ -562,15 +574,16 @@ class LoanService {
       }).populate([
         {
           path: "customer_user",
-          select: "first_name last_name email phone",
+          select: "first_name last_name email phone national_id_number",
         },
         {
           path: "asset",
-          select: "asset_no title category status",
+          select: "asset_no title category status asset_images",
         },
         {
           path: "application",
-          select: "application_no status",
+          select:
+            "application_no requested_loan_amount collateral_category declared_asset_value status",
         },
       ]);
 
@@ -600,6 +613,9 @@ class LoanService {
         "redeemed",
         "closed",
         "cancelled",
+        "partially_paid",
+        "defaulted",
+        "written_off",
       ];
 
       if (!validStatuses.includes(status)) {
@@ -653,7 +669,7 @@ class LoanService {
       // Set approval/processing user based on status
       if (status === "active" && !loan.processed_by && userId) {
         updateData.processed_by = userId;
-        updateData.disbursed_at = new Date();
+        updateData.disbursement_date = new Date();
       }
 
       if (status === "active" && !loan.approved_by && userId) {
@@ -664,7 +680,12 @@ class LoanService {
         new: true,
       }).populate([
         { path: "customer_user", select: "first_name last_name email phone" },
-        { path: "asset", select: "asset_no title status" },
+        { path: "asset", select: "asset_no title status asset_images" },
+        {
+          path: "application",
+          select:
+            "application_no requested_loan_amount collateral_category status",
+        },
       ]);
 
       // Update associated asset status
@@ -1150,9 +1171,6 @@ class LoanService {
   /**
    * Process loan payment
    */
-  /**
-   * Process loan payment
-   */
   async processPayment(loanId, paymentData) {
     try {
       const loan = await Loan.findById(loanId);
@@ -1163,7 +1181,11 @@ class LoanService {
         };
       }
 
-      if (loan.status !== "active" && loan.status !== "overdue") {
+      if (
+        loan.status !== "active" &&
+        loan.status !== "overdue" &&
+        loan.status !== "partially_paid"
+      ) {
         throw {
           status: 400,
           message: `Cannot process payment for loan with status: ${loan.status}`,
@@ -1281,8 +1303,13 @@ class LoanService {
         runValidators: true,
       }).populate([
         { path: "customer_user", select: "first_name last_name email phone" },
-        { path: "asset", select: "asset_no title status" },
+        { path: "asset", select: "asset_no title status asset_images" },
         { path: "payments.received_by", select: "first_name last_name email" },
+        {
+          path: "application",
+          select:
+            "application_no requested_loan_amount collateral_category status",
+        },
       ]);
 
       // Update asset status if loan is redeemed
@@ -1313,6 +1340,7 @@ class LoanService {
       throw this.handleMongoError(error);
     }
   }
+
   /**
    * Validate loan status transition
    */
@@ -1321,12 +1349,22 @@ class LoanService {
       draft: ["pending_approval", "active", "cancelled"],
       pending_approval: ["active", "cancelled"],
       approved: ["active", "cancelled"],
-      active: ["overdue", "in_grace", "redeemed", "closed"],
-      overdue: ["in_grace", "auction", "redeemed", "closed"],
-      in_grace: ["auction", "redeemed", "closed"],
+      active: [
+        "overdue",
+        "in_grace",
+        "redeemed",
+        "closed",
+        "partially_paid",
+        "defaulted",
+      ],
+      overdue: ["in_grace", "auction", "redeemed", "closed", "partially_paid"],
+      in_grace: ["auction", "redeemed", "closed", "overdue"],
       auction: ["sold", "closed"],
       sold: ["closed"],
       redeemed: ["closed"],
+      partially_paid: ["active", "overdue", "redeemed", "closed"],
+      defaulted: ["auction", "written_off"],
+      written_off: ["closed"],
       closed: [],
       cancelled: [],
     };
@@ -1360,6 +1398,8 @@ class LoanService {
       redeemed: "redeemed",
       closed: "available",
       cancelled: "available",
+      defaulted: "auction",
+      partially_paid: "pawned",
     };
 
     if (assetStatusMap[loan.status] && loan.asset) {
