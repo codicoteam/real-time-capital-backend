@@ -231,6 +231,155 @@ class UserController {
   }
 
   /**
+   * Update profile picture
+   */
+  async updateProfilePicture(req, res) {
+    try {
+      const userId = req.user._id;
+      const { profile_pic_url } = req.body;
+
+      if (!profile_pic_url) {
+        return res.status(400).json({
+          success: false,
+          message: "Profile picture URL is required",
+        });
+      }
+
+      const user = await userService.updateProfilePicture(
+        userId,
+        profile_pic_url,
+      );
+
+      res.json({
+        success: true,
+        message: "Profile picture updated successfully",
+        data: {
+          profile_pic_url: user.profile_pic_url,
+        },
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message || "Failed to update profile picture",
+      });
+    }
+  }
+
+  /**
+   * Update next of kin details
+   */
+  async updateNextOfKin(req, res) {
+    try {
+      const userId = req.user._id;
+      const nextOfKinData = req.body;
+
+      const user = await userService.updateNextOfKin(userId, nextOfKinData);
+
+      res.json({
+        success: true,
+        message: "Next of kin details updated successfully",
+        data: {
+          next_of_kin: user.next_of_kin,
+        },
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message || "Failed to update next of kin details",
+      });
+    }
+  }
+
+  /**
+   * Update KYC documents and details
+   */
+  async updateKycDetails(req, res) {
+    try {
+      const userId = req.user._id;
+      const kycData = req.body;
+
+      const user = await userService.updateKycDetails(userId, kycData);
+
+      res.json({
+        success: true,
+        message: "KYC details updated successfully",
+        data: user,
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message || "Failed to update KYC details",
+      });
+    }
+  }
+
+  /**
+   * Update password for logged-in user
+   */
+  async updatePassword(req, res) {
+    try {
+      const userId = req.user._id;
+      const { current_password, new_password } = req.body;
+
+      if (!current_password || !new_password) {
+        return res.status(400).json({
+          success: false,
+          message: "Current password and new password are required",
+        });
+      }
+
+      if (new_password.length < 6) {
+        return res.status(400).json({
+          success: false,
+          message: "New password must be at least 6 characters",
+        });
+      }
+
+      const result = await userService.updatePassword(
+        userId,
+        current_password,
+        new_password,
+      );
+
+      res.json({
+        success: true,
+        message: result.message,
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message || "Failed to update password",
+      });
+    }
+  }
+
+  /**
+   * Update personal details
+   */
+  async updatePersonalDetails(req, res) {
+    try {
+      const userId = req.user._id;
+      const personalData = req.body;
+
+      const user = await userService.updatePersonalDetails(
+        userId,
+        personalData,
+      );
+
+      res.json({
+        success: true,
+        message: "Personal details updated successfully",
+        data: user,
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message || "Failed to update personal details",
+      });
+    }
+  }
+
+  /**
    * Forgot password
    */
   async forgotPassword(req, res) {

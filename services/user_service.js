@@ -433,6 +433,176 @@ class UserService {
   }
 
   /**
+   * Update profile picture
+   */
+  async updateProfilePicture(userId, profilePicUrl) {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw { status: 404, message: "User not found" };
+    }
+
+    user.profile_pic_url = profilePicUrl;
+    await user.save();
+
+    return user;
+  }
+
+  /**
+   * Update next of kin details
+   */
+  async updateNextOfKin(userId, nextOfKinData) {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw { status: 404, message: "User not found" };
+    }
+
+    // Allowed next of kin fields
+    const allowedFields = [
+      "full_name",
+      "relationship",
+      "phone_number",
+      "email",
+      "address",
+    ];
+
+    if (!user.next_of_kin) {
+      user.next_of_kin = {};
+    }
+
+    allowedFields.forEach((field) => {
+      if (nextOfKinData[field] !== undefined) {
+        user.next_of_kin[field] = nextOfKinData[field];
+      }
+    });
+
+    await user.save();
+    return user;
+  }
+
+  /**
+   * Update KYC documents and details
+   */
+  async updateKycDetails(userId, kycData) {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw { status: 404, message: "User not found" };
+    }
+
+    // Allowed KYC fields
+    const allowedFields = [
+      "national_id_number",
+      "date_of_birth",
+      "address",
+      "location",
+      "gender",
+      "marital_status",
+      "alternative_phone",
+      "national_id_image_url",
+      "passport_image_url",
+      "proof_of_address_url",
+      "passport_expiry_date",
+      "driving_license_expiry_date",
+      "national_id_expiry_date",
+      "is_employed",
+    ];
+
+    allowedFields.forEach((field) => {
+      if (kycData[field] !== undefined) {
+        user[field] = kycData[field];
+      }
+    });
+
+    // Update employment details if provided
+    if (kycData.employment_details) {
+      if (!user.employment_details) {
+        user.employment_details = {};
+      }
+      const employmentFields = [
+        "employer_name",
+        "job_title",
+        "duration",
+        "location",
+        "contacts",
+      ];
+      employmentFields.forEach((field) => {
+        if (kycData.employment_details[field] !== undefined) {
+          user.employment_details[field] = kycData.employment_details[field];
+        }
+      });
+    }
+
+    await user.save();
+    return user;
+  }
+
+  /**
+   * Update password for logged-in user
+   */
+  async updatePassword(userId, currentPassword, newPassword) {
+    const user = await User.findById(userId).select("+password_hash");
+
+    if (!user) {
+      throw { status: 404, message: "User not found" };
+    }
+
+    // Verify current password
+    const isValidPassword = await this.comparePassword(
+      currentPassword,
+      user.password_hash,
+    );
+    if (!isValidPassword) {
+      throw { status: 401, message: "Current password is incorrect" };
+    }
+
+    // Hash and update new password
+    user.password_hash = await this.hashPassword(newPassword);
+    await user.save();
+
+    return { message: "Password updated successfully" };
+  }
+
+  /**
+   * Update personal details
+   */
+  async updatePersonalDetails(userId, personalData) {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw { status: 404, message: "User not found" };
+    }
+
+    // Allowed personal details fields
+    const allowedFields = [
+      "first_name",
+      "last_name",
+      "phone",
+      "date_of_birth",
+      "address",
+      "location",
+      "gender",
+      "marital_status",
+      "alternative_phone",
+    ];
+
+    allowedFields.forEach((field) => {
+      if (personalData[field] !== undefined) {
+        user[field] = personalData[field];
+      }
+    });
+
+    // Update full name if first or last name changed
+    if (personalData.first_name || personalData.last_name) {
+      user.full_name = `${user.first_name} ${user.last_name}`.trim();
+    }
+
+    await user.save();
+    return user;
+  }
+
+  /**
    * Request account deletion (send OTP)
    */
   async requestAccountDeletion(email) {

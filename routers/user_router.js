@@ -83,6 +83,107 @@ const {
  *           type: string
  *         newPassword:
  *           type: string
+ *     UpdatePassword:
+ *       type: object
+ *       required:
+ *         - current_password
+ *         - new_password
+ *       properties:
+ *         current_password:
+ *           type: string
+ *         new_password:
+ *           type: string
+ *           minLength: 6
+ *     UpdateProfilePicture:
+ *       type: object
+ *       required:
+ *         - profile_pic_url
+ *       properties:
+ *         profile_pic_url:
+ *           type: string
+ *     NextOfKin:
+ *       type: object
+ *       properties:
+ *         full_name:
+ *           type: string
+ *         relationship:
+ *           type: string
+ *         phone_number:
+ *           type: string
+ *         email:
+ *           type: string
+ *         address:
+ *           type: string
+ *     KYCUpdate:
+ *       type: object
+ *       properties:
+ *         national_id_number:
+ *           type: string
+ *         date_of_birth:
+ *           type: string
+ *           format: date
+ *         address:
+ *           type: string
+ *         location:
+ *           type: string
+ *         gender:
+ *           type: string
+ *         marital_status:
+ *           type: string
+ *         alternative_phone:
+ *           type: string
+ *         national_id_image_url:
+ *           type: string
+ *         passport_image_url:
+ *           type: string
+ *         proof_of_address_url:
+ *           type: string
+ *         passport_expiry_date:
+ *           type: string
+ *           format: date
+ *         driving_license_expiry_date:
+ *           type: string
+ *           format: date
+ *         national_id_expiry_date:
+ *           type: string
+ *           format: date
+ *         is_employed:
+ *           type: boolean
+ *         employment_details:
+ *           type: object
+ *           properties:
+ *             employer_name:
+ *               type: string
+ *             job_title:
+ *               type: string
+ *             duration:
+ *               type: string
+ *             location:
+ *               type: string
+ *             contacts:
+ *               type: string
+ *     PersonalDetails:
+ *       type: object
+ *       properties:
+ *         first_name:
+ *           type: string
+ *         last_name:
+ *           type: string
+ *         phone:
+ *           type: string
+ *         date_of_birth:
+ *           type: string
+ *           format: date
+ *         address:
+ *           type: string
+ *         location:
+ *           type: string
+ *         gender:
+ *           type: string
+ *         marital_status:
+ *           type: string
+ *         alternative_phone:
+ *           type: string
  */
 
 /**
@@ -270,6 +371,128 @@ router.get("/profile", authMiddleware, userController.getProfile);
  *         description: Unauthorized
  */
 router.put("/profile", authMiddleware, userController.updateProfile);
+
+/**
+ * @swagger
+ * /api/v1/users/profile/picture:
+ *   put:
+ *     summary: Update profile picture (standalone)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/UpdateProfilePicture'
+ *     responses:
+ *       200:
+ *         description: Profile picture updated successfully
+ *       400:
+ *         description: Profile picture URL is required
+ *       401:
+ *         description: Unauthorized
+ */
+router.put(
+  "/profile/picture",
+  authMiddleware,
+  userController.updateProfilePicture,
+);
+
+/**
+ * @swagger
+ * /api/v1/users/next-of-kin:
+ *   put:
+ *     summary: Update next of kin details (standalone)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/NextOfKin'
+ *     responses:
+ *       200:
+ *         description: Next of kin details updated successfully
+ *       401:
+ *         description: Unauthorized
+ */
+router.put("/next-of-kin", authMiddleware, userController.updateNextOfKin);
+
+/**
+ * @swagger
+ * /api/v1/users/kyc:
+ *   put:
+ *     summary: Update KYC documents and details (standalone)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/KYCUpdate'
+ *     responses:
+ *       200:
+ *         description: KYC details updated successfully
+ *       401:
+ *         description: Unauthorized
+ */
+router.put("/kyc", authMiddleware, userController.updateKycDetails);
+
+/**
+ * @swagger
+ * /api/v1/users/update-password:
+ *   put:
+ *     summary: Update password for logged-in user (standalone)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/UpdatePassword'
+ *     responses:
+ *       200:
+ *         description: Password updated successfully
+ *       400:
+ *         description: Validation error
+ *       401:
+ *         description: Current password is incorrect or unauthorized
+ */
+router.put("/update-password", authMiddleware, userController.updatePassword);
+
+/**
+ * @swagger
+ * /api/v1/users/personal-details:
+ *   put:
+ *     summary: Update personal details (standalone)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/PersonalDetails'
+ *     responses:
+ *       200:
+ *         description: Personal details updated successfully
+ *       401:
+ *         description: Unauthorized
+ */
+router.put(
+  "/personal-details",
+  authMiddleware,
+  userController.updatePersonalDetails,
+);
 
 /**
  * @swagger
