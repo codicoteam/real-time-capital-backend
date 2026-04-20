@@ -158,22 +158,7 @@ class AuctionService {
    */
   static async getAuctionWithDetails(auctionId) {
     return await Auction.findById(auctionId)
-      .populate({
-        path: "asset",
-        select:
-          "asset_no title description category condition status evaluated_value storage_location",
-        populate: [
-          {
-            path: "owner_user",
-            select: "name email phone",
-          },
-          {
-            path: "attachments",
-            select: "filename url mime_type category",
-            match: { category: "asset_photos" },
-          },
-        ],
-      })
+      .populate("asset")
       .populate("winner_user", "name email phone")
       .populate("created_by", "name email");
   }

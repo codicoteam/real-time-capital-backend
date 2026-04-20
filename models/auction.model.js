@@ -12,7 +12,7 @@ const AuctionSchema = new mongoose.Schema(
     starts_at: { type: Date, required: true },
     ends_at: { type: Date, required: true },
 
-    status: { type: String, enum: ["draft", "live", "closed", "cancelled"], default: "draft", index: true },
+    status: { type: String, enum: ["draft", "live", "closed", "cancelled"], default: "live", index: true },
 
     winner_user: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     winning_bid_amount: { type: Number, min: 0 },
