@@ -437,6 +437,7 @@ class BidService {
           populate: [
             {
               path: "asset",
+              // No 'select' means ALL asset fields will be populated
               populate: [
                 {
                   path: "owner_user",
