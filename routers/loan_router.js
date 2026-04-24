@@ -255,7 +255,7 @@ router.get(
  */
 router.get(
   "/all",
-  requireRoles("admin_pawn_limited", "management", "super_admin_vendor"),
+  requireRoles("admin_pawn_limited", "management", "super_admin_vendor", "loan_officer_processor"),
   loanController.getAllLoans,
 );
 
