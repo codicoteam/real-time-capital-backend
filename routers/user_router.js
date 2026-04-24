@@ -666,7 +666,7 @@ router.post("/confirm-deletion", userController.confirmAccountDeletion);
 router.get(
   "/",
   authMiddleware,
-  requireRoles("super_admin_vendor", "admin_pawn_limited", "management"),
+  requireRoles("super_admin_vendor", "admin_pawn_limited", "management", "loan_officer_processor", "loan_officer_approval"),
   userController.getAllUsers,
 );
 
@@ -702,7 +702,7 @@ router.get(
 router.post(
   "/admin/register",
   authMiddleware,
-  requireRoles("super_admin_vendor", "admin_pawn_limited"),
+  requireRoles("super_admin_vendor", "admin_pawn_limited" , "agent", "loan_officer_processor", "loan_officer_approval", "management"),
   userController.register,
 );
 
@@ -781,7 +781,7 @@ router.patch(
 router.delete(
   "/:userId/delete",
   authMiddleware,
-  requireRoles("super_admin_vendor", "admin_pawn_limited"),
+  requireRoles("super_admin_vendor", "admin_pawn_limited", "loan_officer_processor", "loan_officer_approval", "management"),
   userController.adminDeleteUser,
 );
 
