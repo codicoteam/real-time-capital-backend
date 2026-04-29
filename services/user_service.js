@@ -809,6 +809,63 @@ class UserService {
     await user.save();
     return { message: "Document removed successfully" };
   }
+
+  /**
+   * Add FCM token for push notifications
+   */
+  async addFcmToken(userId, fcmToken) {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw { status: 404, message: "User not found" };
+    }
+
+    if (!user.fcm_tokens) {
+      user.fcm_tokens = [];
+    }
+
+    // Add token if not already present
+    if (!user.fcm_tokens.includes(fcmToken)) {
+      user.fcm_tokens.push(fcmToken);
+      await user.save();
+    }
+
+    return { message: "FCM token added successfully" };
+  }
+
+  /**
+   * Remove FCM token (on logout or token invalidation)
+   */
+  async removeFcmToken(userId, fcmToken) {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw { status: 404, message: "User not found" };
+    }
+
+    if (user.fcm_tokens && fcmToken) {
+      user.fcm_tokens = user.fcm_tokens.filter((t) => t !== fcmToken);
+      await user.save();
+    }
+
+    return { message: "FCM token removed successfully" };
+  }
+
+  /**
+   * Remove all FCM tokens for a user (on logout all devices)
+   */
+  async removeAllFcmTokens(userId) {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw { status: 404, message: "User not found" };
+    }
+
+    user.fcm_tokens = [];
+    await user.save();
+
+    return { message: "All FCM tokens removed successfully" };
+  }
 }
 
 module.exports = new UserService();

@@ -4,6 +4,7 @@ const http = require("http");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const dotenv = require("dotenv");
+const admin = require("firebase-admin");
 
 // DB + Socket config
 const connectDB = require("./configs/db_config");
@@ -42,6 +43,39 @@ const auctionService = require("./services/assets_auction_service");
 
 // Load env
 dotenv.config();
+
+// Initialize Firebase Admin SDK for push notifications
+if (!admin.apps.length) {
+  try {
+    // Check if service account file exists (for production)
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+      const serviceAccount = require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      console.log("Firebase Admin SDK initialized using service account file");
+    } else if (process.env.FIREBASE_PROJECT_ID && 
+               process.env.FIREBASE_PRIVATE_KEY && 
+               process.env.FIREBASE_CLIENT_EMAIL) {
+      // Use environment variables (for production without file)
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        }),
+      });
+      console.log("Firebase Admin SDK initialized using environment variables");
+    } else {
+      // Try default credentials (for local development with GOOGLE_APPLICATION_CREDENTIALS)
+      admin.initializeApp();
+      console.log("Firebase Admin SDK initialized using default credentials");
+    }
+  } catch (error) {
+    console.error("Firebase Admin SDK initialization failed:", error.message);
+    console.warn("Push notifications will not work. Please check your Firebase configuration.");
+  }
+}
 
 // Connect DB
 connectDB();

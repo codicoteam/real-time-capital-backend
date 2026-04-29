@@ -4,4 +4,13 @@ node_modules/
 # Environment variables
 .env
 .env.*
+
+# Lock files (optional)
 package-lock.json
+
+# 🔥 Firebase Admin SDK (VERY IMPORTANT)
+*firebase-adminsdk*.json
+real-time-capital-firebase-adminsdk-fbsvc-c3f35b7d4d.json
+
+# Optional: all JSON keys in config folders
+configs/*.json

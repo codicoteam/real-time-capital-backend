@@ -184,6 +184,13 @@ const {
  *           type: string
  *         alternative_phone:
  *           type: string
+ *     FCMToken:
+ *       type: object
+ *       required:
+ *         - fcm_token
+ *       properties:
+ *         fcm_token:
+ *           type: string
  */
 
 /**
@@ -607,6 +614,74 @@ router.post("/request-deletion", userController.requestAccountDeletion);
  */
 router.post("/confirm-deletion", userController.confirmAccountDeletion);
 
+// =========== FCM TOKEN ROUTES (PUSH NOTIFICATIONS) ===========
+
+/**
+ * @swagger
+ * /api/v1/users/fcm-token:
+ *   post:
+ *     summary: Register FCM token for push notifications
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/FCMToken'
+ *     responses:
+ *       200:
+ *         description: FCM token registered successfully
+ *       401:
+ *         description: Unauthorized
+ *       400:
+ *         description: FCM token is required
+ */
+router.post("/fcm-token", authMiddleware, userController.addFcmToken);
+
+/**
+ * @swagger
+ * /api/v1/users/fcm-token:
+ *   delete:
+ *     summary: Remove FCM token (logout from current device)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/FCMToken'
+ *     responses:
+ *       200:
+ *         description: FCM token removed successfully
+ *       401:
+ *         description: Unauthorized
+ */
+router.delete("/fcm-token", authMiddleware, userController.removeFcmToken);
+
+/**
+ * @swagger
+ * /api/v1/users/fcm-tokens/all:
+ *   delete:
+ *     summary: Remove all FCM tokens (logout from all devices)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: All FCM tokens removed successfully
+ *       401:
+ *         description: Unauthorized
+ */
+router.delete(
+  "/fcm-tokens/all",
+  authMiddleware,
+  userController.removeAllFcmTokens,
+);
+
 // =========== ADMIN ROUTES ===========
 
 /**
@@ -666,7 +741,13 @@ router.post("/confirm-deletion", userController.confirmAccountDeletion);
 router.get(
   "/",
   authMiddleware,
-  requireRoles("super_admin_vendor", "admin_pawn_limited", "management", "loan_officer_processor", "loan_officer_approval"),
+  requireRoles(
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management",
+    "loan_officer_processor",
+    "loan_officer_approval",
+  ),
   userController.getAllUsers,
 );
 
@@ -702,7 +783,14 @@ router.get(
 router.post(
   "/admin/register",
   authMiddleware,
-  requireRoles("super_admin_vendor", "admin_pawn_limited" , "agent", "loan_officer_processor", "loan_officer_approval", "management"),
+  requireRoles(
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "agent",
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "management",
+  ),
   userController.register,
 );
 
@@ -781,7 +869,13 @@ router.patch(
 router.delete(
   "/:userId/delete",
   authMiddleware,
-  requireRoles("super_admin_vendor", "admin_pawn_limited", "loan_officer_processor", "loan_officer_approval", "management"),
+  requireRoles(
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "management",
+  ),
   userController.adminDeleteUser,
 );
 

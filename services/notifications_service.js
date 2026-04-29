@@ -1,8 +1,267 @@
 const Notification = require("../models/notifications_model");
 const User = require("../models/user.model");
 const mongoose = require("mongoose");
+const { sendSmsWithMessage } = require("../utils/sms_utils");
+const { sendEmail } = require("../utils/emails_util");
+
+// For Firebase Admin SDK (push notifications)
+// Make sure to initialize this in your main app file (app.js)
+const admin = require("firebase-admin");
 
 class NotificationService {
+  /**
+   * Helper: Send email notification to a user
+   */
+  static async sendEmailNotification(user, notification) {
+    try {
+      if (!user.email) {
+        console.log(`No email for user ${user._id}`);
+        return false;
+      }
+
+      // Build email content
+      const emailSubject = notification.title;
+      const emailHtml = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2>${notification.title}</h2>
+          <p>${notification.message}</p>
+          ${notification.action_url ? `
+            <a href="${notification.action_url}" style="display: inline-block; background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-top: 15px;">
+              ${notification.action_text || 'View Details'}
+            </a>
+          ` : ''}
+          <hr style="margin: 20px 0;" />
+          <p style="color: #666; font-size: 12px;">This is an automated message from Pawn Limited. Please do not reply.</p>
+        </div>
+      `;
+
+      await sendEmail({
+        to: user.email,
+        subject: emailSubject,
+        html: emailHtml,
+        text: notification.message,
+      });
+
+      console.log(`Email sent to ${user.email} for notification ${notification._id}`);
+      return true;
+    } catch (error) {
+      console.error(`Failed to send email to ${user.email}:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Helper: Send SMS notification to a user
+   */
+  static async sendSmsNotification(user, notification) {
+    try {
+      if (!user.phone) {
+        console.log(`No phone for user ${user._id}`);
+        return false;
+      }
+
+      // Truncate message for SMS (160 chars recommended, 4000 max but SMS has limits)
+      const smsMessage = `${notification.title}\n${notification.message.substring(0, 140)}${notification.message.length > 140 ? '...' : ''}\n${notification.action_url || ''}`;
+
+      await sendSmsWithMessage(user.phone, smsMessage);
+      
+      console.log(`SMS sent to ${user.phone} for notification ${notification._id}`);
+      return true;
+    } catch (error) {
+      console.error(`Failed to send SMS to ${user.phone}:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Helper: Send push notification to a user via FCM
+   */
+  static async sendPushNotification(user, notification) {
+    try {
+      if (!user.fcm_tokens || user.fcm_tokens.length === 0) {
+        console.log(`No FCM tokens for user ${user._id}`);
+        return false;
+      }
+
+      // Prepare notification payload
+      const payload = {
+        notification: {
+          title: notification.title,
+          body: notification.message,
+        },
+        data: {
+          notification_id: notification._id.toString(),
+          type: notification.type,
+          entity_type: notification.entity_type || '',
+          entity_id: notification.entity_id?.toString() || '',
+          action_url: notification.action_url || '',
+          action_text: notification.action_text || '',
+          priority: notification.priority,
+          created_at: notification.created_at.toISOString(),
+        },
+        android: {
+          priority: notification.priority === 'high' || notification.priority === 'critical' 
+            ? 'high' 
+            : 'normal',
+        },
+        apns: {
+          payload: {
+            aps: {
+              sound: 'default',
+              badge: 1,
+            },
+          },
+        },
+      };
+
+      // Send to all user's tokens
+      const results = await Promise.allSettled(
+        user.fcm_tokens.map(async (token) => {
+          try {
+            const response = await admin.messaging().send({
+              token: token,
+              ...payload,
+            });
+            console.log(`Push sent to ${token}: ${response}`);
+            return { token, success: true };
+          } catch (error) {
+            // If token is invalid, remove it
+            if (error.code === 'messaging/invalid-registration-token' ||
+                error.code === 'messaging/registration-token-not-registered') {
+              await User.updateOne(
+                { _id: user._id },
+                { $pull: { fcm_tokens: token } }
+              );
+              console.log(`Removed invalid FCM token for user ${user._id}`);
+            }
+            return { token, success: false, error: error.message };
+          }
+        })
+      );
+
+      const successful = results.filter(r => r.status === 'fulfilled' && r.value?.success).length;
+      console.log(`Push notifications: ${successful}/${user.fcm_tokens.length} successful for user ${user._id}`);
+      
+      return successful > 0;
+    } catch (error) {
+      console.error(`Failed to send push to user ${user._id}:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Process and send notifications to recipients based on channels
+   */
+  static async deliverToUser(user, notification, channels) {
+    const deliveryResults = {
+      user_id: user._id,
+      email: false,
+      sms: false,
+      push: false,
+      in_app: true, // In-app is always stored
+    };
+
+    const promises = [];
+
+    if (channels.includes("email") && user.email) {
+      promises.push(
+        this.sendEmailNotification(user, notification).then(
+          (result) => (deliveryResults.email = result)
+        )
+      );
+    }
+
+    if (channels.includes("sms") && user.phone) {
+      promises.push(
+        this.sendSmsNotification(user, notification).then(
+          (result) => (deliveryResults.sms = result)
+        )
+      );
+    }
+
+    if (channels.includes("push")) {
+      promises.push(
+        this.sendPushNotification(user, notification).then(
+          (result) => (deliveryResults.push = result)
+        )
+      );
+    }
+
+    await Promise.allSettled(promises);
+    return deliveryResults;
+  }
+
+  /**
+   * Get all target users based on audience configuration
+   */
+  static async getTargetUsers(audience) {
+    const { scope, user_id, user_ids, roles } = audience;
+
+    switch (scope) {
+      case "user":
+        const user = await User.findOne({ _id: user_id, status: "active" });
+        return user ? [user] : [];
+
+      case "users":
+        const users = await User.find({
+          _id: { $in: user_ids },
+          status: "active",
+        });
+        return users;
+
+      case "roles":
+        const roleUsers = await User.find({
+          roles: { $in: roles },
+          status: "active",
+        });
+        return roleUsers;
+
+      case "all":
+      default:
+        const allUsers = await User.find({ status: "active" });
+        return allUsers;
+    }
+  }
+
+  /**
+   * Send a notification immediately to all targeted users
+   */
+  static async sendNotificationToAudience(notification) {
+    try {
+      const targetUsers = await this.getTargetUsers(notification.audience);
+      
+      if (targetUsers.length === 0) {
+        console.log(`No target users found for notification ${notification._id}`);
+        return { success: true, delivered: 0, total: 0 };
+      }
+
+      const deliveryReports = [];
+      
+      for (const user of targetUsers) {
+        const result = await this.deliverToUser(
+          user,
+          notification,
+          notification.channels
+        );
+        deliveryReports.push(result);
+      }
+
+      const successfulDeliveries = deliveryReports.filter(
+        (r) => r.email || r.sms || r.push || r.in_app
+      ).length;
+
+      return {
+        success: true,
+        delivered: successfulDeliveries,
+        total: targetUsers.length,
+        reports: deliveryReports,
+      };
+    } catch (error) {
+      console.error("Send to audience error:", error);
+      throw error;
+    }
+  }
+
   /**
    * Create a new notification with audience resolution
    */
@@ -67,13 +326,17 @@ class NotificationService {
 
       // Determine initial status based on send_at
       let status = "draft";
+      let shouldSendNow = false;
+      
       if (send_at && new Date(send_at) > new Date()) {
         status = "scheduled";
       } else if (!send_at || new Date(send_at) <= new Date()) {
         status = "sent";
-        send_at = new Date(); // sent now
+        send_at = new Date();
+        shouldSendNow = true;
       }
 
+      // Create notification document
       const notification = new Notification({
         title,
         message,
@@ -95,7 +358,19 @@ class NotificationService {
 
       await notification.save();
 
-      // Optionally populate created_by for response
+      // If immediate send, deliver to all users
+      let deliveryResult = null;
+      if (shouldSendNow) {
+        deliveryResult = await this.sendNotificationToAudience(notification);
+        
+        // Update sent_at if not already set
+        if (!notification.sent_at) {
+          notification.sent_at = new Date();
+          await notification.save();
+        }
+      }
+
+      // Populate created_by for response
       const populated = await Notification.findById(notification._id).populate(
         "created_by",
         "first_name last_name email"
@@ -103,7 +378,10 @@ class NotificationService {
 
       return {
         success: true,
-        data: populated,
+        data: {
+          ...populated.toObject(),
+          delivery: deliveryResult,
+        },
         message: `Notification ${status === "scheduled" ? "scheduled" : "sent"} successfully`,
       };
     } catch (error) {
@@ -662,6 +940,97 @@ class NotificationService {
     } catch (error) {
       console.error("Notification stats error:", error);
       throw new Error(error.message || "Failed to fetch notification statistics");
+    }
+  }
+
+  /**
+   * Resend a notification (for failed deliveries)
+   */
+  static async resendNotification(id, user) {
+    try {
+      const notification = await Notification.findById(id);
+
+      if (!notification) {
+        return {
+          success: false,
+          message: "Notification not found",
+          statusCode: 404,
+        };
+      }
+
+      if (notification.status !== "sent") {
+        return {
+          success: false,
+          message: "Only sent notifications can be resent",
+          statusCode: 400,
+        };
+      }
+
+      const adminRoles = ["super_admin_vendor", "admin_pawn_limited", "management"];
+      const isAdmin = user.roles.some((r) => adminRoles.includes(r));
+
+      if (!isAdmin) {
+        return {
+          success: false,
+          message: "Only admins can resend notifications",
+          statusCode: 403,
+        };
+      }
+
+      const deliveryResult = await this.sendNotificationToAudience(notification);
+      
+      return {
+        success: true,
+        message: "Notification resent successfully",
+        data: deliveryResult,
+      };
+    } catch (error) {
+      console.error("Resend notification error:", error);
+      throw new Error(error.message || "Failed to resend notification");
+    }
+  }
+
+  /**
+   * Get delivery status for a notification
+   */
+  static async getDeliveryStatus(id, user) {
+    try {
+      const notification = await Notification.findById(id);
+
+      if (!notification) {
+        return {
+          success: false,
+          message: "Notification not found",
+          statusCode: 404,
+        };
+      }
+
+      const adminRoles = ["super_admin_vendor", "admin_pawn_limited", "management"];
+      const isAdmin = user.roles.some((r) => adminRoles.includes(r));
+
+      if (!isAdmin) {
+        return {
+          success: false,
+          message: "Only admins can view delivery status",
+          statusCode: 403,
+        };
+      }
+
+      const targetUsers = await this.getTargetUsers(notification.audience);
+      
+      return {
+        success: true,
+        data: {
+          notification_id: notification._id,
+          title: notification.title,
+          total_audience: targetUsers.length,
+          channels: notification.channels,
+          sent_at: notification.sent_at,
+        },
+      };
+    } catch (error) {
+      console.error("Get delivery status error:", error);
+      throw new Error(error.message || "Failed to get delivery status");
     }
   }
 }

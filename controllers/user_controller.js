@@ -649,6 +649,78 @@ class UserController {
       });
     }
   }
+
+  /**
+   * Add FCM token for push notifications
+   */
+  async addFcmToken(req, res) {
+    try {
+      const userId = req.user._id;
+      const { fcm_token } = req.body;
+
+      if (!fcm_token) {
+        return res.status(400).json({
+          success: false,
+          message: "FCM token is required",
+        });
+      }
+
+      const result = await userService.addFcmToken(userId, fcm_token);
+
+      res.json({
+        success: true,
+        message: result.message,
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message || "Failed to add FCM token",
+      });
+    }
+  }
+
+  /**
+   * Remove FCM token (on logout)
+   */
+  async removeFcmToken(req, res) {
+    try {
+      const userId = req.user._id;
+      const { fcm_token } = req.body;
+
+      const result = await userService.removeFcmToken(userId, fcm_token);
+
+      res.json({
+        success: true,
+        message: result.message,
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message || "Failed to remove FCM token",
+      });
+    }
+  }
+
+  /**
+   * Remove all FCM tokens (logout all devices)
+   */
+  async removeAllFcmTokens(req, res) {
+    try {
+      const userId = req.user._id;
+
+      const result = await userService.removeAllFcmTokens(userId);
+
+      res.json({
+        success: true,
+        message: result.message,
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message || "Failed to remove FCM tokens",
+      });
+    }
+  }
 }
 
 module.exports = new UserController();

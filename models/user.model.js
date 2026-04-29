@@ -3,14 +3,18 @@ const mongoose = require("mongoose");
 // Document upload subdocument (for extra files)
 const UserDocumentSchema = new mongoose.Schema(
   {
-    type: { type: String, enum: ["national_id", "passport", "proof_of_address", "other"], required: true },
+    type: {
+      type: String,
+      enum: ["national_id", "passport", "proof_of_address", "other"],
+      required: true,
+    },
     url: { type: String, required: true, trim: true },
     file_name: { type: String, trim: true },
     mime_type: { type: String, trim: true },
     uploaded_at: { type: Date, default: Date.now },
     notes: { type: String, trim: true },
   },
-  { _id: false }
+  { _id: false },
 );
 
 // Employment details subdocument
@@ -18,11 +22,11 @@ const EmploymentDetailsSchema = new mongoose.Schema(
   {
     employer_name: { type: String, trim: true },
     job_title: { type: String, trim: true },
-    duration: { type: String, trim: true },   // e.g. "2 years"
+    duration: { type: String, trim: true }, // e.g. "2 years"
     location: { type: String, trim: true },
     contacts: { type: String, trim: true },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const UserSchema = new mongoose.Schema(
@@ -82,7 +86,7 @@ const UserSchema = new mongoose.Schema(
     national_id_expiry_date: { type: Date },
 
     // Employment information
-    is_employed: { type: Boolean, default: false },   // <-- field to select if user is employed
+    is_employed: { type: Boolean, default: false }, // <-- field to select if user is employed
     employment_details: { type: EmploymentDetailsSchema, default: {} },
 
     // Next of kin
@@ -109,6 +113,13 @@ const UserSchema = new mongoose.Schema(
     // Profile approval (by agent or loan officer processor)
     profile_approved_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     profile_approved_at: { type: Date },
+    
+    // FCM tokens for push notifications
+    fcm_tokens: {
+      type: [String],
+      default: [],
+      index: true,
+    },
 
     // Terms & conditions
     terms_accepted_at: { type: Date },
@@ -122,10 +133,15 @@ const UserSchema = new mongoose.Schema(
     reset_password_otp: { type: String },
     reset_password_expires_at: { type: Date },
 
-    added_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
+    added_by: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
     // ❌ auth_providers removed
   },
-  { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
+  { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } },
 );
 
 // Indexes
@@ -133,5 +149,6 @@ UserSchema.index({ email: 1 });
 UserSchema.index({ phone: 1 });
 UserSchema.index({ roles: 1 });
 UserSchema.index({ kyc_verification_status: 1 });
+UserSchema.index({ fcm_tokens: 1 });
 
 module.exports = mongoose.model("User", UserSchema);
