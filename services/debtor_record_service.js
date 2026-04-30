@@ -134,7 +134,9 @@ class DebtorRecordService {
         .on("end", async () => {
           try {
             const { savedRecords, saveErrors } = await this._bulkSave(results);
-            _safeUnlink(filePath);
+            try {
+              if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+            } catch (_) {}
 
             resolve({
               success: true,
@@ -221,7 +223,9 @@ class DebtorRecordService {
       }
 
       const { savedRecords, saveErrors } = await this._bulkSave(results);
-      _safeUnlink(filePath);
+      try {
+        if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      } catch (_) {}
 
       return {
         success: true,
