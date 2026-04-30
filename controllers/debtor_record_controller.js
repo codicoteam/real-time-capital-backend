@@ -1,340 +1,396 @@
-const debtorRecordService = require('../services/debtor_record_service');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+const debtorRecordService = require("../services/debtor_record_service");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 
-// Configure multer for file uploads
+// ─── Multer storage ──────────────────────────────────────────────────────────
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../uploads');
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
+    const dir = path.join(__dirname, "../uploads");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
   },
   filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'debtor-csv-' + uniqueSuffix + path.extname(file.originalname));
-  }
+    const suffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    cb(null, `debtor-upload-${suffix}${path.extname(file.originalname)}`);
+  },
 });
 
 const fileFilter = (req, file, cb) => {
-  // Accept CSV files only
-  if (file.mimetype === 'text/csv' || file.originalname.toLowerCase().endsWith('.csv')) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only CSV files are allowed'), false);
-  }
+  const ext = file.originalname.toLowerCase();
+  const mime = file.mimetype;
+  const ok =
+    mime === "text/csv" ||
+    ext.endsWith(".csv") ||
+    mime === "application/json" ||
+    ext.endsWith(".json");
+  ok
+    ? cb(null, true)
+    : cb(new Error("Only CSV and JSON files are allowed"), false);
 };
 
-const upload = multer({ 
-  storage: storage,
-  fileFilter: fileFilter,
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
-  }
+const upload = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
 });
 
+// ─── Helper ───────────────────────────────────────────────────────────────────
+
+function safeUnlink(filePath) {
+  try {
+    if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch {}
+}
+
+function handleRecordError(res, error) {
+  const msg = error.message || "";
+  if (msg.includes("Record not found"))
+    return res.status(404).json({ success: false, error: msg });
+  if (msg.includes("Invalid record ID"))
+    return res.status(400).json({ success: false, error: msg });
+  return res.status(500).json({ success: false, error: msg });
+}
+
+// ─── Controller ───────────────────────────────────────────────────────────────
+
 class DebtorRecordController {
+  // ── POST /upload-csv ────────────────────────────────────────────────────────
   /**
-   * Upload and process CSV file
-   * @param {Object} req - Express request object
-   * @param {Object} res - Express response object
+   * @swagger
+   * /api/v1/debtor-records/upload-csv:
+   *   post:
+   *     summary: Upload and process a CSV file of debtor records
+   *     tags: [Debtor Records]
+   *     security:
+   *       - bearerAuth: []
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         multipart/form-data:
+   *           schema:
+   *             type: object
+   *             required: [csvFile]
+   *             properties:
+   *               csvFile:
+   *                 type: string
+   *                 format: binary
+   *               source_period_label:
+   *                 type: string
+   *                 example: "JUNE 2023-NOVEMBER 2025"
+   *     responses:
+   *       200:
+   *         description: CSV processed successfully
+   *       400:
+   *         description: Missing or invalid file
+   *       500:
+   *         description: Server error
    */
   async uploadCSV(req, res) {
-    try {
-      // Use multer middleware to handle file upload
-      upload.single('csvFile')(req, res, async (err) => {
-        try {
-          if (err) {
-            return res.status(400).json({
-              success: false,
-              error: `File upload error: ${err.message}`
-            });
-          }
+    upload.single("csvFile")(req, res, async (err) => {
+      if (err)
+        return res.status(400).json({ success: false, error: err.message });
+      if (!req.file)
+        return res
+          .status(400)
+          .json({ success: false, error: "No CSV file provided" });
 
-          if (!req.file) {
-            return res.status(400).json({
-              success: false,
-              error: 'No CSV file provided'
-            });
-          }
-
-          const { source_period_label } = req.body;
-          
-          const result = await debtorRecordService.processCSV(
-            req.file.path,
-            source_period_label || 'DEBTORS LIST'
-          );
-
-          res.status(200).json({
-            success: true,
-            data: result.data,
-            message: result.message
-          });
-        } catch (error) {
-          // Clean up uploaded file if there's an error
-          if (req.file && fs.existsSync(req.file.path)) {
-            fs.unlinkSync(req.file.path);
-          }
-          
-          res.status(500).json({
+      try {
+        const result = await debtorRecordService.processCSV(
+          req.file.path,
+          req.body.source_period_label || "DEBTORS LIST",
+        );
+        res
+          .status(200)
+          .json({ success: true, data: result.data, message: result.message });
+      } catch (error) {
+        safeUnlink(req.file?.path);
+        res
+          .status(500)
+          .json({
             success: false,
-            error: `Failed to process CSV: ${error.message}`
+            error: `Failed to process CSV: ${error.message}`,
           });
-        }
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: `Server error: ${error.message}`
-      });
-    }
+      }
+    });
   }
 
+  // ── POST /upload-json ───────────────────────────────────────────────────────
   /**
-   * Create a single debtor record
-   * @param {Object} req - Express request object
-   * @param {Object} res - Express response object
+   * @swagger
+   * /api/v1/debtor-records/upload-json:
+   *   post:
+   *     summary: Upload and process a JSON file of debtor records
+   *     description: >
+   *       Accepts either a normalised JSON array  `[{ client_name, asset_no, … }]`
+   *       **or** the raw positional-key JSON produced by Excel-to-JSON converters
+   *       (keys like "19.12.25", "__1", etc.).  The service auto-detects the format.
+   *     tags: [Debtor Records]
+   *     security:
+   *       - bearerAuth: []
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         multipart/form-data:
+   *           schema:
+   *             type: object
+   *             required: [jsonFile]
+   *             properties:
+   *               jsonFile:
+   *                 type: string
+   *                 format: binary
+   *               source_period_label:
+   *                 type: string
+   *                 example: "JUNE 2023-NOVEMBER 2025"
+   *     responses:
+   *       200:
+   *         description: JSON processed successfully
+   *       400:
+   *         description: Missing or invalid file
+   *       500:
+   *         description: Server error
+   */
+  async uploadJSON(req, res) {
+    upload.single("jsonFile")(req, res, async (err) => {
+      if (err)
+        return res.status(400).json({ success: false, error: err.message });
+      if (!req.file)
+        return res
+          .status(400)
+          .json({ success: false, error: "No JSON file provided" });
+
+      try {
+        const result = await debtorRecordService.processJSON(
+          req.file.path,
+          req.body.source_period_label || "DEBTORS LIST",
+        );
+        res
+          .status(200)
+          .json({ success: true, data: result.data, message: result.message });
+      } catch (error) {
+        safeUnlink(req.file?.path);
+        res
+          .status(500)
+          .json({
+            success: false,
+            error: `Failed to process JSON: ${error.message}`,
+          });
+      }
+    });
+  }
+
+  // ── POST /upload  (accepts either CSV or JSON in one endpoint) ──────────────
+  /**
+   * @swagger
+   * /api/v1/debtor-records/upload:
+   *   post:
+   *     summary: Upload a CSV **or** JSON file (auto-detected by extension)
+   *     tags: [Debtor Records]
+   *     security:
+   *       - bearerAuth: []
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         multipart/form-data:
+   *           schema:
+   *             type: object
+   *             required: [file]
+   *             properties:
+   *               file:
+   *                 type: string
+   *                 format: binary
+   *               source_period_label:
+   *                 type: string
+   *     responses:
+   *       200:
+   *         description: File processed successfully
+   *       400:
+   *         description: Missing or unsupported file
+   *       500:
+   *         description: Server error
+   */
+  async uploadFile(req, res) {
+    upload.single("file")(req, res, async (err) => {
+      if (err)
+        return res.status(400).json({ success: false, error: err.message });
+      if (!req.file)
+        return res
+          .status(400)
+          .json({ success: false, error: "No file provided" });
+
+      const label = req.body.source_period_label || "DEBTORS LIST";
+      const ext = req.file.originalname.toLowerCase();
+
+      try {
+        let result;
+        if (ext.endsWith(".csv")) {
+          result = await debtorRecordService.processCSV(req.file.path, label);
+        } else if (ext.endsWith(".json")) {
+          result = await debtorRecordService.processJSON(req.file.path, label);
+        } else {
+          safeUnlink(req.file.path);
+          return res
+            .status(400)
+            .json({
+              success: false,
+              error: "Unsupported file type. Use .csv or .json",
+            });
+        }
+        res
+          .status(200)
+          .json({ success: true, data: result.data, message: result.message });
+      } catch (error) {
+        safeUnlink(req.file?.path);
+        res
+          .status(500)
+          .json({
+            success: false,
+            error: `Failed to process file: ${error.message}`,
+          });
+      }
+    });
+  }
+
+  // ── POST / (single record) ──────────────────────────────────────────────────
+  /**
+   * @swagger
+   * /api/v1/debtor-records:
+   *   post:
+   *     summary: Create a single debtor record
+   *     tags: [Debtor Records]
+   *     security:
+   *       - bearerAuth: []
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             $ref: '#/components/schemas/DebtorRecordInput'
+   *     responses:
+   *       201:
+   *         description: Record created
+   *       400:
+   *         description: Validation error
    */
   async createRecord(req, res) {
     try {
-      const recordData = req.body;
-      
-      const result = await debtorRecordService.createRecord(recordData);
-      
-      res.status(201).json({
-        success: true,
-        data: result.data,
-        message: result.message
-      });
+      const result = await debtorRecordService.createRecord(req.body);
+      res
+        .status(201)
+        .json({ success: true, data: result.data, message: result.message });
     } catch (error) {
-      res.status(400).json({
-        success: false,
-        error: error.message
-      });
+      res.status(400).json({ success: false, error: error.message });
     }
   }
 
+  // ── POST /bulk (JSON body array) ────────────────────────────────────────────
   /**
-   * Create multiple debtor records
-   * @param {Object} req - Express request object
-   * @param {Object} res - Express response object
+   * @swagger
+   * /api/v1/debtor-records/bulk:
+   *   post:
+   *     summary: Create multiple debtor records from a JSON array body
+   *     tags: [Debtor Records]
+   *     security:
+   *       - bearerAuth: []
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: array
+   *             items:
+   *               $ref: '#/components/schemas/DebtorRecordInput'
+   *     responses:
+   *       201:
+   *         description: All records created
+   *       207:
+   *         description: Multi-status — some records failed
+   *       400:
+   *         description: Bad request
    */
   async createMultipleRecords(req, res) {
     try {
       const recordsData = req.body;
-      
-      if (!Array.isArray(recordsData)) {
-        return res.status(400).json({
-          success: false,
-          error: 'Request body must be an array of records'
-        });
+      if (!Array.isArray(recordsData) || recordsData.length === 0) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            error: "Request body must be a non-empty array",
+          });
       }
-
-      if (recordsData.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'No records provided'
-        });
-      }
-
-      const result = await debtorRecordService.createMultipleRecords(recordsData);
-      
-      if (result.data.failed > 0) {
-        res.status(207).json({
-          success: true,
-          data: result.data,
-          message: result.message
-        });
-      } else {
-        res.status(201).json({
-          success: true,
-          data: result.data,
-          message: result.message
-        });
-      }
+      const result =
+        await debtorRecordService.createMultipleRecords(recordsData);
+      const status = result.data.failed > 0 ? 207 : 201;
+      res
+        .status(status)
+        .json({ success: true, data: result.data, message: result.message });
     } catch (error) {
-      res.status(400).json({
-        success: false,
-        error: error.message
-      });
+      res.status(400).json({ success: false, error: error.message });
     }
   }
 
-  /**
-   * Get all debtor records with pagination
-   * @param {Object} req - Express request object
-   * @param {Object} res - Express response object
-   */
+  // ── GET / ───────────────────────────────────────────────────────────────────
   async getAllRecords(req, res) {
     try {
-      const {
-        page = 1,
-        limit = 50,
-        sortBy = 'created_at',
-        sortOrder = 'desc',
-        search,
-        status,
-        branch,
-        startDate,
-        endDate
-      } = req.query;
-
-      const result = await debtorRecordService.getAllRecords({
-        page,
-        limit,
-        sortBy,
-        sortOrder,
-        search,
-        status,
-        branch,
-        startDate,
-        endDate
-      });
-
-      res.status(200).json({
-        success: true,
-        data: result.data,
-        message: result.message
-      });
+      const result = await debtorRecordService.getAllRecords(req.query);
+      res
+        .status(200)
+        .json({ success: true, data: result.data, message: result.message });
     } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error.message
-      });
+      res.status(500).json({ success: false, error: error.message });
     }
   }
 
-  /**
-   * Get a single debtor record by ID
-   * @param {Object} req - Express request object
-   * @param {Object} res - Express response object
-   */
-  async getRecordById(req, res) {
-    try {
-      const { id } = req.params;
-      
-      const result = await debtorRecordService.getRecordById(id);
-      
-      res.status(200).json({
-        success: true,
-        data: result.data,
-        message: result.message
-      });
-    } catch (error) {
-      if (error.message === 'Record not found') {
-        res.status(404).json({
-          success: false,
-          error: error.message
-        });
-      } else if (error.message === 'Invalid record ID') {
-        res.status(400).json({
-          success: false,
-          error: error.message
-        });
-      } else {
-        res.status(500).json({
-          success: false,
-          error: error.message
-        });
-      }
-    }
-  }
-
-  /**
-   * Update a debtor record
-   * @param {Object} req - Express request object
-   * @param {Object} res - Express response object
-   */
-  async updateRecord(req, res) {
-    try {
-      const { id } = req.params;
-      const updateData = req.body;
-      
-      const result = await debtorRecordService.updateRecord(id, updateData);
-      
-      res.status(200).json({
-        success: true,
-        data: result.data,
-        message: result.message
-      });
-    } catch (error) {
-      if (error.message === 'Record not found') {
-        res.status(404).json({
-          success: false,
-          error: error.message
-        });
-      } else if (error.message === 'Invalid record ID') {
-        res.status(400).json({
-          success: false,
-          error: error.message
-        });
-      } else {
-        res.status(400).json({
-          success: false,
-          error: error.message
-        });
-      }
-    }
-  }
-
-  /**
-   * Delete a debtor record
-   * @param {Object} req - Express request object
-   * @param {Object} res - Express response object
-   */
-  async deleteRecord(req, res) {
-    try {
-      const { id } = req.params;
-      
-      const result = await debtorRecordService.deleteRecord(id);
-      
-      res.status(200).json({
-        success: true,
-        data: result.data,
-        message: result.message
-      });
-    } catch (error) {
-      if (error.message === 'Record not found') {
-        res.status(404).json({
-          success: false,
-          error: error.message
-        });
-      } else if (error.message === 'Invalid record ID') {
-        res.status(400).json({
-          success: false,
-          error: error.message
-        });
-      } else {
-        res.status(500).json({
-          success: false,
-          error: error.message
-        });
-      }
-    }
-  }
-
-  /**
-   * Get statistics for debtor records
-   * @param {Object} req - Express request object
-   * @param {Object} res - Express response object
-   */
+  // ── GET /stats ──────────────────────────────────────────────────────────────
   async getStatistics(req, res) {
     try {
       const result = await debtorRecordService.getStatistics();
-      
-      res.status(200).json({
-        success: true,
-        data: result.data,
-        message: result.message
-      });
+      res
+        .status(200)
+        .json({ success: true, data: result.data, message: result.message });
     } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error.message
-      });
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  // ── GET /:id ────────────────────────────────────────────────────────────────
+  async getRecordById(req, res) {
+    try {
+      const result = await debtorRecordService.getRecordById(req.params.id);
+      res
+        .status(200)
+        .json({ success: true, data: result.data, message: result.message });
+    } catch (error) {
+      handleRecordError(res, error);
+    }
+  }
+
+  // ── PUT /:id ────────────────────────────────────────────────────────────────
+  async updateRecord(req, res) {
+    try {
+      const result = await debtorRecordService.updateRecord(
+        req.params.id,
+        req.body,
+      );
+      res
+        .status(200)
+        .json({ success: true, data: result.data, message: result.message });
+    } catch (error) {
+      handleRecordError(res, error);
+    }
+  }
+
+  // ── DELETE /:id ─────────────────────────────────────────────────────────────
+  async deleteRecord(req, res) {
+    try {
+      const result = await debtorRecordService.deleteRecord(req.params.id);
+      res
+        .status(200)
+        .json({ success: true, data: result.data, message: result.message });
+    } catch (error) {
+      handleRecordError(res, error);
     }
   }
 }

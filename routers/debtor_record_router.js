@@ -1,74 +1,240 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const debtorRecordController = require('../controllers/debtor_record_controller');
-const { authMiddleware, requireRoles } = require('../middlewares/auth_middleware');
+const ctrl = require("../controllers/debtor_record_controller");
+const { authMiddleware } = require("../middlewares/auth_middleware");
 
 /**
  * @swagger
  * tags:
  *   name: Debtor Records
  *   description: Debtor records management
- */
-
-/**
- * @swagger
+ *
  * components:
  *   securitySchemes:
  *     bearerAuth:
  *       type: http
  *       scheme: bearer
  *       bearerFormat: JWT
+ *
+ *   schemas:
+ *     DebtorRecordInput:
+ *       type: object
+ *       required: [client_name]
+ *       properties:
+ *         asset_no:            { type: string }
+ *         client_name:         { type: string }
+ *         principal:           { type: number }
+ *         interest:            { type: number }
+ *         period:              { type: string }
+ *         amount_due:          { type: number }
+ *         penalties:           { type: number }
+ *         total_due:           { type: number }
+ *         profit_loss_on_sale: { type: number }
+ *         date_of:             { type: string, format: date }
+ *         due_date:            { type: string, format: date }
+ *         asset:               { type: string }
+ *         specs:               { type: string }
+ *         asset_code:          { type: string }
+ *         reg_or_serial_no:    { type: string }
+ *         account_status:      { type: string }
+ *         contact_details:     { type: string }
+ *         branch:              { type: string }
  */
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE UPLOAD ENDPOINTS
+// ═══════════════════════════════════════════════════════════════════════════════
 
 /**
  * @swagger
  * /api/v1/debtor-records/upload-csv:
  *   post:
- *     summary: Upload and process CSV file
+ *     summary: Upload a CSV file of debtor records
  *     tags: [Debtor Records]
- *     security:
- *       - bearerAuth: []
+ *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
  *       content:
  *         multipart/form-data:
  *           schema:
  *             type: object
+ *             required: [csvFile]
  *             properties:
  *               csvFile:
  *                 type: string
  *                 format: binary
- *                 description: CSV file to upload
+ *                 description: CSV file (max 20 MB)
  *               source_period_label:
  *                 type: string
  *                 example: "JUNE 2023-NOVEMBER 2025"
- *                 description: Period label for the records
  *     responses:
- *       200:
- *         description: CSV processed successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                 message:
- *                   type: string
- *       400:
- *         description: Bad request (invalid file format or missing file)
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Server error
+ *       200: { description: CSV processed successfully }
+ *       400: { description: Missing or invalid file }
+ *       401: { description: Unauthorized }
+ *       500: { description: Server error }
  */
-router.post(
-  '/upload-csv',
-  authMiddleware,
-  debtorRecordController.uploadCSV
-);
+router.post("/upload-csv", authMiddleware, ctrl.uploadCSV);
+
+/**
+ * @swagger
+ * /api/v1/debtor-records/upload-json:
+ *   post:
+ *     summary: Upload a JSON file of debtor records
+ *     description: >
+ *       Accepts either a normalised JSON array `[{ client_name, asset_no, … }]`
+ *       **or** the raw positional-key JSON produced by Excel-to-JSON converters
+ *       (keys like `"19.12.25"`, `"__1"`, etc.).  The service auto-detects the format
+ *       and skips metadata rows automatically.
+ *     tags: [Debtor Records]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required: [jsonFile]
+ *             properties:
+ *               jsonFile:
+ *                 type: string
+ *                 format: binary
+ *                 description: JSON file (max 20 MB)
+ *               source_period_label:
+ *                 type: string
+ *                 example: "JUNE 2023-NOVEMBER 2025"
+ *     responses:
+ *       200: { description: JSON processed successfully }
+ *       400: { description: Missing or invalid file }
+ *       401: { description: Unauthorized }
+ *       500: { description: Server error }
+ */
+router.post("/upload-json", authMiddleware, ctrl.uploadJSON);
+
+/**
+ * @swagger
+ * /api/v1/debtor-records/upload:
+ *   post:
+ *     summary: Upload a CSV **or** JSON file (auto-detected by file extension)
+ *     description: Single endpoint that accepts `.csv` or `.json` files.
+ *     tags: [Debtor Records]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required: [file]
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *               source_period_label:
+ *                 type: string
+ *     responses:
+ *       200: { description: File processed successfully }
+ *       400: { description: Missing or unsupported file }
+ *       401: { description: Unauthorized }
+ *       500: { description: Server error }
+ */
+router.post("/upload", authMiddleware, ctrl.uploadFile);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATS & EXPORT  (must come before /:id to avoid route collision)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @swagger
+ * /api/v1/debtor-records/stats:
+ *   get:
+ *     summary: Get aggregate statistics (by status, by branch, totals)
+ *     tags: [Debtor Records]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Statistics retrieved successfully }
+ *       401: { description: Unauthorized }
+ *       500: { description: Server error }
+ */
+router.get("/stats", authMiddleware, ctrl.getStatistics);
+
+/**
+ * @swagger
+ * /api/v1/debtor-records/export:
+ *   get:
+ *     summary: Export debtor records (CSV / Excel) — placeholder
+ *     tags: [Debtor Records]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: format
+ *         schema: { type: string, enum: [csv, excel], default: csv }
+ *       - in: query
+ *         name: status
+ *         schema: { type: string }
+ *       - in: query
+ *         name: branch
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Export file generated }
+ *       401: { description: Unauthorized }
+ *       500: { description: Server error }
+ */
+router.get("/export", authMiddleware, async (req, res) => {
+  // TODO: implement CSV / Excel export
+  res
+    .status(200)
+    .json({
+      success: true,
+      message: "Export endpoint — implement CSV/Excel generation here",
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COLLECTION ENDPOINTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @swagger
+ * /api/v1/debtor-records:
+ *   get:
+ *     summary: List debtor records with pagination, search and filters
+ *     tags: [Debtor Records]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 50 }
+ *       - in: query
+ *         name: sortBy
+ *         schema: { type: string, default: created_at }
+ *       - in: query
+ *         name: sortOrder
+ *         schema: { type: string, enum: [asc, desc], default: desc }
+ *       - in: query
+ *         name: search
+ *         schema: { type: string }
+ *         description: Searches client_name, asset_no, reg_or_serial_no, asset
+ *       - in: query
+ *         name: status
+ *         schema: { type: string }
+ *       - in: query
+ *         name: branch
+ *         schema: { type: string }
+ *       - in: query
+ *         name: startDate
+ *         schema: { type: string, format: date }
+ *       - in: query
+ *         name: endDate
+ *         schema: { type: string, format: date }
+ *     responses:
+ *       200: { description: Records retrieved successfully }
+ *       401: { description: Unauthorized }
+ *       500: { description: Server error }
+ */
+router.get("/", authMiddleware, ctrl.getAllRecords);
 
 /**
  * @swagger
@@ -76,251 +242,44 @@ router.post(
  *   post:
  *     summary: Create a single debtor record
  *     tags: [Debtor Records]
- *     security:
- *       - bearerAuth: []
+ *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - client_name
- *             properties:
- *               asset_no:
- *                 type: string
- *               client_name:
- *                 type: string
- *               principal:
- *                 type: number
- *               interest:
- *                 type: number
- *               period:
- *                 type: string
- *               amount_due:
- *                 type: number
- *               penalties:
- *                 type: number
- *               total_due:
- *                 type: number
- *               profit_loss_on_sale:
- *                 type: number
- *               date_of:
- *                 type: string
- *                 format: date
- *               due_date:
- *                 type: string
- *                 format: date
- *               asset:
- *                 type: string
- *               specs:
- *                 type: string
- *               asset_code:
- *                 type: string
- *               reg_or_serial_no:
- *                 type: string
- *               account_status:
- *                 type: string
- *               contact_details:
- *                 type: string
- *               branch:
- *                 type: string
+ *           schema: { $ref: '#/components/schemas/DebtorRecordInput' }
  *     responses:
- *       201:
- *         description: Record created successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                 message:
- *                   type: string
- *       400:
- *         description: Bad request (validation error)
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Server error
+ *       201: { description: Record created }
+ *       400: { description: Validation error }
+ *       401: { description: Unauthorized }
  */
-router.post(
-  '/',
-  authMiddleware,
-  debtorRecordController.createRecord
-);
+router.post("/", authMiddleware, ctrl.createRecord);
 
 /**
  * @swagger
  * /api/v1/debtor-records/bulk:
  *   post:
- *     summary: Create multiple debtor records
+ *     summary: Create multiple debtor records from a JSON array in the request body
  *     tags: [Debtor Records]
- *     security:
- *       - bearerAuth: []
+ *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: array
- *             items:
- *               type: object
- *               required:
- *                 - client_name
- *               properties:
- *                 asset_no:
- *                   type: string
- *                 client_name:
- *                   type: string
- *                 principal:
- *                   type: number
- *                 interest:
- *                   type: number
- *                 period:
- *                   type: string
- *                 amount_due:
- *                   type: number
- *                 penalties:
- *                   type: number
- *                 total_due:
- *                   type: number
- *                 profit_loss_on_sale:
- *                   type: number
- *                 date_of:
- *                   type: string
- *                   format: date
- *                 due_date:
- *                   type: string
- *                   format: date
- *                 asset:
- *                   type: string
- *                 specs:
- *                   type: string
- *                 asset_code:
- *                   type: string
- *                 reg_or_serial_no:
- *                   type: string
- *                 account_status:
- *                   type: string
- *                 contact_details:
- *                   type: string
- *                 branch:
- *                   type: string
+ *             items: { $ref: '#/components/schemas/DebtorRecordInput' }
  *     responses:
- *       201:
- *         description: All records created successfully
- *       207:
- *         description: Multi-status (some records failed)
- *       400:
- *         description: Bad request
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Server error
+ *       201: { description: All records created }
+ *       207: { description: Multi-status — some records failed }
+ *       400: { description: Bad request }
+ *       401: { description: Unauthorized }
  */
-router.post(
-  '/bulk',
-  authMiddleware,
-  debtorRecordController.createMultipleRecords
-);
+router.post("/bulk", authMiddleware, ctrl.createMultipleRecords);
 
-/**
- * @swagger
- * /api/v1/debtor-records:
- *   get:
- *     summary: Get all debtor records with pagination
- *     tags: [Debtor Records]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: page
- *         schema:
- *           type: integer
- *           default: 1
- *         description: Page number
- *       - in: query
- *         name: limit
- *         schema:
- *           type: integer
- *           default: 50
- *         description: Number of records per page
- *       - in: query
- *         name: sortBy
- *         schema:
- *           type: string
- *           default: created_at
- *         description: Field to sort by
- *       - in: query
- *         name: sortOrder
- *         schema:
- *           type: string
- *           enum: [asc, desc]
- *           default: desc
- *         description: Sort order
- *       - in: query
- *         name: search
- *         schema:
- *           type: string
- *         description: Search term (client name, asset no, etc.)
- *       - in: query
- *         name: status
- *         schema:
- *           type: string
- *         description: Filter by account status
- *       - in: query
- *         name: branch
- *         schema:
- *           type: string
- *         description: Filter by branch
- *       - in: query
- *         name: startDate
- *         schema:
- *           type: string
- *           format: date
- *         description: Filter records created after this date
- *       - in: query
- *         name: endDate
- *         schema:
- *           type: string
- *           format: date
- *         description: Filter records created before this date
- *     responses:
- *       200:
- *         description: Records retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     records:
- *                       type: array
- *                       items:
- *                         type: object
- *                     pagination:
- *                       type: object
- *                     totals:
- *                       type: object
- *                 message:
- *                   type: string
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Server error
- */
-router.get(
-  '/',
-  authMiddleware,
-  debtorRecordController.getAllRecords
-);
+// ═══════════════════════════════════════════════════════════════════════════════
+// SINGLE-RECORD ENDPOINTS
+// ═══════════════════════════════════════════════════════════════════════════════
 
 /**
  * @swagger
@@ -328,32 +287,19 @@ router.get(
  *   get:
  *     summary: Get a single debtor record by ID
  *     tags: [Debtor Records]
- *     security:
- *       - bearerAuth: []
+ *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
- *         schema:
- *           type: string
- *         description: Debtor record ID
+ *         schema: { type: string }
  *     responses:
- *       200:
- *         description: Record retrieved successfully
- *       400:
- *         description: Invalid ID format
- *       404:
- *         description: Record not found
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Server error
+ *       200: { description: Record retrieved }
+ *       400: { description: Invalid ID }
+ *       404: { description: Record not found }
+ *       401: { description: Unauthorized }
  */
-router.get(
-  '/:id',
-  authMiddleware,
-  debtorRecordController.getRecordById
-);
+router.get("/:id", authMiddleware, ctrl.getRecordById);
 
 /**
  * @swagger
@@ -361,77 +307,24 @@ router.get(
  *   put:
  *     summary: Update a debtor record
  *     tags: [Debtor Records]
- *     security:
- *       - bearerAuth: []
+ *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
- *         schema:
- *           type: string
- *         description: Debtor record ID
+ *         schema: { type: string }
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               asset_no:
- *                 type: string
- *               client_name:
- *                 type: string
- *               principal:
- *                 type: number
- *               interest:
- *                 type: number
- *               period:
- *                 type: string
- *               amount_due:
- *                 type: number
- *               penalties:
- *                 type: number
- *               total_due:
- *                 type: number
- *               profit_loss_on_sale:
- *                 type: number
- *               date_of:
- *                 type: string
- *                 format: date
- *               due_date:
- *                 type: string
- *                 format: date
- *               asset:
- *                 type: string
- *               specs:
- *                 type: string
- *               asset_code:
- *                 type: string
- *               reg_or_serial_no:
- *                 type: string
- *               account_status:
- *                 type: string
- *               contact_details:
- *                 type: string
- *               branch:
- *                 type: string
+ *           schema: { $ref: '#/components/schemas/DebtorRecordInput' }
  *     responses:
- *       200:
- *         description: Record updated successfully
- *       400:
- *         description: Bad request
- *       404:
- *         description: Record not found
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Server error
+ *       200: { description: Record updated }
+ *       400: { description: Bad request }
+ *       404: { description: Record not found }
+ *       401: { description: Unauthorized }
  */
-router.put(
-  '/:id',
-  authMiddleware,
-  debtorRecordController.updateRecord
-);
+router.put("/:id", authMiddleware, ctrl.updateRecord);
 
 /**
  * @swagger
@@ -439,134 +332,18 @@ router.put(
  *   delete:
  *     summary: Delete a debtor record
  *     tags: [Debtor Records]
- *     security:
- *       - bearerAuth: []
+ *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
- *         schema:
- *           type: string
- *         description: Debtor record ID
+ *         schema: { type: string }
  *     responses:
- *       200:
- *         description: Record deleted successfully
- *       400:
- *         description: Invalid ID format
- *       404:
- *         description: Record not found
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Server error
+ *       200: { description: Record deleted }
+ *       400: { description: Invalid ID }
+ *       404: { description: Record not found }
+ *       401: { description: Unauthorized }
  */
-router.delete(
-  '/:id',
-  authMiddleware,
-  debtorRecordController.deleteRecord
-);
-
-/**
- * @swagger
- * /api/v1/debtor-records/stats:
- *   get:
- *     summary: Get statistics for debtor records
- *     tags: [Debtor Records]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Statistics retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     byStatus:
- *                       type: array
- *                     byBranch:
- *                       type: array
- *                     totals:
- *                       type: object
- *                 message:
- *                   type: string
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Server error
- */
-router.get(
-  '/stats',
-  authMiddleware,
-  debtorRecordController.getStatistics
-);
-
-/**
- * @swagger
- * /api/v1/debtor-records/export:
- *   get:
- *     summary: Export debtor records to CSV
- *     tags: [Debtor Records]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: format
- *         schema:
- *           type: string
- *           enum: [csv, excel]
- *           default: csv
- *         description: Export format
- *       - in: query
- *         name: status
- *         schema:
- *           type: string
- *         description: Filter by account status
- *       - in: query
- *         name: branch
- *         schema:
- *           type: string
- *         description: Filter by branch
- *     responses:
- *       200:
- *         description: Export file generated
- *         content:
- *           text/csv:
- *             schema:
- *               type: string
- *               format: binary
- *           application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
- *             schema:
- *               type: string
- *               format: binary
- *       401:
- *         description: Unauthorized
- *       500:
- *         description: Server error
- */
-router.get(
-  '/export',
-  authMiddleware,
-  async (req, res) => {
-    try {
-      // Export functionality would go here
-      // This is a placeholder for export implementation
-      res.status(200).json({
-        success: true,
-        message: 'Export endpoint - implement CSV/Excel generation here'
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-  }
-);
+router.delete("/:id", authMiddleware, ctrl.deleteRecord);
 
 module.exports = router;
