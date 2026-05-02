@@ -12,20 +12,9 @@ const DebtorRecord = require("../models/debtorRecord.model");
 
 // ---------------- HELPERS ----------------
 
-// Normalize CSV headers
-const normalizeKey = (key) => {
-  return key?.toString().trim().toUpperCase().replace(/\s+/g, " ");
-};
+const normalizeKey = (key) =>
+  key?.toString().trim().toUpperCase().replace(/\s+/g, " ");
 
-// Flexible getter for multiple possible column names
-const get = (row, keys) => {
-  for (const key of keys) {
-    if (row[key]) return row[key];
-  }
-  return null;
-};
-
-// Parse currency
 const parseCurrency = (value) => {
   if (!value) return 0;
   const cleaned = String(value).replace(/[$,"]/g, "").trim();
@@ -33,7 +22,6 @@ const parseCurrency = (value) => {
   return isNaN(num) ? 0 : num;
 };
 
-// Parse dates
 const parseDate = (value) => {
   if (!value) return null;
 
@@ -63,32 +51,36 @@ const clean = (val) => (val ? String(val).trim() : null);
 
 const processCSVFile = async (filePath, options = {}) => {
   const results = [];
-  let sampleLogged = 0;
+  let headers = null;
+  let isHeaderFound = false;
 
   return new Promise((resolve, reject) => {
     fs.createReadStream(filePath)
-      .pipe(
-        csv({
-          mapHeaders: ({ header }) => normalizeKey(header),
-        }),
-      )
+      .pipe(csv({ headers: false })) // IMPORTANT
       .on("data", (row) => {
-        // DEBUG: show first 3 rows
-        if (sampleLogged < 3) {
-          console.log("🧪 SAMPLE ROW:", row);
-          sampleLogged++;
+        const values = Object.values(row).map((v) => String(v).trim());
+
+        // 🔍 Detect header row
+        if (!isHeaderFound) {
+          if (values.includes("ASSET NO") && values.includes("CLIENT NAME")) {
+            headers = values.map(normalizeKey);
+            isHeaderFound = true;
+            console.log("✅ Header detected:", headers);
+          }
+          return;
         }
 
-        const clientName = clean(get(row, ["CLIENT NAME", "CLIENT", "NAME"]));
+        // Build row object using detected headers
+        const obj = {};
+        headers.forEach((h, i) => {
+          obj[h] = values[i];
+        });
 
-        const assetNo = clean(
-          get(row, ["ASSET NO", "ASSET NO.", "ASSET NUMBER"]),
-        );
+        const clientName = clean(obj["CLIENT NAME"]);
+        const assetNo = clean(obj["ASSET NO"]);
 
-        // Skip ONLY truly empty rows
         if (!clientName && !assetNo) return;
-
-        if (clientName && clientName.toUpperCase().includes("TOTAL")) return;
+        if (clientName?.toUpperCase().includes("TOTAL")) return;
 
         const record = {
           source: options.source || path.basename(filePath),
@@ -97,31 +89,28 @@ const processCSVFile = async (filePath, options = {}) => {
           asset_no: assetNo,
           client_name: clientName,
 
-          principal: parseCurrency(get(row, ["PRINCIPAL"])),
-          interest: parseCurrency(get(row, ["INTEREST"])),
-          period: clean(get(row, ["PERIOD"])),
+          principal: parseCurrency(obj["PRINCIPAL"]),
+          interest: parseCurrency(obj["INTEREST"]),
+          period: clean(obj["PERIOD"]),
 
-          amount_due: parseCurrency(get(row, ["AMOUNT DUE"])),
-          penalties: parseCurrency(get(row, ["PENALTIES"])),
-          total_due: parseCurrency(get(row, ["TOTAL DUE"])),
-          profit_loss_on_sale: parseCurrency(get(row, ["P/L ON SALE"])),
+          amount_due: parseCurrency(obj["AMOUNT DUE"]),
+          penalties: parseCurrency(obj["PENALTIES"]),
+          total_due: parseCurrency(obj["TOTAL DUE"]),
+          profit_loss_on_sale: parseCurrency(obj["P/L ON SALE"]),
 
-          date_of: parseDate(get(row, ["DATE OF DISBURSEMENT", "DATE OF"])),
-          due_date: parseDate(get(row, ["DUE DATE"])),
+          date_of: parseDate(obj["DATE OF"]),
+          due_date: parseDate(obj["DUE DATE"]),
 
-          asset: clean(get(row, ["ASSET"])),
-          specs: clean(get(row, ["SPECS"])),
-          asset_code: clean(get(row, ["ASSET CODE"])),
+          asset: clean(obj["ASSET"]),
+          specs: clean(obj["SPECS"]),
+          asset_code: clean(obj["ASSET CODE"]),
+          reg_or_serial_no: clean(obj["REG /SERIAL NO."]),
 
-          reg_or_serial_no: clean(
-            get(row, ["REG /SERIAL NO.", "REG/SERIAL NO", "SERIAL NO"]),
-          ),
+          account_status: clean(obj["ACCOUNT STATUS"]),
+          contact_details: clean(obj["CONTACT DETAILS"]),
+          branch: clean(obj["BRANCH"]),
 
-          account_status: clean(get(row, ["ACCOUNT STATUS"])),
-          contact_details: clean(get(row, ["CONTACT DETAILS"])),
-          branch: clean(get(row, ["BRANCH"])),
-
-          raw: row,
+          raw: obj,
           imported_at: new Date(),
         };
 
@@ -148,30 +137,16 @@ const importDebtorsToMongoDB = async (filePath, options = {}) => {
 
     console.log(`📊 Processing ${data.length} records...\n`);
 
-    const bulkOps = data.map((record) => {
-      let filter = {};
-
-      if (record.asset_no && record.reg_or_serial_no) {
-        filter = {
+    const bulkOps = data.map((record) => ({
+      updateOne: {
+        filter: {
           asset_no: record.asset_no,
-          reg_or_serial_no: record.reg_or_serial_no,
-        };
-      } else {
-        filter = {
           client_name: record.client_name,
-          asset: record.asset,
-          date_of: record.date_of,
-        };
-      }
-
-      return {
-        updateOne: {
-          filter,
-          update: { $set: record },
-          upsert: true,
         },
-      };
-    });
+        update: { $set: record },
+        upsert: true,
+      },
+    }));
 
     const result = await DebtorRecord.bulkWrite(bulkOps);
 

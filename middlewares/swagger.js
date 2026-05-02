@@ -12,13 +12,14 @@ const options = {
     },
     servers: [
       {
-        url: "http://13.61.185.238:7070",
-        description: "AWS Short term server",
+        url: "https://api.backend.rtcapital.co.zw",
+        description: "AWS server",
       },
       {
-        url: "https://real-time-capital-backend.onrender.com",
-        description: "Render server",
+        url: "http://13.60.240.67:7070",
+        description: "AWS Short term server",
       },
+,
       {
         url: "http://localhost:7070",
         description: "Local server",
