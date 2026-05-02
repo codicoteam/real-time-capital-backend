@@ -1,209 +1,44 @@
-// scripts/importDebtorsFromCSVAdvanced.js
-
-const fs = require("fs");
-const path = require("path");
-const csv = require("csv-parser");
 const mongoose = require("mongoose");
-const dotenv = require("dotenv");
 
-dotenv.config();
+const DebtorRecordSchema = new mongoose.Schema(
+  {
+    source: { type: String, default: "Debtors_list_final.csv" },
+    source_period_label: { type: String }, // e.g. "JUNE 2023-NOVEMBER 2025"
 
-const DebtorRecord = require("../models/debtorRecord.model");
+    asset_no: { type: String, index: true, trim: true },
+    client_name: { type: String, index: true, trim: true },
 
-// ---------------- HELPERS ----------------
+    principal: { type: Number },
+    interest: { type: Number },
+    period: { type: String },
 
-// Normalize CSV headers
-const normalizeKey = (key) => {
-  return key?.toString().trim().toUpperCase().replace(/\s+/g, " ");
-};
+    amount_due: { type: Number },
+    penalties: { type: Number },
+    total_due: { type: Number },
+    profit_loss_on_sale: { type: Number },
 
-// Flexible getter for multiple possible column names
-const get = (row, keys) => {
-  for (const key of keys) {
-    if (row[key]) return row[key];
-  }
-  return null;
-};
+    date_of: { type: Date },     // "DATE OF" column in sheet (meaning depends on sheet)
+    due_date: { type: Date },
 
-// Parse currency
-const parseCurrency = (value) => {
-  if (!value) return 0;
-  const cleaned = String(value).replace(/[$,"]/g, "").trim();
-  const num = parseFloat(cleaned);
-  return isNaN(num) ? 0 : num;
-};
+    asset: { type: String },     // item type/name
+    specs: { type: String },
+    asset_code: { type: String },
+    reg_or_serial_no: { type: String, index: true, sparse: true },
 
-// Parse dates
-const parseDate = (value) => {
-  if (!value) return null;
+    account_status: { type: String }, // e.g. PAID/UNPAID/DEFAULT etc
+    contact_details: { type: String },
+    branch: { type: String },
 
-  let cleaned = String(value).trim();
+    // If you want to link matching customer later:
+    matched_user: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
 
-  if (cleaned.includes(".")) {
-    const [d, m, y] = cleaned.split(".");
-    let year = parseInt(y, 10);
-    if (year < 100) year += 2000;
-    return new Date(year, m - 1, d);
-  }
+    // Keep original row data for traceability
+    raw: { type: mongoose.Schema.Types.Mixed },
+    imported_at: { type: Date, default: Date.now },
+  },
+  { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
+);
 
-  if (cleaned.includes("/")) {
-    const [d, m, y] = cleaned.split("/");
-    let year = parseInt(y, 10);
-    if (year < 100) year += 2000;
-    return new Date(year, m - 1, d);
-  }
+DebtorRecordSchema.index({ client_name: 1, reg_or_serial_no: 1 });
 
-  const date = new Date(cleaned);
-  return isNaN(date.getTime()) ? null : date;
-};
-
-const clean = (val) => (val ? String(val).trim() : null);
-
-// ---------------- PROCESS CSV ----------------
-
-const processCSVFile = async (filePath, options = {}) => {
-  const results = [];
-  let sampleLogged = 0;
-
-  return new Promise((resolve, reject) => {
-    fs.createReadStream(filePath)
-      .pipe(
-        csv({
-          mapHeaders: ({ header }) => normalizeKey(header),
-        }),
-      )
-      .on("data", (row) => {
-        // DEBUG: show first 3 rows
-        if (sampleLogged < 3) {
-          console.log("🧪 SAMPLE ROW:", row);
-          sampleLogged++;
-        }
-
-        const clientName = clean(get(row, ["CLIENT NAME", "CLIENT", "NAME"]));
-
-        const assetNo = clean(
-          get(row, ["ASSET NO", "ASSET NO.", "ASSET NUMBER"]),
-        );
-
-        // Skip ONLY truly empty rows
-        if (!clientName && !assetNo) return;
-
-        if (clientName && clientName.toUpperCase().includes("TOTAL")) return;
-
-        const record = {
-          source: options.source || path.basename(filePath),
-          source_period_label: options.periodLabel || null,
-
-          asset_no: assetNo,
-          client_name: clientName,
-
-          principal: parseCurrency(get(row, ["PRINCIPAL"])),
-          interest: parseCurrency(get(row, ["INTEREST"])),
-          period: clean(get(row, ["PERIOD"])),
-
-          amount_due: parseCurrency(get(row, ["AMOUNT DUE"])),
-          penalties: parseCurrency(get(row, ["PENALTIES"])),
-          total_due: parseCurrency(get(row, ["TOTAL DUE"])),
-          profit_loss_on_sale: parseCurrency(get(row, ["P/L ON SALE"])),
-
-          date_of: parseDate(get(row, ["DATE OF DISBURSEMENT", "DATE OF"])),
-          due_date: parseDate(get(row, ["DUE DATE"])),
-
-          asset: clean(get(row, ["ASSET"])),
-          specs: clean(get(row, ["SPECS"])),
-          asset_code: clean(get(row, ["ASSET CODE"])),
-
-          reg_or_serial_no: clean(
-            get(row, ["REG /SERIAL NO.", "REG/SERIAL NO", "SERIAL NO"]),
-          ),
-
-          account_status: clean(get(row, ["ACCOUNT STATUS"])),
-          contact_details: clean(get(row, ["CONTACT DETAILS"])),
-          branch: clean(get(row, ["BRANCH"])),
-
-          raw: row,
-          imported_at: new Date(),
-        };
-
-        results.push(record);
-      })
-      .on("end", () => resolve(results))
-      .on("error", reject);
-  });
-};
-
-// ---------------- IMPORT ----------------
-
-const importDebtorsToMongoDB = async (filePath, options = {}) => {
-  try {
-    await mongoose.connect(process.env.MONGODB_URI);
-    console.log("✅ Connected to MongoDB\n");
-
-    const data = await processCSVFile(filePath, options);
-
-    if (!data.length) {
-      console.log("❌ No valid data found");
-      return;
-    }
-
-    console.log(`📊 Processing ${data.length} records...\n`);
-
-    const bulkOps = data.map((record) => {
-      let filter = {};
-
-      if (record.asset_no && record.reg_or_serial_no) {
-        filter = {
-          asset_no: record.asset_no,
-          reg_or_serial_no: record.reg_or_serial_no,
-        };
-      } else {
-        filter = {
-          client_name: record.client_name,
-          asset: record.asset,
-          date_of: record.date_of,
-        };
-      }
-
-      return {
-        updateOne: {
-          filter,
-          update: { $set: record },
-          upsert: true,
-        },
-      };
-    });
-
-    const result = await DebtorRecord.bulkWrite(bulkOps);
-
-    console.log("=".repeat(50));
-    console.log("📊 IMPORT SUMMARY");
-    console.log("=".repeat(50));
-    console.log(`📝 Inserted: ${result.upsertedCount}`);
-    console.log(`🔄 Modified: ${result.modifiedCount}`);
-    console.log(`📦 Total: ${data.length}`);
-    console.log("=".repeat(50));
-  } catch (err) {
-    console.error("❌ Error:", err.message);
-  } finally {
-    await mongoose.disconnect();
-    console.log("\n🔌 Disconnected from MongoDB");
-  }
-};
-
-// ---------------- RUN ----------------
-
-const args = process.argv.slice(2);
-
-const filePath = args[0];
-
-const options = {
-  source: args.find((a) => a.startsWith("--source="))?.split("=")[1],
-  periodLabel: args.find((a) => a.startsWith("--period="))?.split("=")[1],
-};
-
-if (!filePath) {
-  console.log("❗ Please provide CSV file path");
-  process.exit(1);
-}
-
-importDebtorsToMongoDB(filePath, options);
+module.exports = mongoose.model("DebtorRecord", DebtorRecordSchema);

@@ -149,6 +149,5 @@ UserSchema.index({ email: 1 });
 UserSchema.index({ phone: 1 });
 UserSchema.index({ roles: 1 });
 UserSchema.index({ kyc_verification_status: 1 });
-UserSchema.index({ fcm_tokens: 1 });
 
 module.exports = mongoose.model("User", UserSchema);
