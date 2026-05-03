@@ -1,16 +1,18 @@
-// app.js
+// server.js
 const express = require("express");
-const http = require("http");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const dotenv = require("dotenv");
 const admin = require("firebase-admin");
+const path = require("path");
 
-// DB + Socket config
+// Load env FIRST
+dotenv.config();
+
+// DB
 const connectDB = require("./configs/db_config");
-// const initChatSocket = require("./config/socket_config");
 
-// Swagger setup
+// Swagger
 const setupSwagger = require("./middlewares/swagger");
 
 // Routers
@@ -38,60 +40,71 @@ const smsRouter = require("./routers/sms_routes");
 const emailRouter = require("./routers/email_routes");
 const notificationsRouter = require("./routers/notifications_router");
 
-// Auction service (automatic loan expiry & notifications)
+// Services
 const auctionService = require("./services/assets_auction_service");
 
-// Load env
-dotenv.config();
-
-// Initialize Firebase Admin SDK for push notifications
+// ================= FIREBASE INIT (FIXED) =================
 if (!admin.apps.length) {
   try {
-    // Check if service account file exists (for production)
+    // OPTION 1: Use service account file (recommended if file exists)
     if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
-      const serviceAccount = require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
+      const serviceAccountPath = path.join(
+        __dirname,
+        process.env.FIREBASE_SERVICE_ACCOUNT_PATH,
+      );
+
+      const serviceAccount = require(serviceAccountPath);
+
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
       });
-      console.log("Firebase Admin SDK initialized using service account file");
-    } else if (process.env.FIREBASE_PROJECT_ID && 
-               process.env.FIREBASE_PRIVATE_KEY && 
-               process.env.FIREBASE_CLIENT_EMAIL) {
-      // Use environment variables (for production without file)
+
+      console.log("✅ Firebase initialized using service account file");
+    }
+
+    // OPTION 2: Use ENV variables (best for production)
+    else if (
+      process.env.FIREBASE_PROJECT_ID &&
+      process.env.FIREBASE_PRIVATE_KEY &&
+      process.env.FIREBASE_CLIENT_EMAIL
+    ) {
       admin.initializeApp({
         credential: admin.credential.cert({
           projectId: process.env.FIREBASE_PROJECT_ID,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
           clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
         }),
       });
-      console.log("Firebase Admin SDK initialized using environment variables");
-    } else {
-      // Try default credentials (for local development with GOOGLE_APPLICATION_CREDENTIALS)
+
+      console.log("✅ Firebase initialized using ENV variables");
+    }
+
+    // OPTION 3: Fallback (not recommended for production)
+    else {
       admin.initializeApp();
-      console.log("Firebase Admin SDK initialized using default credentials");
+      console.log("⚠️ Firebase initialized using default credentials");
     }
   } catch (error) {
-    console.error("Firebase Admin SDK initialization failed:", error.message);
-    console.warn("Push notifications will not work. Please check your Firebase configuration.");
+    console.error("❌ Firebase initialization failed:", error);
+    console.warn("⚠️ Push notifications will NOT work");
   }
 }
+// ========================================================
 
 // Connect DB
 connectDB();
 
 const app = express();
-// const server = http.createServer(app);
 
 // Middleware
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.json());
 
-// Swagger docs
+// Swagger
 setupSwagger(app);
 
-// REST Routes
+// Routes
 app.use("/api/v1/users", userRouter);
 app.use("/api/v1/debtor-records", debtorRecordRouter);
 app.use("/api/v1/attachments", attachmentRouter);
@@ -116,21 +129,19 @@ app.use("/api/v1/sms", smsRouter);
 app.use("/api/v1/email", emailRouter);
 app.use("/api/v1/notifications", notificationsRouter);
 
-// Global error handler (REST)
+// Global error handler
 app.use((err, req, res, next) => {
-  console.error("Global error handler:", err.stack || err);
+  console.error("❌ Global error:", err.stack || err);
   res.status(500).json({ message: "Something went wrong!" });
 });
 
-// Init Socket.IO (chat + tracking now)
-// initChatSocket(server);
-
 // Start server
 const PORT = process.env.PORT || 7070;
+
 app.listen(PORT, () => {
   console.log(`🚗 Server running on port ${PORT}`);
-  console.log(`📘 Swagger docs available at http://localhost:${PORT}/api-docs`);
+  console.log(`📘 Swagger docs: http://localhost:${PORT}/api-docs`);
 
-  // Start auction scheduler (automatic processing of expired loans & warnings)
+  // Start background jobs
   auctionService.startAuctionScheduler();
 });
