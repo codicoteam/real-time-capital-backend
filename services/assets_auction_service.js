@@ -21,6 +21,52 @@ async function generateAuctionNo() {
 }
 
 // ─────────────────────────────────────────────
+// Helper – calculate total amount owed at auction
+//
+// Breaks down into:
+//   1. current_balance          – remaining principal (already reflects any payments)
+//   2. accrued interest         – interest_rate_percent applied to current_balance
+//                                 pro-rated by how many interest periods have elapsed
+//                                 since start_date (minimum 1 full period)
+//   3. storage charge           – storage_charge_percent of current_balance
+//                                 (flat, one-off charge for holding the asset)
+//   4. late penalty             – penalty_percent of current_balance
+//                                 (applied once because the loan is now in default)
+//
+// All percentages are stored as plain numbers (e.g. 4 = 4 %).
+// ─────────────────────────────────────────────
+function calculateAuctionAmount(loan) {
+  const balance = loan.current_balance;
+
+  // How many full interest periods have elapsed since the loan started?
+  const now = new Date();
+  const startDate = new Date(loan.start_date);
+  const elapsedDays = Math.max(
+    0,
+    Math.floor((now - startDate) / (1000 * 60 * 60 * 24)),
+  );
+  const periodDays = loan.interest_period_days || 30;
+  const periods = Math.max(1, Math.floor(elapsedDays / periodDays));
+
+  const interestCharge = balance * (loan.interest_rate_percent / 100) * periods;
+
+  const storageCharge = balance * (loan.storage_charge_percent / 100);
+
+  const penaltyCharge = balance * (loan.penalty_percent / 100);
+
+  const total = balance + interestCharge + storageCharge + penaltyCharge;
+
+  return {
+    base_balance: balance,
+    interest_charge: parseFloat(interestCharge.toFixed(2)),
+    storage_charge: parseFloat(storageCharge.toFixed(2)),
+    penalty_charge: parseFloat(penaltyCharge.toFixed(2)),
+    total: parseFloat(total.toFixed(2)),
+    periods_elapsed: periods,
+  };
+}
+
+// ─────────────────────────────────────────────
 // Email – asset moved to auction
 // ─────────────────────────────────────────────
 async function sendAuctionNotificationEmail({
@@ -29,6 +75,7 @@ async function sendAuctionNotificationEmail({
   asset,
   loan,
   auction,
+  breakdown,
 }) {
   const subject = `URGENT: Your Asset Has Been Listed for Auction – Loan #${loan.loan_no}`;
   const title = "Asset Listed for Auction";
@@ -72,14 +119,42 @@ async function sendAuctionNotificationEmail({
               <td style="padding:4px 0;color:#333;font-size:12px;">${loan.loan_no}</td>
             </tr>
             <tr>
-              <td style="padding:4px 0;color:#666;font-size:12px;">Outstanding Balance:</td>
-              <td style="padding:4px 0;color:#c53030;font-size:12px;font-weight:bold;">
-                $${loan.current_balance.toLocaleString()}
+              <td style="padding:4px 0;color:#666;font-size:12px;border-top:1px solid #f5c6c6;padding-top:10px;">Principal Balance:</td>
+              <td style="padding:4px 0;color:#333;font-size:12px;border-top:1px solid #f5c6c6;padding-top:10px;">
+                $${breakdown.base_balance.toLocaleString()}
               </td>
             </tr>
             <tr>
-              <td style="padding:4px 0;color:#666;font-size:12px;">Auction No:</td>
-              <td style="padding:4px 0;color:#333;font-size:12px;">${auction.auction_no}</td>
+              <td style="padding:4px 0;color:#666;font-size:12px;">
+                Interest (${loan.interest_rate_percent}% × ${breakdown.periods_elapsed} period${breakdown.periods_elapsed !== 1 ? "s" : ""}):
+              </td>
+              <td style="padding:4px 0;color:#333;font-size:12px;">
+                $${breakdown.interest_charge.toLocaleString()}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:4px 0;color:#666;font-size:12px;">Storage Charge (${loan.storage_charge_percent}%):</td>
+              <td style="padding:4px 0;color:#333;font-size:12px;">
+                $${breakdown.storage_charge.toLocaleString()}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:4px 0;color:#666;font-size:12px;">Late Penalty (${loan.penalty_percent}%):</td>
+              <td style="padding:4px 0;color:#333;font-size:12px;">
+                $${breakdown.penalty_charge.toLocaleString()}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:4px 0;color:#c53030;font-size:12px;font-weight:bold;border-top:2px solid #e53e3e;padding-top:8px;">
+                Total Outstanding:
+              </td>
+              <td style="padding:4px 0;color:#c53030;font-size:12px;font-weight:bold;border-top:2px solid #e53e3e;padding-top:8px;">
+                $${breakdown.total.toLocaleString()}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:4px 0;color:#666;font-size:12px;padding-top:10px;">Auction No:</td>
+              <td style="padding:4px 0;color:#333;font-size:12px;padding-top:10px;">${auction.auction_no}</td>
             </tr>
             <tr>
               <td style="padding:4px 0;color:#666;font-size:12px;">Auction Starts:</td>
@@ -200,13 +275,25 @@ async function moveLoanToAuction(loan) {
     const asset = await Asset.findById(loan.asset).session(session);
     if (!asset) throw new Error(`Asset not found for loan ${loan._id}`);
 
-    // Auction starts immediately (or you can offset by grace_days if you prefer)
+    // ── Calculate the full amount owed including all charges ──
+    const breakdown = calculateAuctionAmount(loan);
+
+    // Starting bid = max(evaluated asset value, total amount owed)
+    // This ensures the auction at minimum covers what is owed.
+    // If the asset is worth more we use the higher value so the customer
+    // benefits from any surplus after the debt is recovered.
+    const startingBid = asset.evaluated_value
+      ? Math.max(asset.evaluated_value, breakdown.total)
+      : breakdown.total;
+
+    // Reserve price = total owed (we must at least recover the full debt)
+    const reservePrice = breakdown.total;
+
     const now = new Date();
     const auctionEnd = new Date(now);
     auctionEnd.setDate(auctionEnd.getDate() + 7); // auction runs for 7 days
 
     const auctionNo = await generateAuctionNo();
-    const startingBid = asset.evaluated_value ?? loan.current_balance;
 
     const [auction] = await Auction.create(
       [
@@ -214,7 +301,7 @@ async function moveLoanToAuction(loan) {
           auction_no: auctionNo,
           asset: asset._id,
           starting_bid_amount: startingBid,
-          reserve_price: loan.current_balance, // at minimum recover the outstanding balance
+          reserve_price: reservePrice,
           auction_type: "online",
           starts_at: now,
           ends_at: auctionEnd,
@@ -251,6 +338,7 @@ async function moveLoanToAuction(loan) {
             asset,
             loan,
             auction,
+            breakdown, // pass charge breakdown for the email template
           }).catch((err) =>
             console.error(
               `Auction email failed for loan ${loan.loan_no}:`,
@@ -264,7 +352,8 @@ async function moveLoanToAuction(loan) {
           const smsBody =
             `REAL TIME CAPITAL: Your asset "${asset.title}" (${asset.asset_no}) ` +
             `has been listed for auction (Ref: ${auctionNo}) due to non-payment of ` +
-            `Loan #${loan.loan_no}. Outstanding: $${loan.current_balance.toLocaleString()}. ` +
+            `Loan #${loan.loan_no}. ` +
+            `Total owed incl. interest, storage & penalty: $${breakdown.total.toLocaleString()}. ` +
             `Auction starts: ${new Date(auction.starts_at).toLocaleDateString()}. ` +
             `Contact us immediately to redeem.`;
 
@@ -280,7 +369,13 @@ async function moveLoanToAuction(loan) {
       console.error("Notification error (non-fatal):", notifyErr.message);
     }
 
-    console.log(`[AuctionService] Loan ${loan.loan_no} → auction ${auctionNo}`);
+    console.log(
+      `[AuctionService] Loan ${loan.loan_no} → auction ${auctionNo} | ` +
+        `balance: $${breakdown.base_balance} + interest: $${breakdown.interest_charge} + ` +
+        `storage: $${breakdown.storage_charge} + penalty: $${breakdown.penalty_charge} = ` +
+        `total: $${breakdown.total} | starting bid: $${startingBid}`,
+    );
+
     return auction;
   } catch (err) {
     await session.abortTransaction();
@@ -460,4 +555,5 @@ module.exports = {
   processExpiredLoans,
   sendUpcomingAuctionWarnings,
   moveLoanToAuction, // export for manual/admin triggers
+  calculateAuctionAmount, // export for use in admin previews / UI
 };

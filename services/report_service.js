@@ -11,6 +11,7 @@ const DebtorRecord = require("../models/debtorRecord.model");
 const LoanTerm = require("../models/loanTerm.model");
 const Attachment = require("../models/attachment.model");
 const Expense = require("../models/expense.model");
+const Notification = require("../models/notifications_model");
 
 // ---------------------------------------------------------------------------
 // Constants — centralised so they can be updated in one place
@@ -37,7 +38,6 @@ const STAFF_ROLES = [
 
 /**
  * Loan statuses that represent a fully-disbursed (live or settled) loan.
- * Used consistently across ratio calculations and aggregations.
  */
 const DISBURSED_LOAN_STATUSES = ["active", "redeemed", "overdue"];
 
@@ -45,6 +45,19 @@ const DISBURSED_LOAN_STATUSES = ["active", "redeemed", "overdue"];
  * Loan application statuses that represent an application which entered the system.
  */
 const ENTERED_APPLICATION_STATUSES = ["submitted", "approved", "processing"];
+
+/**
+ * Asset statuses that indicate the asset is currently held as collateral.
+ * "pawned" is the canonical status in the new model.
+ * "active" is kept as an alias for backward compatibility.
+ * "overdue" means the linked loan is overdue but the asset is still held.
+ */
+const COLLATERAL_ASSET_STATUSES = ["pawned", "active", "overdue"];
+
+/**
+ * Asset statuses that indicate the asset lifecycle has ended.
+ */
+const CLOSED_ASSET_STATUSES = ["sold", "redeemed", "closed"];
 
 // ---------------------------------------------------------------------------
 
@@ -85,6 +98,7 @@ class ReportService {
         expenseTrend,
         expenseBreakdown,
         businessRatios,
+        notificationStats,
       ] = await Promise.all([
         this._getSummary(),
         this._getUserGrowth(start, end),
@@ -105,6 +119,7 @@ class ReportService {
         this._getExpenseTrend(start, end),
         this._getExpenseBreakdownByCategory(start, end),
         this._getBusinessRatios(start, end),
+        this._getNotificationStats(start, end),
       ]);
 
       return {
@@ -131,6 +146,7 @@ class ReportService {
             attachmentStats,
             expenseTrend,
             expenseBreakdown,
+            notificationStats,
           },
           tables: {
             recentActivities,
@@ -156,11 +172,11 @@ class ReportService {
       totalActiveLoans,
       totalOverdueLoans,
       totalAssets,
-      totalPawnedAssets,
+      totalCollateralAssets, // pawned / active / overdue
+      totalAuctionAssets, // queued for or currently in auction
       totalPayments,
       totalPaymentsAmount,
       totalApplications,
-      // "Pending Approvals" card = applications still awaiting a decision
       totalPendingApplications,
       totalApprovedApplications,
       totalAuctions,
@@ -171,14 +187,13 @@ class ReportService {
       totalAttachments,
       totalExpensesCount,
       totalApprovedExpensesAmount,
-      // FIX 1: "Total Bids" card — was never queried in _getSummary before
       totalBids,
-      // FIX 2: Auction revenue for "Total Revenue" card
       totalAuctionRevenue,
-      // FIX 3: Average loan principal for "Avg. Loan Amount" card
       avgLoanAmountResult,
-      // For approval rate denominator
       totalDecidedApps,
+      totalNotifications,
+      totalSentNotifications,
+      totalUnreadNotifications,
     ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ roles: "customer" }),
@@ -187,7 +202,13 @@ class ReportService {
       Loan.countDocuments({ status: "active" }),
       Loan.countDocuments({ status: "overdue" }),
       Asset.countDocuments(),
-      Asset.countDocuments({ status: "pawned" }),
+
+      // Assets currently held as collateral
+      Asset.countDocuments({ status: { $in: COLLATERAL_ASSET_STATUSES } }),
+
+      // Assets in auction pipeline
+      Asset.countDocuments({ status: "auction" }),
+
       Payment.countDocuments({ payment_status: "paid" }),
       Payment.aggregate([
         { $match: { payment_status: "paid" } },
@@ -210,10 +231,8 @@ class ReportService {
         { $group: { _id: null, total: { $sum: "$amount" } } },
       ]),
 
-      // FIX 1: Count all bids across all time for the summary card
       Bid.countDocuments(),
 
-      // FIX 2: Sum winning_bid_amount on all closed auctions that have a winner
       Auction.aggregate([
         {
           $match: {
@@ -224,33 +243,35 @@ class ReportService {
         { $group: { _id: null, total: { $sum: "$winning_bid_amount" } } },
       ]),
 
-      // FIX 3: $avg on all disbursed loans — returns 0 only when there are
-      // genuinely no loans, not because of a missing query
       Loan.aggregate([
         { $match: { status: { $in: DISBURSED_LOAN_STATUSES } } },
         { $group: { _id: null, avg: { $avg: "$principal_amount" } } },
       ]),
 
-      // Applications that have received a decision (for approval rate denominator)
       LoanApplication.countDocuments({
         status: { $in: ["approved", "rejected", "processing"] },
       }),
+
+      // Notification totals
+      Notification.countDocuments({ is_active: true }),
+      Notification.countDocuments({ status: "sent", is_active: true }),
+      // Notifications sent but not yet acknowledged by anyone
+      Notification.countDocuments({
+        status: "sent",
+        is_active: true,
+        "acknowledgements.0": { $exists: false },
+      }),
     ]);
 
-    // --- Derived metrics (computed after all DB calls) ---
-
-    // FIX 4: Default rate = overdue / all disbursed loans (not total loan docs)
-    // Uses totalLoans (already fetched above) as the denominator since every
-    // Loan document represents a disbursed loan in this schema.
     const disbursedCount = await Loan.countDocuments({
       status: { $in: DISBURSED_LOAN_STATUSES },
     });
+
     const default_rate =
       disbursedCount > 0
         ? parseFloat(((totalOverdueLoans / disbursedCount) * 100).toFixed(2))
         : 0;
 
-    // FIX 5: Approval rate = approved apps / apps that reached a decision
     const approval_rate =
       totalDecidedApps > 0
         ? parseFloat(
@@ -258,7 +279,6 @@ class ReportService {
           )
         : 0;
 
-    // FIX 6: Total revenue = payment income + auction revenue
     const payment_revenue = totalPaymentsAmount[0]?.total || 0;
     const auction_revenue = totalAuctionRevenue[0]?.total || 0;
     const total_revenue = payment_revenue + auction_revenue;
@@ -271,31 +291,34 @@ class ReportService {
       total_active_loans: totalActiveLoans,
       total_overdue_loans: totalOverdueLoans,
       total_assets: totalAssets,
-      total_pawned_assets: totalPawnedAssets,
+      total_collateral_assets: totalCollateralAssets,
+      total_auction_assets: totalAuctionAssets,
       total_payments: totalPayments,
       total_payments_amount: payment_revenue,
       total_applications: totalApplications,
-      total_pending_applications: totalPendingApplications, // "Pending Approvals" card
+      total_pending_applications: totalPendingApplications,
       total_approved_applications: totalApprovedApplications,
       total_auctions: totalAuctions,
       total_live_auctions: totalLiveAuctions,
-      total_open_tickets: totalTicketsOpen, // "Support Tickets" card
+      total_open_tickets: totalTicketsOpen,
       total_debtor_records: totalDebtorRecords,
       total_matched_debtors: totalMatchedDebtors,
       total_attachments: totalAttachments,
       total_expenses_count: totalExpensesCount,
       total_approved_expenses_amount:
         totalApprovedExpensesAmount[0]?.total || 0,
-      // Newly surfaced fields powering the broken dashboard cards:
-      total_bids: totalBids, // "Total Bids" card
-      total_revenue, // "Total Revenue" card
+      total_bids: totalBids,
+      total_revenue,
       auction_revenue,
       avg_loan_amount: parseFloat(
-        // "Avg. Loan Amount" card
         (avgLoanAmountResult[0]?.avg || 0).toFixed(2),
       ),
-      default_rate, // "Default Rate" card
-      approval_rate, // "Approval Rate" card
+      default_rate,
+      approval_rate,
+      // Notification summary cards
+      total_notifications: totalNotifications,
+      total_sent_notifications: totalSentNotifications,
+      total_unread_notifications: totalUnreadNotifications,
     };
   }
 
@@ -407,7 +430,6 @@ class ReportService {
       },
     ]);
 
-    // FIX: Explicit Number() cast guards against stored strings or null dates
     const loans = await Loan.find({
       created_at: { $gte: start, $lte: end },
       status: { $in: DISBURSED_LOAN_STATUSES },
@@ -431,7 +453,6 @@ class ReportService {
     });
     const avgLoanTermDays = loanCount > 0 ? totalDays / loanCount : 0;
 
-    // Period-scoped default rate and approval rate
     const [periodDisbursed, periodOverdue, periodTotalDecided, periodApproved] =
       await Promise.all([
         Loan.countDocuments({
@@ -462,9 +483,26 @@ class ReportService {
         ? parseFloat(((periodApproved / periodTotalDecided) * 100).toFixed(2))
         : 0;
 
+    // Period-scoped asset pawning ratio
+    const [periodAssetsSubmitted, periodAssetsPawned] = await Promise.all([
+      Asset.countDocuments({ created_at: { $gte: start, $lte: end } }),
+      Asset.countDocuments({
+        created_at: { $gte: start, $lte: end },
+        status: { $in: COLLATERAL_ASSET_STATUSES },
+      }),
+    ]);
+
+    const assetPawnedRatio =
+      periodAssetsSubmitted > 0
+        ? parseFloat(
+            ((periodAssetsPawned / periodAssetsSubmitted) * 100).toFixed(2),
+          )
+        : 0;
+
     return {
       application_to_loan_ratio: parseFloat(applicationToLoanRatio.toFixed(2)),
       asset_in_to_pawned_ratio: parseFloat(assetInToPawnedRatio.toFixed(2)),
+      asset_pawned_ratio: assetPawnedRatio,
       bid_win_ratio_overall: parseFloat(bidWinRatioOverall.toFixed(2)),
       income_expense_ratio: parseFloat(incomeExpenseRatio.toFixed(2)),
       total_income: totalIncome,
@@ -813,9 +851,30 @@ class ReportService {
 
   async _getAssetDistribution() {
     const [byCategory, byStatus] = await Promise.all([
-      Asset.aggregate([{ $group: { _id: "$category", count: { $sum: 1 } } }]),
-      Asset.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
+      Asset.aggregate([
+        { $group: { _id: "$category", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+      Asset.aggregate([
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
     ]);
+
+    const statusMap = byStatus.reduce((acc, s) => {
+      acc[s._id] = s.count;
+      return acc;
+    }, {});
+
+    // Convenience roll-ups for dashboard summary cards
+    const collateralTotal = COLLATERAL_ASSET_STATUSES.reduce(
+      (sum, s) => sum + (statusMap[s] || 0),
+      0,
+    );
+    const closedTotal = CLOSED_ASSET_STATUSES.reduce(
+      (sum, s) => sum + (statusMap[s] || 0),
+      0,
+    );
 
     return {
       byCategory: {
@@ -825,6 +884,15 @@ class ReportService {
       byStatus: {
         labels: byStatus.map((s) => s._id),
         data: byStatus.map((s) => s.count),
+      },
+      // Roll-up summary for dashboard cards
+      summary: {
+        submitted: statusMap["submitted"] || 0,
+        valuating: statusMap["valuating"] || 0,
+        collateral: collateralTotal, // pawned + active + overdue
+        in_repair: statusMap["in_repair"] || 0,
+        auction: statusMap["auction"] || 0,
+        closed: closedTotal, // sold + redeemed + closed
       },
     };
   }
@@ -1179,6 +1247,126 @@ class ReportService {
   }
 
   /**
+   * Notification statistics: volume by type, priority, channel, status, and
+   * a daily send trend over the requested period.
+   */
+  async _getNotificationStats(start, end) {
+    const [
+      byType,
+      byPriority,
+      byStatus,
+      byChannel,
+      byScope,
+      dailyTrend,
+      totalSent,
+      totalRead,
+    ] = await Promise.all([
+      Notification.aggregate([
+        { $match: { created_at: { $gte: start, $lte: end }, is_active: true } },
+        { $group: { _id: "$type", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+
+      Notification.aggregate([
+        { $match: { created_at: { $gte: start, $lte: end }, is_active: true } },
+        { $group: { _id: "$priority", count: { $sum: 1 } } },
+      ]),
+
+      Notification.aggregate([
+        { $match: { created_at: { $gte: start, $lte: end }, is_active: true } },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]),
+
+      // Unwind array field to count per channel
+      Notification.aggregate([
+        { $match: { created_at: { $gte: start, $lte: end }, is_active: true } },
+        { $unwind: "$channels" },
+        { $group: { _id: "$channels", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+
+      Notification.aggregate([
+        { $match: { created_at: { $gte: start, $lte: end }, is_active: true } },
+        { $group: { _id: "$audience.scope", count: { $sum: 1 } } },
+      ]),
+
+      // Daily trend of sent notifications
+      Notification.aggregate([
+        {
+          $match: {
+            sent_at: { $gte: start, $lte: end },
+            status: "sent",
+            is_active: true,
+          },
+        },
+        {
+          $group: {
+            _id: {
+              $dateToString: { format: "%Y-%m-%d", date: "$sent_at" },
+            },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+
+      Notification.countDocuments({
+        sent_at: { $gte: start, $lte: end },
+        status: "sent",
+        is_active: true,
+      }),
+
+      // At least one acknowledgement = read by at least one recipient
+      Notification.countDocuments({
+        sent_at: { $gte: start, $lte: end },
+        status: "sent",
+        is_active: true,
+        "acknowledgements.0": { $exists: true },
+      }),
+    ]);
+
+    const readRate =
+      totalSent > 0
+        ? parseFloat(((totalRead / totalSent) * 100).toFixed(2))
+        : 0;
+
+    return {
+      total_sent: totalSent,
+      total_read: totalRead,
+      read_rate_percent: readRate,
+      trend: {
+        labels: dailyTrend.map((d) => d._id),
+        datasets: [
+          {
+            label: "Notifications sent",
+            data: dailyTrend.map((d) => d.count),
+          },
+        ],
+      },
+      by_type: byType.reduce((acc, t) => {
+        acc[t._id] = t.count;
+        return acc;
+      }, {}),
+      by_priority: byPriority.reduce((acc, p) => {
+        acc[p._id] = p.count;
+        return acc;
+      }, {}),
+      by_status: byStatus.reduce((acc, s) => {
+        acc[s._id] = s.count;
+        return acc;
+      }, {}),
+      by_channel: byChannel.reduce((acc, c) => {
+        acc[c._id] = c.count;
+        return acc;
+      }, {}),
+      by_scope: byScope.reduce((acc, s) => {
+        acc[s._id] = s.count;
+        return acc;
+      }, {}),
+    };
+  }
+
+  /**
    * Recent activities across all collections, sorted by timestamp descending.
    * @param {number} limit - Maximum number of entries to return.
    */
@@ -1196,6 +1384,8 @@ class ReportService {
       recentDebtors,
       recentAttachments,
       recentExpenses,
+      recentAssets,
+      recentNotifications,
     ] = await Promise.all([
       User.find()
         .sort({ created_at: -1 })
@@ -1213,7 +1403,7 @@ class ReportService {
         .sort({ created_at: -1 })
         .limit(ITEMS_PER_SOURCE)
         .populate("customer_user", "first_name last_name email")
-        .populate("asset", "title category asset_no")
+        .populate("asset", "title category asset_no status")
         .lean(),
 
       Payment.find({ payment_status: "paid" })
@@ -1229,7 +1419,7 @@ class ReportService {
       Auction.find()
         .sort({ created_at: -1 })
         .limit(ITEMS_PER_SOURCE)
-        .populate("asset", "title category asset_no")
+        .populate("asset", "title category asset_no status")
         .populate("created_by", "first_name last_name")
         .lean(),
 
@@ -1257,6 +1447,21 @@ class ReportService {
         .limit(ITEMS_PER_SOURCE)
         .populate("created_by", "first_name last_name")
         .populate("approved_by", "first_name last_name")
+        .lean(),
+
+      // Most recently submitted/updated assets
+      Asset.find()
+        .sort({ created_at: -1 })
+        .limit(ITEMS_PER_SOURCE)
+        .populate("owner_user", "first_name last_name email")
+        .populate("submitted_by", "first_name last_name")
+        .lean(),
+
+      // Most recently sent notifications
+      Notification.find({ status: "sent", is_active: true })
+        .sort({ sent_at: -1 })
+        .limit(ITEMS_PER_SOURCE)
+        .populate("created_by", "first_name last_name")
         .lean(),
     ]);
 
@@ -1299,7 +1504,14 @@ class ReportService {
           loan_no: l.loan_no,
           amount: l.principal_amount,
           status: l.status,
-          asset: l.asset,
+          asset: l.asset
+            ? {
+                title: l.asset.title,
+                category: l.asset.category,
+                asset_no: l.asset.asset_no,
+                status: l.asset.status,
+              }
+            : null,
           customer: l.customer_user,
         },
       });
@@ -1328,7 +1540,14 @@ class ReportService {
         auction: a._id,
         details: {
           auction_no: a.auction_no,
-          asset: a.asset,
+          asset: a.asset
+            ? {
+                title: a.asset.title,
+                category: a.asset.category,
+                asset_no: a.asset.asset_no,
+                status: a.asset.status,
+              }
+            : null,
           starts_at: a.starts_at,
           ends_at: a.ends_at,
           created_by: a.created_by,
@@ -1401,6 +1620,51 @@ class ReportService {
           status: e.status,
           created_by: e.created_by
             ? `${e.created_by.first_name} ${e.created_by.last_name}`
+            : null,
+        },
+      });
+    });
+
+    recentAssets.forEach((a) => {
+      activities.push({
+        type: "asset_submitted",
+        description: `Asset ${a.asset_no} (${a.category}) — "${a.title}" submitted`,
+        timestamp: a.created_at,
+        asset: a._id,
+        details: {
+          asset_no: a.asset_no,
+          title: a.title,
+          category: a.category,
+          status: a.status,
+          condition: a.condition,
+          storage_location: a.storage_location,
+          declared_value: a.declared_value,
+          evaluated_value: a.evaluated_value,
+          owner: a.owner_user
+            ? `${a.owner_user.first_name} ${a.owner_user.last_name}`
+            : null,
+          submitted_by: a.submitted_by
+            ? `${a.submitted_by.first_name} ${a.submitted_by.last_name}`
+            : null,
+        },
+      });
+    });
+
+    recentNotifications.forEach((n) => {
+      activities.push({
+        type: "notification_sent",
+        description: `Notification "${n.title}" (${n.type}) sent to ${n.audience?.scope}`,
+        timestamp: n.sent_at || n.created_at,
+        notification: n._id,
+        details: {
+          title: n.title,
+          type: n.type,
+          priority: n.priority,
+          channels: n.channels,
+          audience_scope: n.audience?.scope,
+          status: n.status,
+          created_by: n.created_by
+            ? `${n.created_by.first_name} ${n.created_by.last_name}`
             : null,
         },
       });
