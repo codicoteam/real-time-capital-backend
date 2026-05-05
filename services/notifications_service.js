@@ -25,13 +25,17 @@ class NotificationService {
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2>${notification.title}</h2>
           <p>${notification.message}</p>
-          ${notification.action_url ? `
+          ${
+            notification.action_url
+              ? `
             <a href="${notification.action_url}" style="display: inline-block; background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-top: 15px;">
-              ${notification.action_text || 'View Details'}
+              ${notification.action_text || "View Details"}
             </a>
-          ` : ''}
+          `
+              : ""
+          }
           <hr style="margin: 20px 0;" />
-          <p style="color: #666; font-size: 12px;">This is an automated message from Pawn Limited. Please do not reply.</p>
+          <p style="color: #666; font-size: 12px;">This is an automated message from Real Time Capital. Please do not reply.</p>
         </div>
       `;
 
@@ -42,7 +46,9 @@ class NotificationService {
         text: notification.message,
       });
 
-      console.log(`Email sent to ${user.email} for notification ${notification._id}`);
+      console.log(
+        `Email sent to ${user.email} for notification ${notification._id}`,
+      );
       return true;
     } catch (error) {
       console.error(`Failed to send email to ${user.email}:`, error.message);
@@ -61,11 +67,13 @@ class NotificationService {
       }
 
       // Truncate message for SMS (160 chars recommended, 4000 max but SMS has limits)
-      const smsMessage = `${notification.title}\n${notification.message.substring(0, 140)}${notification.message.length > 140 ? '...' : ''}\n${notification.action_url || ''}`;
+      const smsMessage = `${notification.title}\n${notification.message.substring(0, 140)}${notification.message.length > 140 ? "..." : ""}\n${notification.action_url || ""}`;
 
       await sendSmsWithMessage(user.phone, smsMessage);
-      
-      console.log(`SMS sent to ${user.phone} for notification ${notification._id}`);
+
+      console.log(
+        `SMS sent to ${user.phone} for notification ${notification._id}`,
+      );
       return true;
     } catch (error) {
       console.error(`Failed to send SMS to ${user.phone}:`, error.message);
@@ -78,13 +86,16 @@ class NotificationService {
    */
   static async sendPushNotification(user, notification) {
     try {
+      // Skip if no FCM tokens
       if (!user.fcm_tokens || user.fcm_tokens.length === 0) {
-        console.log(`No FCM tokens for user ${user._id}`);
+        console.log(
+          `No FCM tokens for user ${user._id} - skipping push notification`,
+        );
         return false;
       }
 
       // Prepare notification payload
-      const payload = {
+      const pushPayload = {
         notification: {
           title: notification.title,
           body: notification.message,
@@ -92,22 +103,24 @@ class NotificationService {
         data: {
           notification_id: notification._id.toString(),
           type: notification.type,
-          entity_type: notification.entity_type || '',
-          entity_id: notification.entity_id?.toString() || '',
-          action_url: notification.action_url || '',
-          action_text: notification.action_text || '',
+          entity_type: notification.entity_type || "",
+          entity_id: notification.entity_id?.toString() || "",
+          action_url: notification.action_url || "",
+          action_text: notification.action_text || "",
           priority: notification.priority,
           created_at: notification.created_at.toISOString(),
         },
         android: {
-          priority: notification.priority === 'high' || notification.priority === 'critical' 
-            ? 'high' 
-            : 'normal',
+          priority:
+            notification.priority === "high" ||
+            notification.priority === "critical"
+              ? "high"
+              : "normal",
         },
         apns: {
           payload: {
             aps: {
-              sound: 'default',
+              sound: "default",
               badge: 1,
             },
           },
@@ -120,28 +133,36 @@ class NotificationService {
           try {
             const response = await admin.messaging().send({
               token: token,
-              ...payload,
+              ...pushPayload,
             });
-            console.log(`Push sent to ${token}: ${response}`);
+            console.log(
+              `Push sent to ${token.substring(0, 20)}...: ${response}`,
+            );
             return { token, success: true };
           } catch (error) {
             // If token is invalid, remove it
-            if (error.code === 'messaging/invalid-registration-token' ||
-                error.code === 'messaging/registration-token-not-registered') {
+            if (
+              error.code === "messaging/invalid-registration-token" ||
+              error.code === "messaging/registration-token-not-registered"
+            ) {
               await User.updateOne(
                 { _id: user._id },
-                { $pull: { fcm_tokens: token } }
+                { $pull: { fcm_tokens: token } },
               );
               console.log(`Removed invalid FCM token for user ${user._id}`);
             }
             return { token, success: false, error: error.message };
           }
-        })
+        }),
       );
 
-      const successful = results.filter(r => r.status === 'fulfilled' && r.value?.success).length;
-      console.log(`Push notifications: ${successful}/${user.fcm_tokens.length} successful for user ${user._id}`);
-      
+      const successful = results.filter(
+        (r) => r.status === "fulfilled" && r.value?.success,
+      ).length;
+      console.log(
+        `Push notifications: ${successful}/${user.fcm_tokens.length} successful for user ${user._id}`,
+      );
+
       return successful > 0;
     } catch (error) {
       console.error(`Failed to send push to user ${user._id}:`, error.message);
@@ -166,24 +187,24 @@ class NotificationService {
     if (channels.includes("email") && user.email) {
       promises.push(
         this.sendEmailNotification(user, notification).then(
-          (result) => (deliveryResults.email = result)
-        )
+          (result) => (deliveryResults.email = result),
+        ),
       );
     }
 
     if (channels.includes("sms") && user.phone) {
       promises.push(
         this.sendSmsNotification(user, notification).then(
-          (result) => (deliveryResults.sms = result)
-        )
+          (result) => (deliveryResults.sms = result),
+        ),
       );
     }
 
     if (channels.includes("push")) {
       promises.push(
         this.sendPushNotification(user, notification).then(
-          (result) => (deliveryResults.push = result)
-        )
+          (result) => (deliveryResults.push = result),
+        ),
       );
     }
 
@@ -229,25 +250,27 @@ class NotificationService {
   static async sendNotificationToAudience(notification) {
     try {
       const targetUsers = await this.getTargetUsers(notification.audience);
-      
+
       if (targetUsers.length === 0) {
-        console.log(`No target users found for notification ${notification._id}`);
+        console.log(
+          `No target users found for notification ${notification._id}`,
+        );
         return { success: true, delivered: 0, total: 0 };
       }
 
       const deliveryReports = [];
-      
+
       for (const user of targetUsers) {
         const result = await this.deliverToUser(
           user,
           notification,
-          notification.channels
+          notification.channels,
         );
         deliveryReports.push(result);
       }
 
       const successfulDeliveries = deliveryReports.filter(
-        (r) => r.email || r.sms || r.push || r.in_app
+        (r) => r.email || r.sms || r.push || r.in_app,
       ).length;
 
       return {
@@ -265,7 +288,7 @@ class NotificationService {
   /**
    * Create a new notification with audience resolution
    */
-  static async createNotification(data, createdBy) {
+  static async createNotification(notificationData, createdBy) {
     try {
       const {
         title,
@@ -280,8 +303,8 @@ class NotificationService {
         expires_at = null,
         action_text = null,
         action_url = null,
-        data: payload = {},
-      } = data;
+        data: customData = {}, // Renamed from 'data' to 'customData' to avoid conflict
+      } = notificationData;
 
       // Basic validation
       if (!title || !message) {
@@ -309,14 +332,20 @@ class NotificationService {
           statusCode: 400,
         };
       }
-      if (audience.scope === "users" && (!audience.user_ids || audience.user_ids.length === 0)) {
+      if (
+        audience.scope === "users" &&
+        (!audience.user_ids || audience.user_ids.length === 0)
+      ) {
         return {
           success: false,
           message: "user_ids array is required when scope is 'users'",
           statusCode: 400,
         };
       }
-      if (audience.scope === "roles" && (!audience.roles || audience.roles.length === 0)) {
+      if (
+        audience.scope === "roles" &&
+        (!audience.roles || audience.roles.length === 0)
+      ) {
         return {
           success: false,
           message: "roles array is required when scope is 'roles'",
@@ -327,12 +356,11 @@ class NotificationService {
       // Determine initial status based on send_at
       let status = "draft";
       let shouldSendNow = false;
-      
+
       if (send_at && new Date(send_at) > new Date()) {
         status = "scheduled";
       } else if (!send_at || new Date(send_at) <= new Date()) {
         status = "sent";
-        send_at = new Date();
         shouldSendNow = true;
       }
 
@@ -346,13 +374,13 @@ class NotificationService {
         channels,
         entity_type,
         entity_id,
-        send_at,
-        sent_at: status === "sent" ? new Date() : null,
+        send_at: shouldSendNow ? new Date() : send_at,
+        sent_at: shouldSendNow ? new Date() : null,
         expires_at,
         status,
         action_text,
         action_url,
-        data: payload,
+        data: customData,
         created_by: createdBy,
       });
 
@@ -362,7 +390,7 @@ class NotificationService {
       let deliveryResult = null;
       if (shouldSendNow) {
         deliveryResult = await this.sendNotificationToAudience(notification);
-        
+
         // Update sent_at if not already set
         if (!notification.sent_at) {
           notification.sent_at = new Date();
@@ -373,7 +401,7 @@ class NotificationService {
       // Populate created_by for response
       const populated = await Notification.findById(notification._id).populate(
         "created_by",
-        "first_name last_name email"
+        "first_name last_name email",
       );
 
       return {
@@ -411,10 +439,7 @@ class NotificationService {
           ],
         },
         {
-          $or: [
-            { expires_at: null },
-            { expires_at: { $gt: now } },
-          ],
+          $or: [{ expires_at: null }, { expires_at: { $gt: now } }],
         },
       ],
     };
@@ -504,7 +529,7 @@ class NotificationService {
       // Attach user-specific read/acted status to each notification
       const enhancedNotifications = notifications.map((notif) => {
         const ack = notif.acknowledgements?.find(
-          (a) => a.user_id.toString() === user._id.toString()
+          (a) => a.user_id.toString() === user._id.toString(),
         );
         return {
           ...notif,
@@ -643,7 +668,7 @@ class NotificationService {
 
       // Attach user-specific read/acted status
       const ack = notification.acknowledgements.find(
-        (a) => a.user_id.toString() === user._id.toString()
+        (a) => a.user_id.toString() === user._id.toString(),
       );
 
       const result = notification.toObject();
@@ -678,7 +703,7 @@ class NotificationService {
         return audience.user_id?.toString() === userId.toString();
       case "users":
         return audience.user_ids?.some(
-          (id) => id.toString() === userId.toString()
+          (id) => id.toString() === userId.toString(),
         );
       case "roles":
         return audience.roles?.some((role) => userRoles.includes(role));
@@ -717,7 +742,7 @@ class NotificationService {
 
       // Update or add acknowledgement
       const existingAck = notification.acknowledgements.find(
-        (a) => a.user_id.toString() === user._id.toString()
+        (a) => a.user_id.toString() === user._id.toString(),
       );
 
       if (existingAck) {
@@ -773,7 +798,7 @@ class NotificationService {
       }
 
       const existingAck = notification.acknowledgements.find(
-        (a) => a.user_id.toString() === user._id.toString()
+        (a) => a.user_id.toString() === user._id.toString(),
       );
 
       if (existingAck) {
@@ -816,7 +841,11 @@ class NotificationService {
       }
 
       // Optional: Only allow deletion by creator or admin
-      const adminRoles = ["super_admin_vendor", "admin_pawn_limited", "management"];
+      const adminRoles = [
+        "super_admin_vendor",
+        "admin_pawn_limited",
+        "management",
+      ];
       const isAdmin = user.roles.some((r) => adminRoles.includes(r));
       const isCreator =
         notification.created_by?.toString() === user._id.toString();
@@ -866,7 +895,11 @@ class NotificationService {
       }
 
       // Permission check similar to delete
-      const adminRoles = ["super_admin_vendor", "admin_pawn_limited", "management"];
+      const adminRoles = [
+        "super_admin_vendor",
+        "admin_pawn_limited",
+        "management",
+      ];
       const isAdmin = user.roles.some((r) => adminRoles.includes(r));
       const isCreator =
         notification.created_by?.toString() === user._id.toString();
@@ -897,34 +930,37 @@ class NotificationService {
    */
   static async getNotificationStats() {
     try {
-      const now = new Date();
-      const thirtyDaysAgo = new Date(now.setDate(now.getDate() - 30));
-
-      const [totalSent, totalScheduled, totalRead, totalActed, byType, byPriority] =
-        await Promise.all([
-          Notification.countDocuments({ status: "sent", is_active: true }),
-          Notification.countDocuments({ status: "scheduled", is_active: true }),
-          Notification.aggregate([
-            { $match: { is_active: true, status: "sent" } },
-            { $unwind: "$acknowledgements" },
-            { $match: { "acknowledgements.read_at": { $ne: null } } },
-            { $count: "total" },
-          ]),
-          Notification.aggregate([
-            { $match: { is_active: true, status: "sent" } },
-            { $unwind: "$acknowledgements" },
-            { $match: { "acknowledgements.acted_at": { $ne: null } } },
-            { $count: "total" },
-          ]),
-          Notification.aggregate([
-            { $match: { is_active: true, status: "sent" } },
-            { $group: { _id: "$type", count: { $sum: 1 } } },
-          ]),
-          Notification.aggregate([
-            { $match: { is_active: true, status: "sent" } },
-            { $group: { _id: "$priority", count: { $sum: 1 } } },
-          ]),
-        ]);
+      const [
+        totalSent,
+        totalScheduled,
+        totalRead,
+        totalActed,
+        byType,
+        byPriority,
+      ] = await Promise.all([
+        Notification.countDocuments({ status: "sent", is_active: true }),
+        Notification.countDocuments({ status: "scheduled", is_active: true }),
+        Notification.aggregate([
+          { $match: { is_active: true, status: "sent" } },
+          { $unwind: "$acknowledgements" },
+          { $match: { "acknowledgements.read_at": { $ne: null } } },
+          { $count: "total" },
+        ]),
+        Notification.aggregate([
+          { $match: { is_active: true, status: "sent" } },
+          { $unwind: "$acknowledgements" },
+          { $match: { "acknowledgements.acted_at": { $ne: null } } },
+          { $count: "total" },
+        ]),
+        Notification.aggregate([
+          { $match: { is_active: true, status: "sent" } },
+          { $group: { _id: "$type", count: { $sum: 1 } } },
+        ]),
+        Notification.aggregate([
+          { $match: { is_active: true, status: "sent" } },
+          { $group: { _id: "$priority", count: { $sum: 1 } } },
+        ]),
+      ]);
 
       return {
         success: true,
@@ -939,7 +975,9 @@ class NotificationService {
       };
     } catch (error) {
       console.error("Notification stats error:", error);
-      throw new Error(error.message || "Failed to fetch notification statistics");
+      throw new Error(
+        error.message || "Failed to fetch notification statistics",
+      );
     }
   }
 
@@ -966,7 +1004,11 @@ class NotificationService {
         };
       }
 
-      const adminRoles = ["super_admin_vendor", "admin_pawn_limited", "management"];
+      const adminRoles = [
+        "super_admin_vendor",
+        "admin_pawn_limited",
+        "management",
+      ];
       const isAdmin = user.roles.some((r) => adminRoles.includes(r));
 
       if (!isAdmin) {
@@ -977,8 +1019,9 @@ class NotificationService {
         };
       }
 
-      const deliveryResult = await this.sendNotificationToAudience(notification);
-      
+      const deliveryResult =
+        await this.sendNotificationToAudience(notification);
+
       return {
         success: true,
         message: "Notification resent successfully",
@@ -1005,7 +1048,11 @@ class NotificationService {
         };
       }
 
-      const adminRoles = ["super_admin_vendor", "admin_pawn_limited", "management"];
+      const adminRoles = [
+        "super_admin_vendor",
+        "admin_pawn_limited",
+        "management",
+      ];
       const isAdmin = user.roles.some((r) => adminRoles.includes(r));
 
       if (!isAdmin) {
@@ -1017,7 +1064,7 @@ class NotificationService {
       }
 
       const targetUsers = await this.getTargetUsers(notification.audience);
-      
+
       return {
         success: true,
         data: {

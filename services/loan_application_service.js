@@ -46,6 +46,207 @@ class LoanApplicationService {
   }
 
   /**
+   * Get all loan processors
+   */
+  async getAllLoanProcessors() {
+    try {
+      const processors = await User.find({
+        roles: { $in: ["loan_officer_processor", "loan_officer_approval"] },
+        status: "active",
+      }).select("_id first_name last_name email phone");
+      return processors;
+    } catch (error) {
+      console.error("Error fetching loan processors:", error);
+      return [];
+    }
+  }
+
+  /**
+   * Notify all loan processors about a user with unverified KYC trying to apply
+   */
+  async notifyProcessorsAboutUnverifiedKyc(user, applicationData) {
+    try {
+      const processors = await this.getAllLoanProcessors();
+
+      if (processors.length === 0) {
+        console.log("No loan processors found to notify");
+        return;
+      }
+
+      const customerFullName = `${user.first_name} ${user.last_name}`;
+      const subject = `KYC VERIFICATION REQUIRED: New loan application from ${customerFullName}`;
+
+      const htmlContent = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px;">
+          <h2 style="color: #d32f2f;">⚠️ KYC Verification Required</h2>
+          <p>A customer has attempted to submit a loan application but their KYC is not yet verified.</p>
+          
+          <div style="background-color: #f5f5f5; padding: 15px; border-radius: 8px; margin: 15px 0;">
+            <h3 style="margin-top: 0; color: #333;">Customer Details:</h3>
+            <p><strong>Name:</strong> ${customerFullName}</p>
+            <p><strong>Email:</strong> ${user.email || "Not provided"}</p>
+            <p><strong>Phone:</strong> ${user.phone || "Not provided"}</p>
+            <p><strong>National ID:</strong> ${user.national_id_number || "Not provided"}</p>
+            <p><strong>KYC Status:</strong> <span style="color: #d32f2f; font-weight: bold;">${user.kyc_verification_status}</span></p>
+            <p><strong>Registered On:</strong> ${new Date(user.created_at).toLocaleDateString()}</p>
+          </div>
+          
+          <div style="background-color: #e3f2fd; padding: 15px; border-radius: 8px; margin: 15px 0;">
+            <h3 style="margin-top: 0; color: #333;">Application Details:</h3>
+            <p><strong>Requested Amount:</strong> $${applicationData.requested_loan_amount?.toLocaleString() || "N/A"}</p>
+            <p><strong>Collateral Category:</strong> ${applicationData.collateral_category || "N/A"}</p>
+            <p><strong>Collateral Description:</strong> ${applicationData.collateral_description || "N/A"}</p>
+            <p><strong>Declared Asset Value:</strong> $${applicationData.declared_asset_value?.toLocaleString() || "N/A"}</p>
+            <p><strong>Repayment Type:</strong> ${applicationData.repayment_type || "N/A"}</p>
+          </div>
+          
+          <div style="margin-top: 20px;">
+            <p><strong>Action Required:</strong></p>
+            <p>Please review the customer's KYC documents and verify their profile before they can submit loan applications.</p>
+            <p>Once KYC is verified, the customer will be able to complete their loan application.</p>
+          </div>
+          
+          <hr style="margin: 20px 0; border-color: #e0e0e0;">
+          <p style="color: #666; font-size: 12px;">This is an automated notification from the Loan Management System.</p>
+        </div>
+      `;
+
+      // Send email to all processors
+      for (const processor of processors) {
+        if (processor.email) {
+          await emailService.sendEmail({
+            to: processor.email,
+            subject: subject,
+            html: htmlContent,
+          });
+          console.log(`Notification sent to processor: ${processor.email}`);
+        }
+
+        // Send SMS if phone number available
+        if (processor.phone) {
+          const smsMessage = `KYC Verification Required: ${customerFullName} (${user.phone || user.email}) attempted to apply for a loan. Please verify their KYC in the system.`;
+          await this.sendSms(processor.phone, smsMessage);
+        }
+      }
+
+      return true;
+    } catch (error) {
+      console.error("Error notifying processors about unverified KYC:", error);
+      return false;
+    }
+  }
+
+  /**
+   * Notify customer that their KYC needs to be verified
+   */
+  async notifyCustomerAboutKycVerification(user) {
+    try {
+      const customerFullName = `${user.first_name} ${user.last_name}`;
+
+      // Send email to customer
+      if (user.email) {
+        const emailSubject =
+          "KYC Verification Required Before Loan Application";
+        const emailHtml = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px;">
+            <h2 style="color: #ff9800;">KYC Verification Required</h2>
+            <p>Dear ${customerFullName},</p>
+            <p>Thank you for your interest in applying for a loan. Before you can submit a loan application, we need to verify your KYC documents.</p>
+            
+            <div style="background-color: #fff3e0; padding: 15px; border-radius: 8px; margin: 15px 0;">
+              <p style="margin: 0;"><strong>Status:</strong> Your KYC verification is currently <span style="color: #ff9800;">${user.kyc_verification_status}</span></p>
+            </div>
+            
+            <p>Our loan processing team has been notified and will review your KYC documents. Once verified, you will be able to submit your loan application.</p>
+            
+            <p>You will receive an email notification once your KYC is verified.</p>
+            
+            <p>If you have any questions, please contact our customer support.</p>
+            
+            <br>
+            <p>Best regards,<br>Loan Management Team</p>
+            <hr style="margin: 20px 0; border-color: #e0e0e0;">
+            <p style="color: #666; font-size: 12px;">This is an automated notification from the Loan Management System.</p>
+          </div>
+        `;
+
+        await emailService.sendEmail({
+          to: user.email,
+          subject: emailSubject,
+          html: emailHtml,
+        });
+      }
+
+      // Send SMS if phone available
+      if (user.phone) {
+        const smsMessage = `Dear ${customerFullName}, your KYC verification status is ${user.kyc_verification_status}. Please complete KYC verification before applying for a loan. Our team has been notified.`;
+        await this.sendSms(user.phone, smsMessage);
+      }
+
+      return true;
+    } catch (error) {
+      console.error("Error notifying customer about KYC verification:", error);
+      return false;
+    }
+  }
+
+  /**
+   * Notify customer that KYC is verified and they can now apply
+   */
+  async notifyCustomerKycVerified(user) {
+    try {
+      const customerFullName = `${user.first_name} ${user.last_name}`;
+
+      if (user.email) {
+        const emailSubject =
+          "KYC Verification Complete - You Can Now Apply for Loans";
+        const emailHtml = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px;">
+            <h2 style="color: #4caf50;">✅ KYC Verification Complete</h2>
+            <p>Dear ${customerFullName},</p>
+            <p>Great news! Your KYC documents have been successfully verified.</p>
+            
+            <div style="background-color: #e8f5e9; padding: 15px; border-radius: 8px; margin: 15px 0;">
+              <p style="margin: 0;"><strong>Status:</strong> <span style="color: #4caf50; font-weight: bold;">VERIFIED</span></p>
+            </div>
+            
+            <p>You can now submit loan applications through our platform.</p>
+            
+            <p>To apply for a loan:</p>
+            <ul>
+              <li>Log into your account</li>
+              <li>Navigate to "Apply for Loan"</li>
+              <li>Fill in the required information</li>
+              <li>Submit your application</li>
+            </ul>
+            
+            <p>If you have any questions, please contact our customer support.</p>
+            
+            <br>
+            <p>Best regards,<br>Loan Management Team</p>
+          </div>
+        `;
+
+        await emailService.sendEmail({
+          to: user.email,
+          subject: emailSubject,
+          html: emailHtml,
+        });
+      }
+
+      if (user.phone) {
+        const smsMessage = `Dear ${customerFullName}, your KYC has been verified! You can now apply for loans on our platform.`;
+        await this.sendSms(user.phone, smsMessage);
+      }
+
+      return true;
+    } catch (error) {
+      console.error("Error notifying customer about KYC verified:", error);
+      return false;
+    }
+  }
+
+  /**
    * Generate unique application number
    */
   generateApplicationNo() {
@@ -70,7 +271,7 @@ class LoanApplicationService {
   }
 
   /**
-   * Create a new loan application
+   * Create a new loan application with KYC verification check
    * @param {Object} applicationData - The application data from request body
    * @param {Object} createdByUser - The user performing the creation (full user object)
    * @param {String} customerUserId - Optional: the ID of the customer (if staff is creating on behalf)
@@ -102,11 +303,37 @@ class LoanApplicationService {
       // Determine the customer (borrower)
       const finalCustomerUserId = customerUserId || createdByUser._id;
 
-      // Verify customer exists
+      // Verify customer exists and get their KYC status
       const customer =
         await User.findById(finalCustomerUserId).session(session);
       if (!customer) {
         throw new Error("Customer user not found");
+      }
+
+      // Check if customer is a customer role
+      if (!customer.roles.includes("customer")) {
+        throw new Error(
+          "User is not a customer. Only customers can apply for loans.",
+        );
+      }
+
+      // KYC VERIFICATION CHECK
+      const isKycVerified = customer.kyc_verification_status === "verified";
+
+      // If KYC is not verified, do NOT create the loan application
+      if (!isKycVerified) {
+        // Notify processors about unverified KYC
+        await this.notifyProcessorsAboutUnverifiedKyc(
+          customer,
+          applicationData,
+        );
+
+        // Notify customer that KYC needs to be verified
+        await this.notifyCustomerAboutKycVerification(customer);
+
+        throw new Error(
+          `KYC verification required. Your current status is: ${customer.kyc_verification_status}. Please complete KYC verification before applying for a loan. Our team has been notified.`,
+        );
       }
 
       let loanApplication;
@@ -147,7 +374,7 @@ class LoanApplicationService {
 
       await loanApplication.populate(
         "customer_user",
-        "first_name last_name email phone national_id_number date_of_birth address gender marital_status",
+        "first_name last_name email phone national_id_number date_of_birth address gender marital_status kyc_verification_status",
       );
 
       return {
@@ -213,7 +440,7 @@ class LoanApplicationService {
         LoanApplication.find(query)
           .populate(
             "customer_user",
-            "first_name last_name email phone national_id_number date_of_birth address gender marital_status",
+            "first_name last_name email phone national_id_number date_of_birth address gender marital_status kyc_verification_status",
           )
           .populate("debtor_check.checked_by", "first_name last_name")
           .populate("created_by", "first_name last_name email roles")
@@ -262,7 +489,7 @@ class LoanApplicationService {
   }
 
   /**
-   * Get loan applications by agent ID (created_by = agentId and application_source = 'agent')
+   * Get loan applications by agent ID
    */
   async getLoanApplicationsByAgentId(agentId, options = {}) {
     try {
@@ -302,7 +529,7 @@ class LoanApplicationService {
         LoanApplication.find(query)
           .populate(
             "customer_user",
-            "first_name last_name email phone national_id_number",
+            "first_name last_name email phone national_id_number kyc_verification_status",
           )
           .populate("created_by", "first_name last_name email roles")
           .populate("submitted_by", "first_name last_name email roles")
@@ -341,7 +568,7 @@ class LoanApplicationService {
   }
 
   /**
-   * Get loan applications by processor ID (processed_by = processorId)
+   * Get loan applications by processor ID
    */
   async getLoanApplicationsByProcessorId(processorId, options = {}) {
     try {
@@ -380,7 +607,7 @@ class LoanApplicationService {
         LoanApplication.find(query)
           .populate(
             "customer_user",
-            "first_name last_name email phone national_id_number",
+            "first_name last_name email phone national_id_number kyc_verification_status",
           )
           .populate("created_by", "first_name last_name email roles")
           .populate("submitted_by", "first_name last_name email roles")
@@ -436,7 +663,7 @@ class LoanApplicationService {
       const application = await LoanApplication.findOne(query)
         .populate(
           "customer_user",
-          "first_name last_name email phone national_id_number date_of_birth address gender marital_status alternative_phone employment_details next_of_kin",
+          "first_name last_name email phone national_id_number date_of_birth address gender marital_status alternative_phone employment_details next_of_kin kyc_verification_status",
         )
         .populate("created_by", "first_name last_name email roles")
         .populate("submitted_by", "first_name last_name email roles")
@@ -462,110 +689,102 @@ class LoanApplicationService {
   /**
    * Update loan application status (for loan officers)
    */
-/**
- * Update loan application status (for loan officers)
- */
-async updateLoanApplicationStatus(id, status, user, notes = "") {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new Error("Invalid application ID");
-    }
-
-    const validStatuses = ["processing", "approved", "rejected", "cancelled"];
-    if (!validStatuses.includes(status)) {
-      throw new Error(
-        `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
-      );
-    }
-
-    const session = await mongoose.startSession();
-    let application = null;
-    
+  async updateLoanApplicationStatus(id, status, user, notes = "") {
     try {
-      await session.startTransaction();
-
-      application = await LoanApplication.findById(id).session(session);
-
-      if (!application) {
-        throw new Error("Loan application not found");
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw new Error("Invalid application ID");
       }
 
-      // Update application
-      application.status = status;
-      application.updated_at = new Date();
-
-      // Set processed_by only for final decisions
-      if (status === "approved" || status === "rejected") {
-        application.processed_by = user._id;
+      const validStatuses = ["processing", "approved", "rejected", "cancelled"];
+      if (!validStatuses.includes(status)) {
+        throw new Error(
+          `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
+        );
       }
 
-      if (notes) {
-        application.internal_notes = application.internal_notes
-          ? `${application.internal_notes}\n[${new Date().toISOString()}] ${user.first_name}: ${notes}`
-          : `[${new Date().toISOString()}] ${user.first_name}: ${notes}`;
-      }
+      const session = await mongoose.startSession();
+      let application = null;
 
-      await application.save({ session });
-
-      await application.populate(
-        "customer_user",
-        "first_name last_name email phone",
-      );
-
-      await session.commitTransaction();
-      
-    } catch (error) {
-      // Only abort if we're in a transaction
-      if (session.inTransaction()) {
-        await session.abortTransaction();
-      }
-      throw error;
-    } finally {
-      await session.endSession();
-    }
-
-    // Send notifications AFTER transaction is complete
-    // These should not be part of the transaction as they're external operations
-    try {
-      const customerFullName = `${application.customer_user.first_name} ${application.customer_user.last_name}`;
-      await emailService.sendLoanApplicationStatusUpdateEmail({
-        to: application.customer_user.email,
-        fullName: customerFullName,
-        applicationNo: application.application_no,
-        status,
-        notes,
-        officerName: `${user.first_name} ${user.last_name}`,
-        contactDetails:
-          "Please contact our loan department at +263 xxx xxx xxx for any questions.",
-      });
-    } catch (emailError) {
-      console.error("Failed to send status update email:", emailError);
-      // Don't throw - email failure shouldn't break the status update
-    }
-
-    // If status is approved, also send an SMS notification
-    if (status === "approved" && application.customer_user.phone) {
       try {
-        const smsMessage = `Your loan application (${application.application_no}) has been APPROVED. Please contact our loan department for further steps.`;
-        await sendSmsWithMessage(application.customer_user.phone, smsMessage);
-      } catch (smsError) {
-        console.error("Failed to send SMS notification:", smsError);
-        // Don't throw - SMS failure shouldn't break the status update
-      }
-    }
+        await session.startTransaction();
 
-    return {
-      success: true,
-      data: application,
-      message: `Loan application status updated to ${status}`,
-    };
-  } catch (error) {
-    console.error("Error updating loan application status:", error);
-    throw new Error(
-      `Failed to update loan application status: ${error.message}`,
-    );
+        application = await LoanApplication.findById(id).session(session);
+
+        if (!application) {
+          throw new Error("Loan application not found");
+        }
+
+        // Update application
+        application.status = status;
+        application.updated_at = new Date();
+
+        // Set processed_by only for final decisions
+        if (status === "approved" || status === "rejected") {
+          application.processed_by = user._id;
+        }
+
+        if (notes) {
+          application.internal_notes = application.internal_notes
+            ? `${application.internal_notes}\n[${new Date().toISOString()}] ${user.first_name}: ${notes}`
+            : `[${new Date().toISOString()}] ${user.first_name}: ${notes}`;
+        }
+
+        await application.save({ session });
+
+        await application.populate(
+          "customer_user",
+          "first_name last_name email phone",
+        );
+
+        await session.commitTransaction();
+      } catch (error) {
+        if (session.inTransaction()) {
+          await session.abortTransaction();
+        }
+        throw error;
+      } finally {
+        await session.endSession();
+      }
+
+      // Send notifications AFTER transaction is complete
+      try {
+        const customerFullName = `${application.customer_user.first_name} ${application.customer_user.last_name}`;
+        await emailService.sendLoanApplicationStatusUpdateEmail({
+          to: application.customer_user.email,
+          fullName: customerFullName,
+          applicationNo: application.application_no,
+          status,
+          notes,
+          officerName: `${user.first_name} ${user.last_name}`,
+          contactDetails:
+            "Please contact our loan department for any questions.",
+        });
+      } catch (emailError) {
+        console.error("Failed to send status update email:", emailError);
+      }
+
+      if (status === "approved" && application.customer_user.phone) {
+        try {
+          const smsMessage = `Your loan application (${application.application_no}) has been APPROVED. Please contact our loan department for further steps.`;
+          await sendSmsWithMessage(application.customer_user.phone, smsMessage);
+        } catch (smsError) {
+          console.error("Failed to send SMS notification:", smsError);
+        }
+      }
+
+      return {
+        success: true,
+        data: application,
+        message: `Loan application status updated to ${status}`,
+      };
+    } catch (error) {
+      console.error("Error updating loan application status:", error);
+      throw new Error(
+        `Failed to update loan application status: ${error.message}`,
+      );
+    }
   }
-}
+
   /**
    * Perform debtor check on loan application
    */
@@ -649,7 +868,7 @@ async updateLoanApplicationStatus(id, status, user, notes = "") {
   }
 
   /**
-   * Update loan application details
+   * Update loan application details - INCLUDING COLLATERAL IMAGES
    */
   async updateLoanApplication(id, updateData, userRole, userId) {
     try {
@@ -669,12 +888,19 @@ async updateLoanApplicationStatus(id, status, user, notes = "") {
         throw new Error("Loan application not found or cannot be updated");
       }
 
+      // Check if application can be updated based on status
+      const nonEditableStatuses = ["approved", "rejected", "cancelled"];
+      if (nonEditableStatuses.includes(application.status)) {
+        throw new Error(
+          `Cannot update application with status: ${application.status}`,
+        );
+      }
+
       // Remove fields that shouldn't be updated directly
       delete updateData.application_no;
       delete updateData.customer_user;
       delete updateData.status;
       delete updateData.debtor_check;
-      delete updateData.collateral_images;
       delete updateData.internal_notes;
       delete updateData.created_by;
       delete updateData.application_source;
@@ -682,7 +908,7 @@ async updateLoanApplicationStatus(id, status, user, notes = "") {
       delete updateData.processed_by;
       delete updateData.admin_notes;
 
-      // Only allow updating these fields
+      // ALLOWED FIELDS - INCLUDING collateral_images
       const allowedFields = [
         "requested_loan_amount",
         "interest_rate",
@@ -695,6 +921,7 @@ async updateLoanApplicationStatus(id, status, user, notes = "") {
         "small_loan_details",
         "motor_vehicle_details",
         "jewellery_details",
+        "collateral_images", // ✅ ALLOW collateral_images to be updated
         "repayment_type",
         "repayment_days",
         "installment_count",
@@ -708,6 +935,7 @@ async updateLoanApplicationStatus(id, status, user, notes = "") {
         "terms_accepted_by",
       ];
 
+      // Update allowed fields
       for (const field of allowedFields) {
         if (updateData[field] !== undefined) {
           application[field] = updateData[field];
@@ -720,7 +948,7 @@ async updateLoanApplicationStatus(id, status, user, notes = "") {
       const updatedApplication = await LoanApplication.findOne(query)
         .populate(
           "customer_user",
-          "first_name last_name email phone national_id_number",
+          "first_name last_name email phone national_id_number kyc_verification_status",
         )
         .populate("debtor_check.checked_by", "first_name last_name")
         .populate("admin_notes.created_by", "first_name last_name email")
@@ -843,7 +1071,6 @@ async updateLoanApplicationStatus(id, status, user, notes = "") {
         throw new Error("Admin note not found");
       }
 
-      // Check if user is authorized to update (only the creator or admin)
       const isCreator =
         application.admin_notes[noteIndex].created_by.toString() ===
         user._id.toString();
@@ -903,7 +1130,6 @@ async updateLoanApplicationStatus(id, status, user, notes = "") {
         throw new Error("Admin note not found");
       }
 
-      // Check if user is authorized to delete (only the creator or admin)
       const isCreator =
         application.admin_notes[noteIndex].created_by.toString() ===
         user._id.toString();
@@ -1089,5 +1315,3 @@ async updateLoanApplicationStatus(id, status, user, notes = "") {
 }
 
 module.exports = new LoanApplicationService();
-
-
