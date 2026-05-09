@@ -721,180 +721,38 @@ class UserController {
       });
     }
   }
-  /**
-   * Get users added by the current agent/staff member
-   * GET /api/v1/users/my-users
-   */
-  async getMyAddedUsers(req, res) {
-    try {
-      const {
-        page = 1,
-        limit = 20,
-        status,
-        role,
-        search,
-        includeDeleted,
-      } = req.query;
-
-      const filters = {};
-      if (status) filters.status = status;
-      if (role) filters.role = role;
-      if (search) filters.search = search;
-      if (includeDeleted === "true") filters.includeDeleted = true;
-
-      // Only allow agents/staff to see users they've added
-      const allowedRoles = [
-        "agent",
-        "loan_officer_processor",
-        "loan_officer_approval",
-        "call_centre_support",
-        "management",
-      ];
-
-      if (!allowedRoles.some((role) => req.user.roles.includes(role))) {
-        return res.status(403).json({
-          success: false,
-          message: "You don't have permission to view users you've added",
-        });
-      }
-
-      const result = await userService.getUsersAddedByStaff(
-        req.user._id,
-        filters,
-        parseInt(page),
-        parseInt(limit),
-      );
-
-      res.json({
-        success: true,
-        message: `Found ${result.users.length} user(s) added by you`,
-        data: result,
-      });
-    } catch (error) {
-      res.status(error.status || 500).json({
-        success: false,
-        message: error.message || "Failed to fetch users",
-      });
-    }
-  }
 
   /**
-   * Get a specific user that was added by the current agent/staff member
-   * GET /api/v1/users/my-users/:userId
-   */
-  async getMyAddedUserById(req, res) {
-    try {
-      const { userId } = req.params;
+ * Get customers added by the logged-in agent
+ */
+async getMyCustomers(req, res) {
+  try {
+    const agentId = req.user._id;
+    const { page = 1, limit = 20, status, search, includeDeleted } = req.query;
 
-      // Only allow agents/staff to see users they've added
-      const allowedRoles = [
-        "agent",
-        "loan_officer_processor",
-        "loan_officer_approval",
-        "call_centre_support",
-        "management",
-      ];
+    const filters = {};
+    if (status) filters.status = status;
+    if (search) filters.search = search;
+    if (includeDeleted === "true") filters.includeDeleted = true;
 
-      if (!allowedRoles.some((role) => req.user.roles.includes(role))) {
-        return res.status(403).json({
-          success: false,
-          message: "You don't have permission to view this user",
-        });
-      }
+    const result = await userService.getCustomersAddedByAgent(
+      agentId,
+      filters,
+      parseInt(page),
+      parseInt(limit),
+    );
 
-      const user = await userService.getUserByIdForStaff(userId, req.user._id);
-
-      res.json({
-        success: true,
-        data: user,
-      });
-    } catch (error) {
-      res.status(error.status || 500).json({
-        success: false,
-        message: error.message || "Failed to fetch user",
-      });
-    }
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Failed to fetch customers",
+    });
   }
-
-  /**
-   * Get statistics about users added by the current agent/staff member
-   * GET /api/v1/users/my-users/stats
-   */
-  async getMyAddedUsersStats(req, res) {
-    try {
-      const User = require("../models/user.model");
-
-      const stats = await User.aggregate([
-        {
-          $match: {
-            added_by: req.user._id,
-            status: { $ne: "deleted" },
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: 1 },
-            active: { $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] } },
-            pending: {
-              $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] },
-            },
-            suspended: {
-              $sum: { $cond: [{ $eq: ["$status", "suspended"] }, 1, 0] },
-            },
-            verified: {
-              $sum: { $cond: [{ $eq: ["$email_verified", true] }, 1, 0] },
-            },
-            unverified: {
-              $sum: { $cond: [{ $eq: ["$email_verified", false] }, 1, 0] },
-            },
-          },
-        },
-      ]);
-
-      // Get role-based breakdown
-      const roleStats = await User.aggregate([
-        {
-          $match: {
-            added_by: req.user._id,
-            status: { $ne: "deleted" },
-          },
-        },
-        {
-          $unwind: "$roles",
-        },
-        {
-          $group: {
-            _id: "$roles",
-            count: { $sum: 1 },
-          },
-        },
-      ]);
-
-      res.json({
-        success: true,
-        data: {
-          totals: stats[0] || {
-            total: 0,
-            active: 0,
-            pending: 0,
-            suspended: 0,
-            verified: 0,
-            unverified: 0,
-          },
-          byRole: roleStats.reduce((acc, curr) => {
-            acc[curr._id] = curr.count;
-            return acc;
-          }, {}),
-        },
-      });
-    } catch (error) {
-      res.status(error.status || 500).json({
-        success: false,
-        message: error.message || "Failed to fetch statistics",
-      });
-    }
-  }
+}
 }
 
 module.exports = new UserController();

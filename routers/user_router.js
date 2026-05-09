@@ -191,58 +191,6 @@ const {
  *       properties:
  *         fcm_token:
  *           type: string
- *     MyUsersResponse:
- *       type: object
- *       properties:
- *         success:
- *           type: boolean
- *         message:
- *           type: string
- *         data:
- *           type: object
- *           properties:
- *             users:
- *               type: array
- *               items:
- *                 $ref: '#/components/schemas/User'
- *             pagination:
- *               type: object
- *               properties:
- *                 page:
- *                   type: integer
- *                 limit:
- *                   type: integer
- *                 total:
- *                   type: integer
- *                 pages:
- *                   type: integer
- *     MyUsersStatsResponse:
- *       type: object
- *       properties:
- *         success:
- *           type: boolean
- *         data:
- *           type: object
- *           properties:
- *             totals:
- *               type: object
- *               properties:
- *                 total:
- *                   type: integer
- *                 active:
- *                   type: integer
- *                 pending:
- *                   type: integer
- *                 suspended:
- *                   type: integer
- *                 verified:
- *                   type: integer
- *                 unverified:
- *                   type: integer
- *             byRole:
- *               type: object
- *               additionalProperties:
- *                 type: integer
  */
 
 /**
@@ -985,19 +933,14 @@ router.post(
   userController.addCustomer,
 );
 
-// =========== AGENT/STAFF ROUTES (Users added by them) ===========
-
 /**
  * @swagger
- * /api/v1/users/my-users:
+ * /api/v1/users/my-customers:
  *   get:
- *     summary: Get users added by the current agent/staff member
+ *     summary: Get customers added by the logged-in agent
  *     tags: [Users]
  *     security:
  *       - bearerAuth: []
- *     description: |
- *       Returns all users that were added by the authenticated agent, loan officer,
- *       or support staff member. This allows staff to only see customers they have personally onboarded.
  *     parameters:
  *       - in: query
  *         name: page
@@ -1015,126 +958,32 @@ router.post(
  *           type: string
  *           enum: [pending, active, suspended, deleted]
  *       - in: query
- *         name: role
- *         schema:
- *           type: string
- *           enum: [customer, agent]
- *       - in: query
  *         name: search
  *         schema:
  *           type: string
- *         description: Search by email, name, or phone
  *       - in: query
  *         name: includeDeleted
  *         schema:
  *           type: boolean
- *         description: Include soft-deleted users
  *     responses:
  *       200:
- *         description: List of users added by the staff member
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/MyUsersResponse'
+ *         description: List of customers added by this agent
  *       401:
  *         description: Unauthorized
  *       403:
- *         description: Forbidden - Staff access required
+ *         description: Forbidden
  */
 router.get(
-  "/my-users",
+  "/my-customers",
   authMiddleware,
   requireRoles(
     "agent",
     "loan_officer_processor",
     "loan_officer_approval",
-    "call_centre_support",
-    "management",
+    "super_admin_vendor",
+    "admin_pawn_limited",
   ),
-  userController.getMyAddedUsers,
-);
-
-/**
- * @swagger
- * /api/v1/users/my-users/stats:
- *   get:
- *     summary: Get statistics about users added by the current agent/staff member
- *     tags: [Users]
- *     security:
- *       - bearerAuth: []
- *     description: |
- *       Returns statistical breakdown of users added by the authenticated staff member,
- *       including totals by status, verification status, and roles.
- *     responses:
- *       200:
- *         description: Statistics of users added by the staff member
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/MyUsersStatsResponse'
- *       401:
- *         description: Unauthorized
- *       403:
- *         description: Forbidden - Staff access required
- */
-router.get(
-  "/my-users/stats",
-  authMiddleware,
-  requireRoles(
-    "agent",
-    "loan_officer_processor",
-    "loan_officer_approval",
-    "call_centre_support",
-    "management",
-  ),
-  userController.getMyAddedUsersStats,
-);
-
-/**
- * @swagger
- * /api/v1/users/my-users/{userId}:
- *   get:
- *     summary: Get a specific user added by the current agent/staff member
- *     tags: [Users]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: userId
- *         required: true
- *         schema:
- *           type: string
- *         description: The ID of the user to retrieve
- *     responses:
- *       200:
- *         description: User details
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   $ref: '#/components/schemas/User'
- *       401:
- *         description: Unauthorized
- *       403:
- *         description: Forbidden - You don't have permission to view this user
- *       404:
- *         description: User not found
- */
-router.get(
-  "/my-users/:userId",
-  authMiddleware,
-  requireRoles(
-    "agent",
-    "loan_officer_processor",
-    "loan_officer_approval",
-    "call_centre_support",
-    "management",
-  ),
-  userController.getMyAddedUserById,
+  userController.getMyCustomers,
 );
 
 module.exports = router;
