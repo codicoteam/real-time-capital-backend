@@ -935,7 +935,7 @@ router.post(
 
 /**
  * @swagger
- * /api/v1/users/my-customers:
+ * /api/v1/users/agentcustomers:
  *   get:
  *     summary: Get customers added by the logged-in agent
  *     tags: [Users]
@@ -974,7 +974,7 @@ router.post(
  *         description: Forbidden
  */
 router.get(
-  "/my-customers",
+  "/agentcustomers",
   authMiddleware,
   requireRoles(
     "agent",

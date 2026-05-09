@@ -868,53 +868,72 @@ class UserService {
   }
 
   /**
- * Get customers added by a specific agent
- */
-/**
- * Get customers added by a specific agent
- */
-async getCustomersAddedByAgent(agentId, filters = {}, page = 1, limit = 20) {
-  const query = {
-    added_by: agentId,
-    roles: { $in: ["customer"] },
-  };
-
-  if (filters.includeDeleted !== true) {
-    query.status = { $ne: "deleted" };
-  }
-
-  if (filters.status) query.status = filters.status;
-  if (filters.search) {
-    query.$or = [
-      { email: { $regex: filters.search, $options: "i" } },
-      { first_name: { $regex: filters.search, $options: "i" } },
-      { last_name: { $regex: filters.search, $options: "i" } },
-      { phone: { $regex: filters.search, $options: "i" } },
-    ];
-  }
-
-  const skip = (page - 1) * limit;
-
-  const [users, total] = await Promise.all([
-    User.find(query)
-      .sort({ created_at: -1 })
-      .skip(skip)
-      .limit(limit),
-    User.countDocuments(query),
-  ]);
-
-  return {
-    users,
-    pagination: {
+   * Get customers added by a specific agent
+   */
+  /**
+   * Get customers added by a specific agent
+   */
+  async getCustomersAddedByAgent(agentId, filters = {}, page = 1, limit = 1000000) {
+    console.log("[getCustomersAddedByAgent] Called with agentId:", agentId);
+    console.log(
+      "[getCustomersAddedByAgent] filters:",
+      filters,
+      "page:",
       page,
+      "limit:",
       limit,
-      total,
-      pages: Math.ceil(total / limit),
-    },
-  };
-}
+    );
 
+    const query = {
+      added_by: agentId,
+      roles: { $in: ["customer"] },
+    };
 
+    if (filters.includeDeleted !== true) {
+      query.status = { $ne: "deleted" };
+    }
+
+    if (filters.status) query.status = filters.status;
+    if (filters.search) {
+      query.$or = [
+        { email: { $regex: filters.search, $options: "i" } },
+        { first_name: { $regex: filters.search, $options: "i" } },
+        { last_name: { $regex: filters.search, $options: "i" } },
+        { phone: { $regex: filters.search, $options: "i" } },
+      ];
+    }
+
+    console.log(
+      "[getCustomersAddedByAgent] MongoDB query:",
+      JSON.stringify(query),
+    );
+
+    const skip = (page - 1) * limit;
+
+    const [users, total] = await Promise.all([
+      User.find(query).sort({ created_at: -1 }).skip(skip).limit(limit),
+      User.countDocuments(query),
+    ]);
+
+    console.log("[getCustomersAddedByAgent] total found:", total);
+    console.log("[getCustomersAddedByAgent] users returned:", users.length);
+    if (users.length > 0) {
+      console.log(
+        "[getCustomersAddedByAgent] sample user added_by:",
+        users[0].added_by,
+      );
+    }
+
+    return {
+      users,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    };
+  }
 }
 
 module.exports = new UserService();

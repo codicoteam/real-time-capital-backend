@@ -724,11 +724,19 @@ class UserController {
 
   /**
  * Get customers added by the logged-in agent
+/**
+ * Get customers added by the logged-in agent
  */
 async getMyCustomers(req, res) {
   try {
+    console.log("[getMyCustomers] Handler hit");
+    console.log("[getMyCustomers] req.user:", JSON.stringify(req.user));
+
     const agentId = req.user._id;
     const { page = 1, limit = 20, status, search, includeDeleted } = req.query;
+
+    console.log("[getMyCustomers] agentId:", agentId);
+    console.log("[getMyCustomers] query params:", { page, limit, status, search, includeDeleted });
 
     const filters = {};
     if (status) filters.status = status;
@@ -742,11 +750,15 @@ async getMyCustomers(req, res) {
       parseInt(limit),
     );
 
+    console.log("[getMyCustomers] result count:", result.users.length);
+    console.log("[getMyCustomers] pagination:", result.pagination);
+
     res.json({
       success: true,
       data: result,
     });
   } catch (error) {
+    console.error("[getMyCustomers] ERROR:", error);
     res.status(error.status || 500).json({
       success: false,
       message: error.message || "Failed to fetch customers",
