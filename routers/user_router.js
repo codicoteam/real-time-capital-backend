@@ -933,14 +933,19 @@ router.post(
   userController.addCustomer,
 );
 
+// =========== AGENT/STAFF ROUTES (Users added by them) ===========
+
 /**
  * @swagger
- * /api/v1/users/agentcustomers:
+ * /api/v1/users/my-users:
  *   get:
- *     summary: Get customers added by the logged-in agent
+ *     summary: Get users added by the current agent/staff member
  *     tags: [Users]
  *     security:
  *       - bearerAuth: []
+ *     description: |
+ *       Returns all users that were added by the authenticated agent, loan officer,
+ *       or support staff member. This allows staff to only see customers they have personally onboarded.
  *     parameters:
  *       - in: query
  *         name: page
@@ -958,32 +963,108 @@ router.post(
  *           type: string
  *           enum: [pending, active, suspended, deleted]
  *       - in: query
+ *         name: role
+ *         schema:
+ *           type: string
+ *           enum: [customer, agent]
+ *       - in: query
  *         name: search
  *         schema:
  *           type: string
+ *         description: Search by email, name, or phone
  *       - in: query
  *         name: includeDeleted
  *         schema:
  *           type: boolean
+ *         description: Include soft-deleted users
  *     responses:
  *       200:
- *         description: List of customers added by this agent
+ *         description: List of users added by the staff member
  *       401:
  *         description: Unauthorized
  *       403:
- *         description: Forbidden
+ *         description: Forbidden - Staff access required
  */
 router.get(
-  "/agentcustomers",
+  "/my-users",
   authMiddleware,
   requireRoles(
     "agent",
     "loan_officer_processor",
     "loan_officer_approval",
-    "super_admin_vendor",
-    "admin_pawn_limited",
+    "call_centre_support",
+    "management",
   ),
-  userController.getMyCustomers,
+  userController.getMyAddedUsers,
+);
+
+/**
+ * @swagger
+ * /api/v1/users/my-users/stats:
+ *   get:
+ *     summary: Get statistics about users added by the current agent/staff member
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     description: |
+ *       Returns statistical breakdown of users added by the authenticated staff member,
+ *       including totals by status, verification status, and roles.
+ *     responses:
+ *       200:
+ *         description: Statistics of users added by the staff member
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Staff access required
+ */
+router.get(
+  "/my-users/stats",
+  authMiddleware,
+  requireRoles(
+    "agent",
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "call_centre_support",
+    "management",
+  ),
+  userController.getMyAddedUsersStats,
+);
+
+/**
+ * @swagger
+ * /api/v1/users/my-users/{userId}:
+ *   get:
+ *     summary: Get a specific user added by the current agent/staff member
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: User details
+ *       403:
+ *         description: Forbidden - You don't have permission to view this user
+ *       404:
+ *         description: User not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.get(
+  "/my-users/:userId",
+  authMiddleware,
+  requireRoles(
+    "agent",
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "call_centre_support",
+    "management",
+  ),
+  userController.getMyAddedUserById,
 );
 
 module.exports = router;
