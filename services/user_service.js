@@ -866,6 +866,81 @@ class UserService {
 
     return { message: "All FCM tokens removed successfully" };
   }
+
+  /**
+   * Get users added by a specific agent/staff member
+   * @param {string} addedByUserId - The ID of the agent/staff who added the users
+   * @param {Object} filters - Optional filters
+   * @param {number} page - Page number
+   * @param {number} limit - Items per page
+   */
+  async getUsersAddedByStaff(
+    addedByUserId,
+    filters = {},
+    page = 1,
+    limit = 20,
+  ) {
+    const query = {
+      added_by: addedByUserId,
+    };
+
+    // Apply filters - exclude deleted users by default unless specifically requested
+    if (filters.includeDeleted !== true) {
+      query.status = { $ne: "deleted" };
+    }
+
+    if (filters.status) query.status = filters.status;
+    if (filters.role) query.roles = { $in: [filters.role] };
+    if (filters.search) {
+      query.$or = [
+        { email: { $regex: filters.search, $options: "i" } },
+        { first_name: { $regex: filters.search, $options: "i" } },
+        { last_name: { $regex: filters.search, $options: "i" } },
+        { phone: { $regex: filters.search, $options: "i" } },
+      ];
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [users, total] = await Promise.all([
+      User.find(query)
+        .populate("added_by", "first_name last_name email roles")
+        .sort({ created_at: -1 })
+        .skip(skip)
+        .limit(limit),
+      User.countDocuments(query),
+    ]);
+
+    return {
+      users,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Get user by ID with permission check (only if user was added by the requesting staff)
+   */
+  async getUserByIdForStaff(userId, staffUserId) {
+    const user = await User.findOne({
+      _id: userId,
+      added_by: staffUserId,
+    }).populate("added_by", "first_name last_name email roles");
+
+    if (!user) {
+      throw {
+        status: 404,
+        message:
+          "User not found or you don't have permission to access this user",
+      };
+    }
+
+    return user;
+  }
 }
 
 module.exports = new UserService();
