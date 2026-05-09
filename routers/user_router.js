@@ -191,6 +191,58 @@ const {
  *       properties:
  *         fcm_token:
  *           type: string
+ *     MyUsersResponse:
+ *       type: object
+ *       properties:
+ *         success:
+ *           type: boolean
+ *         message:
+ *           type: string
+ *         data:
+ *           type: object
+ *           properties:
+ *             users:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/User'
+ *             pagination:
+ *               type: object
+ *               properties:
+ *                 page:
+ *                   type: integer
+ *                 limit:
+ *                   type: integer
+ *                 total:
+ *                   type: integer
+ *                 pages:
+ *                   type: integer
+ *     MyUsersStatsResponse:
+ *       type: object
+ *       properties:
+ *         success:
+ *           type: boolean
+ *         data:
+ *           type: object
+ *           properties:
+ *             totals:
+ *               type: object
+ *               properties:
+ *                 total:
+ *                   type: integer
+ *                 active:
+ *                   type: integer
+ *                 pending:
+ *                   type: integer
+ *                 suspended:
+ *                   type: integer
+ *                 verified:
+ *                   type: integer
+ *                 unverified:
+ *                   type: integer
+ *             byRole:
+ *               type: object
+ *               additionalProperties:
+ *                 type: integer
  */
 
 /**
@@ -980,6 +1032,10 @@ router.post(
  *     responses:
  *       200:
  *         description: List of users added by the staff member
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/MyUsersResponse'
  *       401:
  *         description: Unauthorized
  *       403:
@@ -1012,6 +1068,10 @@ router.get(
  *     responses:
  *       200:
  *         description: Statistics of users added by the staff member
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/MyUsersStatsResponse'
  *       401:
  *         description: Unauthorized
  *       403:
@@ -1044,15 +1104,25 @@ router.get(
  *         required: true
  *         schema:
  *           type: string
+ *         description: The ID of the user to retrieve
  *     responses:
  *       200:
  *         description: User details
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   $ref: '#/components/schemas/User'
+ *       401:
+ *         description: Unauthorized
  *       403:
  *         description: Forbidden - You don't have permission to view this user
  *       404:
  *         description: User not found
- *       401:
- *         description: Unauthorized
  */
 router.get(
   "/my-users/:userId",
