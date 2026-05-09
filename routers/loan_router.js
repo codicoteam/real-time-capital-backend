@@ -255,8 +255,156 @@ router.get(
  */
 router.get(
   "/all",
-  requireRoles("admin_pawn_limited", "management", "super_admin_vendor", "loan_officer_processor"),
+  requireRoles(
+    "admin_pawn_limited",
+    "management",
+    "super_admin_vendor",
+    "loan_officer_processor",
+  ),
   loanController.getAllLoans,
+);
+
+/**
+ * @swagger
+ * /api/v1/loans/agent/loans:
+ *   get:
+ *     summary: Get loans for agent's customers
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     description: Retrieve all loans belonging to customers that this agent has added/created
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [draft, pending_approval, active, overdue, in_grace, auction, sold, redeemed, closed, cancelled, partially_paid, defaulted, written_off]
+ *       - in: query
+ *         name: collateral_category
+ *         schema:
+ *           type: string
+ *           enum: [small_loans, motor_vehicle, jewellery]
+ *       - in: query
+ *         name: loan_no
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: approval_status
+ *         schema:
+ *           type: string
+ *           enum: [pending, approved, rejected]
+ *       - in: query
+ *         name: requires_super_admin_approval
+ *         schema:
+ *           type: boolean
+ *       - in: query
+ *         name: created_from
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: created_to
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: due_from
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: due_to
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: min_amount
+ *         schema:
+ *           type: number
+ *       - in: query
+ *         name: max_amount
+ *         schema:
+ *           type: number
+ *       - in: query
+ *         name: sort_by
+ *         schema:
+ *           type: string
+ *           default: created_at
+ *       - in: query
+ *         name: sort_order
+ *         schema:
+ *           type: string
+ *           enum: [asc, desc]
+ *           default: desc
+ *     responses:
+ *       200:
+ *         description: Agent's customer loans retrieved successfully
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: User is not an agent
+ */
+router.get("/agent/loans", requireRoles("agent"), loanController.getAgentLoans);
+
+/**
+ * @swagger
+ * /api/v1/loans/agent/summary:
+ *   get:
+ *     summary: Get loan summary for agent's customers
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     description: Get statistics and summary of all loans belonging to customers that this agent has added/created
+ *     responses:
+ *       200:
+ *         description: Agent loan summary retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     total_customers:
+ *                       type: integer
+ *                     customers_with_loans:
+ *                       type: integer
+ *                     total_loans:
+ *                       type: integer
+ *                     active_loans:
+ *                       type: integer
+ *                     overdue_loans:
+ *                       type: integer
+ *                     pending_approval_loans:
+ *                       type: integer
+ *                     redeemed_loans:
+ *                       type: integer
+ *                     total_disbursed:
+ *                       type: number
+ *                     total_outstanding:
+ *                       type: number
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: User is not an agent
+ */
+router.get(
+  "/agent/summary",
+  requireRoles("agent"),
+  loanController.getAgentCustomerLoansSummary,
 );
 
 /**
@@ -290,6 +438,7 @@ router.get(
     "admin_pawn_limited",
     "super_admin_vendor",
     "management",
+    "agent",
   ),
   loanController.getLoan,
 );
@@ -548,6 +697,7 @@ router.get(
     "loan_officer_approval",
     "admin_pawn_limited",
     "super_admin_vendor",
+    "agent",
   ),
   loanController.calculateCharges,
 );
@@ -623,6 +773,7 @@ router.get(
     "super_admin_vendor",
     "admin_pawn_limited",
     "management",
+    "agent",
   ),
   loanController.getLoansByCustomer,
 );

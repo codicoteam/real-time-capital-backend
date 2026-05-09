@@ -182,6 +182,107 @@ class LoanController {
   }
 
   /**
+   * Get loans for agent - view loans for customers they added
+   */
+  async getAgentLoans(req, res) {
+    try {
+      const agentId = req.user?.id;
+      const {
+        page = 1,
+        limit = 10,
+        status,
+        collateral_category,
+        loan_no,
+        approval_status,
+        requires_super_admin_approval,
+        created_from,
+        created_to,
+        due_from,
+        due_to,
+        min_amount,
+        max_amount,
+        sort_by = "created_at",
+        sort_order = "desc",
+      } = req.query;
+
+      const pageNum = parseInt(page);
+      const limitNum = parseInt(limit);
+
+      if (pageNum < 1 || limitNum < 1 || limitNum > 100) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid pagination parameters. Page must be >= 1, limit must be between 1 and 100",
+        });
+      }
+
+      const filters = {
+        status,
+        collateral_category,
+        loan_no,
+        approval_status,
+        created_from,
+        created_to,
+        due_from,
+        due_to,
+        min_amount,
+        max_amount,
+        sort_by,
+        sort_order,
+      };
+
+      if (requires_super_admin_approval !== undefined) {
+        filters.requires_super_admin_approval =
+          requires_super_admin_approval === "true";
+      }
+
+      const result = await loanService.getLoansForAgent(
+        agentId,
+        filters,
+        pageNum,
+        limitNum,
+      );
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to retrieve agent loans",
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
+   * Get agent customer loans summary - statistics for agent's customers
+   */
+  async getAgentCustomerLoansSummary(req, res) {
+    try {
+      const agentId = req.user?.id;
+
+      const result = await loanService.getAgentCustomerLoansSummary(agentId);
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to retrieve agent loan summary",
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
    * Update loan
    */
   async updateLoan(req, res) {

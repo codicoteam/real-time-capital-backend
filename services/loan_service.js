@@ -5,6 +5,7 @@ const Asset = require("../models/asset.model");
 const Attachment = require("../models/attachment.model");
 const { sendSmsWithMessage } = require("../utils/sms_utils");
 const { sendEmail } = require("../utils/emails_util");
+const NotificationService = require("../services/notifications_service");
 
 class LoanService {
   /**
@@ -49,7 +50,8 @@ class LoanService {
       if (loanData.application) {
         const application = await LoanApplication.findById(
           loanData.application,
-        );
+        ).populate("customer_user", "first_name last_name email phone roles");
+
         if (!application) {
           throw {
             status: 404,
@@ -169,20 +171,352 @@ class LoanService {
         });
       }
 
-      // Update application status to indicate loan created
+      // Update application status to 'loan_created' and link the loan
       if (loanData.application) {
         await LoanApplication.findByIdAndUpdate(loanData.application, {
           $set: {
+            status: "loan_created",
             loan_created: true,
             loan_id: loan._id,
           },
         });
+
+        // Send in-app notification to the customer
+        await this.sendLoanCreationNotification(
+          loanData.application,
+          loan,
+          userId,
+        );
       }
 
       return {
         success: true,
         data: populatedLoan,
         message: "Loan created successfully",
+      };
+    } catch (error) {
+      throw this.handleMongoError(error);
+    }
+  }
+
+  /**
+   * Send notification when a loan is created from an application
+   */
+  async sendLoanCreationNotification(applicationId, loan, createdByUserId) {
+    try {
+      const application = await LoanApplication.findById(
+        applicationId,
+      ).populate("customer_user", "first_name last_name email phone roles _id");
+
+      if (!application || !application.customer_user) {
+        console.log(
+          "Cannot send notification: Application or customer not found",
+        );
+        return;
+      }
+
+      const customer = application.customer_user;
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+
+      // Create notification for the customer
+      const notificationData = {
+        title: "Loan Created Successfully",
+        message: `Your loan of $${loan.principal_amount} has been successfully created. Loan Number: ${loan.loan_no}. You can track your loan status in your dashboard.`,
+        type: "loan_disbursed",
+        priority: "high",
+        audience: {
+          scope: "user",
+          user_id: customer._id,
+        },
+        channels: ["in_app", "email", "sms"], // Send via all channels
+        entity_type: "loan",
+        entity_id: loan._id,
+        action_text: "View Loan Details",
+        action_url: `${frontendUrl}/customer/loans/${loan._id}`,
+        data: {
+          loan_id: loan._id,
+          loan_no: loan.loan_no,
+          application_id: applicationId,
+          principal_amount: loan.principal_amount,
+        },
+      };
+
+      // Use the NotificationService to create and send the notification
+      const NotificationService = require("../services/notifications_service");
+      const result = await NotificationService.createNotification(
+        notificationData,
+        createdByUserId,
+      );
+
+      console.log(
+        `Loan creation notification sent to customer ${customer._id}:`,
+        result,
+      );
+      return result;
+    } catch (error) {
+      console.error("Failed to send loan creation notification:", error);
+      // Don't throw - notification failure shouldn't break loan creation
+      return null;
+    }
+  }
+
+  /**
+   * Get loans for agents to view loans for their customers
+   * Agents can see loans of customers they have created/added
+   */
+  async getLoansForAgent(agentId, filters = {}, page = 1, limit = 10) {
+    try {
+      // First, verify the user is an agent
+      const agent = await User.findById(agentId);
+      if (!agent) {
+        throw { status: 404, message: "Agent not found" };
+      }
+
+      if (!agent.roles.includes("agent")) {
+        throw { status: 403, message: "User is not an agent" };
+      }
+
+      // Find all customers added by this agent
+      const customers = await User.find({
+        added_by: agentId,
+        roles: "customer",
+        status: "active",
+      }).select("_id");
+
+      const customerIds = customers.map((c) => c._id);
+
+      if (customerIds.length === 0) {
+        return {
+          success: true,
+          data: {
+            loans: [],
+            pagination: {
+              total: 0,
+              page,
+              limit,
+              totalPages: 0,
+              hasNextPage: false,
+              hasPrevPage: false,
+            },
+          },
+          message: "No customers found for this agent",
+        };
+      }
+
+      // Build query for loans
+      const query = { customer_user: { $in: customerIds } };
+
+      // Apply additional filters
+      if (filters.status) query.status = filters.status;
+      if (filters.collateral_category)
+        query.collateral_category = filters.collateral_category;
+      if (filters.loan_no)
+        query.loan_no = { $regex: filters.loan_no, $options: "i" };
+      if (filters.approval_status)
+        query.approval_status = filters.approval_status;
+      if (filters.requires_super_admin_approval !== undefined) {
+        query.requires_super_admin_approval =
+          filters.requires_super_admin_approval;
+      }
+
+      // Date range filters
+      if (filters.created_from || filters.created_to) {
+        query.created_at = {};
+        if (filters.created_from)
+          query.created_at.$gte = new Date(filters.created_from);
+        if (filters.created_to)
+          query.created_at.$lte = new Date(filters.created_to);
+      }
+
+      // Due date filters
+      if (filters.due_from || filters.due_to) {
+        query.due_date = {};
+        if (filters.due_from) query.due_date.$gte = new Date(filters.due_from);
+        if (filters.due_to) query.due_date.$lte = new Date(filters.due_to);
+      }
+
+      // Amount range filters
+      if (filters.min_amount || filters.max_amount) {
+        query.principal_amount = {};
+        if (filters.min_amount)
+          query.principal_amount.$gte = parseFloat(filters.min_amount);
+        if (filters.max_amount)
+          query.principal_amount.$lte = parseFloat(filters.max_amount);
+      }
+
+      const skip = (page - 1) * limit;
+      const sort = filters.sort_by
+        ? { [filters.sort_by]: filters.sort_order === "asc" ? 1 : -1 }
+        : { created_at: -1 };
+
+      // Execute query with pagination
+      const [loans, total] = await Promise.all([
+        Loan.find(query)
+          .populate([
+            {
+              path: "customer_user",
+              select:
+                "first_name last_name email phone national_id_number address profile_pic_url status",
+            },
+            {
+              path: "asset",
+              select:
+                "asset_no title category evaluated_value status asset_images storage_location",
+            },
+            {
+              path: "application",
+              select:
+                "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status",
+            },
+            {
+              path: "created_by",
+              select: "first_name last_name email roles",
+            },
+            {
+              path: "processed_by",
+              select: "first_name last_name email",
+            },
+          ])
+          .sort(sort)
+          .skip(skip)
+          .limit(limit)
+          .lean(),
+        Loan.countDocuments(query),
+      ]);
+
+      const totalPages = Math.ceil(total / limit);
+      const hasNextPage = page < totalPages;
+      const hasPrevPage = page > 1;
+
+      // Add agent-specific info to each loan (like commission tracking if needed)
+      const enhancedLoans = loans.map((loan) => ({
+        ...loan,
+        agent_info: {
+          agent_id: agentId,
+          agent_name: `${agent.first_name} ${agent.last_name}`,
+          can_edit:
+            loan.status === "draft" || loan.status === "pending_approval",
+          can_view_details: true,
+        },
+      }));
+
+      return {
+        success: true,
+        data: {
+          loans: enhancedLoans,
+          pagination: {
+            total,
+            page,
+            limit,
+            totalPages,
+            hasNextPage,
+            hasPrevPage,
+          },
+          summary: {
+            total_loans: total,
+            active_loans: loans.filter((l) => l.status === "active").length,
+            pending_approval: loans.filter(
+              (l) => l.status === "pending_approval",
+            ).length,
+            overdue_loans: loans.filter((l) => l.status === "overdue").length,
+            total_outstanding: loans.reduce(
+              (sum, l) => sum + (l.current_balance || 0),
+              0,
+            ),
+          },
+        },
+        message: "Agent loans retrieved successfully",
+      };
+    } catch (error) {
+      throw this.handleMongoError(error);
+    }
+  }
+
+  /**
+   * Get agent's customer loans with detailed statistics
+   */
+  async getAgentCustomerLoansSummary(agentId) {
+    try {
+      const agent = await User.findById(agentId);
+      if (!agent || !agent.roles.includes("agent")) {
+        throw { status: 403, message: "Invalid agent" };
+      }
+
+      const customers = await User.find({
+        added_by: agentId,
+        roles: "customer",
+      }).select("_id");
+      const customerIds = customers.map((c) => c._id);
+
+      if (customerIds.length === 0) {
+        return {
+          success: true,
+          data: {
+            total_customers: 0,
+            total_loans: 0,
+            active_loans: 0,
+            total_disbursed: 0,
+            total_outstanding: 0,
+            customers_with_loans: 0,
+          },
+          message: "No customers found",
+        };
+      }
+
+      const loanStats = await Loan.aggregate([
+        { $match: { customer_user: { $in: customerIds } } },
+        {
+          $group: {
+            _id: null,
+            total_loans: { $sum: 1 },
+            active_loans: {
+              $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] },
+            },
+            overdue_loans: {
+              $sum: { $cond: [{ $eq: ["$status", "overdue"] }, 1, 0] },
+            },
+            pending_approval_loans: {
+              $sum: { $cond: [{ $eq: ["$status", "pending_approval"] }, 1, 0] },
+            },
+            redeemed_loans: {
+              $sum: { $cond: [{ $eq: ["$status", "redeemed"] }, 1, 0] },
+            },
+            total_principal: { $sum: "$principal_amount" },
+            total_outstanding: { $sum: "$current_balance" },
+            total_disbursed: { $sum: "$principal_amount" },
+          },
+        },
+      ]);
+
+      const customersWithLoans = await Loan.distinct("customer_user", {
+        customer_user: { $in: customerIds },
+      });
+
+      const stats = loanStats[0] || {
+        total_loans: 0,
+        active_loans: 0,
+        overdue_loans: 0,
+        pending_approval_loans: 0,
+        redeemed_loans: 0,
+        total_principal: 0,
+        total_outstanding: 0,
+        total_disbursed: 0,
+      };
+
+      return {
+        success: true,
+        data: {
+          total_customers: customerIds.length,
+          customers_with_loans: customersWithLoans.length,
+          total_loans: stats.total_loans,
+          active_loans: stats.active_loans,
+          overdue_loans: stats.overdue_loans,
+          pending_approval_loans: stats.pending_approval_loans,
+          redeemed_loans: stats.redeemed_loans,
+          total_disbursed: stats.total_disbursed,
+          total_outstanding: stats.total_outstanding,
+        },
+        message: "Agent loan summary retrieved successfully",
       };
     } catch (error) {
       throw this.handleMongoError(error);
