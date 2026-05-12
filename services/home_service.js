@@ -69,7 +69,7 @@ class HomeService {
    */
   async _getCustomerHomeData(userId) {
     const profile = await User.findById(userId)
-      .select("first_name last_name profile_pic_url email phone")
+      .select("first_name last_name profile_pic_url email phone kyc_verification_status")
       .lean();
 
     if (!profile) throw new Error("User not found");
@@ -104,6 +104,7 @@ class HomeService {
           profile_pic_url: profile.profile_pic_url || null,
           email: profile.email,
           phone: profile.phone,
+          kyc_verification_status: profile.kyc_verification_status,
         },
         active_auctions: activeAuctions,
         latest_bid: latestBid || null,

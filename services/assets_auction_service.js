@@ -6,6 +6,7 @@ const Auction = require("../models/auction.model");
 const User = require("../models/user.model");
 const { sendSmsWithMessage } = require("../utils/sms_utils"); // your twilio file
 const { sendEmail, generateDocumentTemplate } = require("../utils/emails_util");
+const NotificationService = require("./notifications_service");
 
 // ─────────────────────────────────────────────
 // Helper – generate sequential auction_no
@@ -67,7 +68,141 @@ function calculateAuctionAmount(loan) {
 }
 
 // ─────────────────────────────────────────────
-// Email – asset moved to auction
+// Helper – update auction status based on dates
+// ─────────────────────────────────────────────
+async function updateAuctionStatuses() {
+  const now = new Date();
+
+  // Close auctions that have ended but are still live
+  const closedResult = await Auction.updateMany(
+    {
+      status: "live",
+      ends_at: { $lte: now },
+    },
+    {
+      $set: { status: "closed" },
+    },
+  );
+
+  // Reopen auctions that should be live but are closed (edge case)
+  const reopenedResult = await Auction.updateMany(
+    {
+      status: "closed",
+      ends_at: { $gt: now },
+      starts_at: { $lte: now },
+    },
+    {
+      $set: { status: "live" },
+    },
+  );
+
+  // Set auctions to live if start date has arrived
+  const startedResult = await Auction.updateMany(
+    {
+      status: "draft",
+      starts_at: { $lte: now },
+      ends_at: { $gt: now },
+    },
+    {
+      $set: { status: "live" },
+    },
+  );
+
+  if (
+    closedResult.modifiedCount > 0 ||
+    reopenedResult.modifiedCount > 0 ||
+    startedResult.modifiedCount > 0
+  ) {
+    console.log(
+      `[AuctionService] Status updates: ${closedResult.modifiedCount} closed, ` +
+        `${reopenedResult.modifiedCount} reopened, ${startedResult.modifiedCount} started.`,
+    );
+  }
+
+  return {
+    closed: closedResult.modifiedCount,
+    reopened: reopenedResult.modifiedCount,
+    started: startedResult.modifiedCount,
+  };
+}
+
+// ─────────────────────────────────────────────
+// Helper – send auction creation notification to all users
+// (Email, Push, In-App only – no SMS)
+// ─────────────────────────────────────────────
+async function sendAuctionCreatedNotificationToAllUsers(
+  asset,
+  loan,
+  auction,
+  breakdown,
+) {
+  try {
+    const adminRoles = [
+      "super_admin_vendor",
+      "admin_pawn_limited",
+      "management",
+      "loan_officer_approval",
+      "loan_officer_processor",
+      "call_centre_support",
+    ];
+
+    // Get all active users (customers + staff)
+    const allUsers = await User.find({ status: "active" }).lean();
+
+    if (allUsers.length === 0) {
+      console.log("[AuctionService] No active users to notify about auction");
+      return;
+    }
+
+    // Create notification title and message
+    const notificationTitle = `New Auction: ${asset.title}`;
+    const notificationMessage = `Asset "${asset.title}" (${asset.asset_no}) has been listed for auction with starting bid $${auction.starting_bid_amount.toLocaleString()}. Auction ends on ${new Date(auction.ends_at).toLocaleDateString()}.`;
+
+    // Create notification in database and send to all users
+    const notificationResult = await NotificationService.createNotification(
+      {
+        title: notificationTitle,
+        message: notificationMessage,
+        type: "auction_created",
+        priority: "normal",
+        audience: { scope: "all" },
+        channels: ["email", "push", "in_app"],
+        entity_type: "auction",
+        entity_id: auction._id,
+        action_text: "View Auction",
+        action_url: `/auctions/${auction._id}`,
+        data: {
+          auction_id: auction._id,
+          auction_no: auction.auction_no,
+          asset_id: asset._id,
+          asset_no: asset.asset_no,
+          asset_title: asset.title,
+          starting_bid: auction.starting_bid_amount,
+          ends_at: auction.ends_at,
+          loan_no: loan.loan_no,
+          total_owed: breakdown.total,
+        },
+      },
+      loan.created_by, // created_by user ID
+    );
+
+    console.log(
+      `[AuctionService] Auction notification sent to ${allUsers.length} users. ` +
+        `Result: ${notificationResult.success ? "success" : "failed"}`,
+    );
+
+    return notificationResult;
+  } catch (error) {
+    console.error(
+      "[AuctionService] Failed to send auction notifications:",
+      error.message,
+    );
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
+// Email – asset moved to auction (for the specific customer)
 // ─────────────────────────────────────────────
 async function sendAuctionNotificationEmail({
   to,
@@ -326,11 +461,12 @@ async function moveLoanToAuction(loan) {
 
     // ── Notifications (outside the transaction – non-critical) ──
     try {
+      // 1. Send notification to the specific customer (email + SMS)
       const customer = await User.findById(loan.customer_user).lean();
       if (customer) {
         const fullName = `${customer.first_name} ${customer.last_name}`;
 
-        // Email
+        // Email to customer
         if (customer.email) {
           await sendAuctionNotificationEmail({
             to: customer.email,
@@ -338,7 +474,7 @@ async function moveLoanToAuction(loan) {
             asset,
             loan,
             auction,
-            breakdown, // pass charge breakdown for the email template
+            breakdown,
           }).catch((err) =>
             console.error(
               `Auction email failed for loan ${loan.loan_no}:`,
@@ -347,7 +483,7 @@ async function moveLoanToAuction(loan) {
           );
         }
 
-        // SMS
+        // SMS to customer
         if (customer.phone) {
           const smsBody =
             `REAL TIME CAPITAL: Your asset "${asset.title}" (${asset.asset_no}) ` +
@@ -365,6 +501,14 @@ async function moveLoanToAuction(loan) {
           );
         }
       }
+
+      // 2. Send notification to ALL users (email, push, in-app) about new auction
+      await sendAuctionCreatedNotificationToAllUsers(
+        asset,
+        loan,
+        auction,
+        breakdown,
+      );
     } catch (notifyErr) {
       console.error("Notification error (non-fatal):", notifyErr.message);
     }
@@ -391,6 +535,9 @@ async function moveLoanToAuction(loan) {
 // ─────────────────────────────────────────────
 async function processExpiredLoans() {
   console.log("[AuctionService] Running processExpiredLoans...");
+
+  // First, update auction statuses based on dates
+  await updateAuctionStatuses();
 
   const now = new Date();
 
@@ -441,6 +588,9 @@ async function processExpiredLoans() {
 // ─────────────────────────────────────────────
 async function sendUpcomingAuctionWarnings() {
   console.log("[AuctionService] Running sendUpcomingAuctionWarnings...");
+
+  // First, update auction statuses
+  await updateAuctionStatuses();
 
   const now = new Date();
   const warningStart = new Date(now);
@@ -528,11 +678,22 @@ async function sendUpcomingAuctionWarnings() {
 }
 
 // ─────────────────────────────────────────────
+// Scheduled Job 3: Auto-close expired auctions
+// Runs every 15 minutes to keep statuses in sync
+// ─────────────────────────────────────────────
+async function autoCloseExpiredAuctions() {
+  console.log("[AuctionService] Running autoCloseExpiredAuctions...");
+  const result = await updateAuctionStatuses();
+  return result;
+}
+
+// ─────────────────────────────────────────────
 // Start the scheduler (call this once on server boot)
 // ─────────────────────────────────────────────
 function startAuctionScheduler() {
   const ONE_HOUR_MS = 60 * 60 * 1000;
   const ONE_DAY_MS = 24 * ONE_HOUR_MS;
+  const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 
   // Run immediately on startup, then every hour
   processExpiredLoans().catch(console.error);
@@ -547,6 +708,15 @@ function startAuctionScheduler() {
     );
   }, 60_000);
 
+  // Run every 15 minutes to auto-close expired auctions
+  setTimeout(() => {
+    autoCloseExpiredAuctions().catch(console.error);
+    setInterval(
+      () => autoCloseExpiredAuctions().catch(console.error),
+      FIFTEEN_MINUTES_MS,
+    );
+  }, 30_000);
+
   console.log("[AuctionService] Scheduler started.");
 }
 
@@ -556,4 +726,6 @@ module.exports = {
   sendUpcomingAuctionWarnings,
   moveLoanToAuction, // export for manual/admin triggers
   calculateAuctionAmount, // export for use in admin previews / UI
+  updateAuctionStatuses, // export for manual status updates
+  autoCloseExpiredAuctions, // export for manual triggering
 };

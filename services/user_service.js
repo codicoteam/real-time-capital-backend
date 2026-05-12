@@ -940,6 +940,53 @@ class UserService {
 
     return user;
   }
+
+  /**
+   * Update KYC verification status
+   * When status is set to "verified", automatically sets user status to "active"
+   * @param {string} userId - User ID to update
+   * @param {string} kycStatus - New KYC status (unverified, pending, verified, rejected)
+   * @param {string} verifiedByUserId - ID of the admin/staff who verified
+   */
+  async updateKycVerificationStatus(userId, kycStatus, verifiedByUserId) {
+    // Validate KYC status
+    const validKycStatuses = ["unverified", "pending", "verified", "rejected"];
+    if (!validKycStatuses.includes(kycStatus)) {
+      throw { status: 400, message: "Invalid KYC verification status" };
+    }
+
+    // Find the user
+    const user = await User.findById(userId);
+    if (!user) {
+      throw { status: 404, message: "User not found" };
+    }
+
+    // Check if user is deleted
+    if (user.status === "deleted") {
+      throw {
+        status: 400,
+        message: "Cannot update KYC status for deleted user",
+      };
+    }
+
+    // Update KYC verification status
+    user.kyc_verification_status = kycStatus;
+    user.kyc_verified_by = verifiedByUserId;
+    user.kyc_verified_at = new Date();
+
+    // If KYC status is "verified", automatically set user status to "active"
+    if (kycStatus === "verified") {
+      user.status = "active";
+    }
+
+    await user.save();
+
+    // Return user without sensitive data
+    const userResponse = user.toObject();
+    delete userResponse.password_hash;
+
+    return userResponse;
+  }
 }
 
 module.exports = new UserService();

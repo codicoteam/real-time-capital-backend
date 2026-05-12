@@ -833,7 +833,13 @@ router.post(
 router.patch(
   "/:userId/status",
   authMiddleware,
-  requireRoles("super_admin_vendor", "admin_pawn_limited"),
+  requireRoles(
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "management",
+  ),
   userController.updateUserStatus,
 );
 
@@ -1065,6 +1071,99 @@ router.get(
     "management",
   ),
   userController.getMyAddedUserById,
+);
+
+/**
+ * @swagger
+ * /api/v1/users/{userId}/kyc-status:
+ *   patch:
+ *     summary: Update user KYC verification status (Admin/Loan Officer only)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     description: |
+ *       Updates the KYC verification status for a user.
+ *       When status is set to "verified", the user's account status automatically becomes "active".
+ *
+ *       Allowed statuses:
+ *       - unverified: No KYC submitted
+ *       - pending: KYC documents submitted, awaiting review
+ *       - verified: KYC approved (automatically activates account)
+ *       - rejected: KYC rejected
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: User ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - kyc_verification_status
+ *             properties:
+ *               kyc_verification_status:
+ *                 type: string
+ *                 enum: [unverified, pending, verified, rejected]
+ *     responses:
+ *       200:
+ *         description: KYC verification status updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     user:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: string
+ *                         email:
+ *                           type: string
+ *                         first_name:
+ *                           type: string
+ *                         last_name:
+ *                           type: string
+ *                         status:
+ *                           type: string
+ *                         kyc_verification_status:
+ *                           type: string
+ *                         kyc_verified_at:
+ *                           type: string
+ *                           format: date-time
+ *                         kyc_verified_by:
+ *                           type: string
+ *       400:
+ *         description: Invalid KYC status or user is deleted
+ *       403:
+ *         description: Forbidden - Insufficient permissions
+ *       404:
+ *         description: User not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.patch(
+  "/:userId/kyc-status",
+  authMiddleware,
+  requireRoles(
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "management",
+  ),
+  userController.updateKycVerificationStatus,
 );
 
 module.exports = router;

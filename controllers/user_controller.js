@@ -895,6 +895,74 @@ class UserController {
       });
     }
   }
+
+  /**
+   * Update KYC verification status (Admin/Loan Officer only)
+   * When KYC is verified, user status automatically becomes active
+   */
+  async updateKycVerificationStatus(req, res) {
+    try {
+      const { userId } = req.params;
+      const { kyc_verification_status } = req.body;
+
+      if (!kyc_verification_status) {
+        return res.status(400).json({
+          success: false,
+          message: "KYC verification status is required",
+        });
+      }
+
+      // Validate that the user has permission to verify KYC
+      const allowedRoles = [
+        "super_admin_vendor",
+        "admin_pawn_limited",
+        "loan_officer_processor",
+        "loan_officer_approval",
+        "management",
+      ];
+
+      if (!allowedRoles.some((role) => req.user.roles.includes(role))) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "You don't have permission to update KYC verification status",
+        });
+      }
+
+      const user = await userService.updateKycVerificationStatus(
+        userId,
+        kyc_verification_status,
+        req.user._id,
+      );
+
+      let message = `KYC verification status updated to ${kyc_verification_status}`;
+      if (kyc_verification_status === "verified") {
+        message = "KYC verified successfully. User account has been activated.";
+      }
+
+      res.json({
+        success: true,
+        message,
+        data: {
+          user: {
+            id: user._id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            status: user.status,
+            kyc_verification_status: user.kyc_verification_status,
+            kyc_verified_at: user.kyc_verified_at,
+            kyc_verified_by: user.kyc_verified_by,
+          },
+        },
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message || "Failed to update KYC verification status",
+      });
+    }
+  }
 }
 
 module.exports = new UserController();
