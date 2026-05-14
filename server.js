@@ -39,6 +39,8 @@ const expenseRouter = require("./routers/expense_router");
 const smsRouter = require("./routers/sms_routes");
 const emailRouter = require("./routers/email_routes");
 const notificationsRouter = require("./routers/notifications_router");
+const loanReportRouter = require("./routers/loan_dashboard_routers");
+const auctionReportRouter = require("./routers/auction_report_routers");
 
 // Services
 const auctionService = require("./services/assets_auction_service");
@@ -286,6 +288,9 @@ app.use("/api/v1/expenses", expenseRouter);
 app.use("/api/v1/sms", smsRouter);
 app.use("/api/v1/email", emailRouter);
 app.use("/api/v1/notifications", notificationsRouter);
+app.use("/api/v1/loan-report", loanReportRouter);
+app.use("/api/v1/auction-report", auctionReportRouter);
+
 
 // Global error handler
 app.use((err, req, res, next) => {
