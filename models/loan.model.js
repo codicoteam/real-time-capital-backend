@@ -148,7 +148,7 @@ const LoanSchema = new mongoose.Schema(
 // Indexes
 LoanSchema.index({ customer_user: 1, status: 1, due_date: 1 });
 LoanSchema.index({ asset: 1, status: 1 });
--
+
 // Virtual: remaining balance after payments
 LoanSchema.virtual("remaining_balance").get(function () {
   return Math.max(0, this.current_balance - this.total_paid);

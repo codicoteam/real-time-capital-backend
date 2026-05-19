@@ -112,8 +112,8 @@ class LoanService {
         }
       }
 
-      // Create or associate asset from collateral
-      if (loanData.create_asset_from_collateral && loanData.application) {
+      // Auto-create asset from collateral when application is provided and no asset given
+      if (loanData.application && !loanData.asset) {
         const asset = await this.createAssetFromCollateral(
           loanData.application,
           loanData,
@@ -554,6 +554,7 @@ class LoanService {
       let assetData = {
         asset_no: assetNo,
         owner_user: application.customer_user._id,
+        submitted_by: loanData.created_by || application.customer_user._id,
         category: this.mapCollateralCategoryToAssetCategory(
           application.collateral_category,
         ),
@@ -566,7 +567,7 @@ class LoanService {
         status: "submitted",
         storage_location: "pending_assignment",
         condition: "good",
-        asset_images: assetImages, // Transfer images from application
+        asset_images: assetImages,
       };
 
       // Add category-specific details
@@ -1282,11 +1283,11 @@ class LoanService {
       loan.updated_at = new Date();
       await loan.save();
 
-      // Remove loan reference from asset
+      // Remove loan reference from asset and reset to submitted
       if (loan.asset) {
         await Asset.findByIdAndUpdate(loan.asset, {
           $unset: { active_loan: "" },
-          status: "available",
+          status: "submitted",
         });
       }
 
@@ -1730,16 +1731,29 @@ class LoanService {
       auction: "auction",
       sold: "sold",
       redeemed: "redeemed",
-      closed: "available",
-      cancelled: "available",
+      closed: "closed",
+      cancelled: "closed",
       defaulted: "auction",
       partially_paid: "pawned",
     };
 
-    if (assetStatusMap[loan.status] && loan.asset) {
-      await Asset.findByIdAndUpdate(loan.asset, {
-        status: assetStatusMap[loan.status],
+    const newAssetStatus = assetStatusMap[loan.status];
+    if (!newAssetStatus || !loan.asset) return;
+
+    const assetId = loan.asset._id || loan.asset;
+
+    if (loan.status === "active" || loan.status === "partially_paid") {
+      await Asset.findByIdAndUpdate(assetId, {
+        status: newAssetStatus,
+        active_loan: loan._id,
       });
+    } else if (["redeemed", "closed", "cancelled", "sold"].includes(loan.status)) {
+      await Asset.findByIdAndUpdate(assetId, {
+        status: newAssetStatus,
+        $unset: { active_loan: "" },
+      });
+    } else {
+      await Asset.findByIdAndUpdate(assetId, { status: newAssetStatus });
     }
   }
 

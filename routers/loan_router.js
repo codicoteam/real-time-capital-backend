@@ -56,9 +56,9 @@ router.use(authMiddleware);
  *               collateral_category:
  *                 type: string
  *                 enum: [small_loans, motor_vehicle, jewellery]
- *               create_asset_from_collateral:
- *                 type: boolean
- *                 description: Set to true to automatically create an asset from the loan application's collateral
+ *               application:
+ *                 type: string
+ *                 description: When provided, an asset is automatically created from the application's collateral details
  *     responses:
  *       201:
  *         description: Loan created successfully
@@ -405,6 +405,71 @@ router.get(
   "/agent/summary",
   requireRoles("agent"),
   loanController.getAgentCustomerLoansSummary,
+);
+
+/**
+ * @swagger
+ * /api/v1/loans/search:
+ *   get:
+ *     summary: Search loans
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Search term (minimum 2 characters)
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *     responses:
+ *       200:
+ *         description: Search results
+ *       400:
+ *         description: Search term too short
+ *       401:
+ *         description: Unauthorized
+ */
+router.get(
+  "/search",
+  requireRoles(
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management",
+  ),
+  loanController.searchLoans,
+);
+
+/**
+ * @swagger
+ * /api/v1/loans/stats:
+ *   get:
+ *     summary: Get loan statistics
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Loan statistics
+ *       401:
+ *         description: Unauthorized
+ */
+router.get(
+  "/stats",
+  requireRoles("admin_pawn_limited", "management", "super_admin_vendor"),
+  loanController.getLoanStats,
 );
 
 /**
@@ -776,71 +841,6 @@ router.get(
     "agent",
   ),
   loanController.getLoansByCustomer,
-);
-
-/**
- * @swagger
- * /api/v1/loans/search:
- *   get:
- *     summary: Search loans
- *     tags: [Loans]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: q
- *         required: true
- *         schema:
- *           type: string
- *         description: Search term (minimum 2 characters)
- *       - in: query
- *         name: page
- *         schema:
- *           type: integer
- *           default: 1
- *       - in: query
- *         name: limit
- *         schema:
- *           type: integer
- *           default: 10
- *     responses:
- *       200:
- *         description: Search results
- *       400:
- *         description: Search term too short
- *       401:
- *         description: Unauthorized
- */
-router.get(
-  "/search",
-  requireRoles(
-    "loan_officer_processor",
-    "loan_officer_approval",
-    "super_admin_vendor",
-    "admin_pawn_limited",
-    "management",
-  ),
-  loanController.searchLoans,
-);
-
-/**
- * @swagger
- * /api/v1/loans/stats:
- *   get:
- *     summary: Get loan statistics
- *     tags: [Loans]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Loan statistics
- *       401:
- *         description: Unauthorized
- */
-router.get(
-  "/stats",
-  requireRoles("admin_pawn_limited", "management", "super_admin_vendor"),
-  loanController.getLoanStats,
 );
 
 /**

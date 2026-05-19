@@ -1,7 +1,6 @@
 const User = require("../models/user.model");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const twilio = require("twilio");
 const {
   sendVerificationEmail,
   sendAdminCreatedAccountEmail,
@@ -12,44 +11,6 @@ const {
 const { sendSmsWithMessage } = require("../utils/sms_utils");
 
 class UserService {
-  constructor() {
-    // Initialize Twilio client if credentials exist
-    if (
-      process.env.TWILIO_ACCOUNT_SID &&
-      process.env.TWILIO_AUTH_TOKEN &&
-      process.env.TWILIO_PHONE_NUMBER
-    ) {
-      this.twilioClient = twilio(
-        process.env.TWILIO_ACCOUNT_SID,
-        process.env.TWILIO_AUTH_TOKEN,
-      );
-      this.twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
-    } else {
-      console.warn("Twilio credentials missing – SMS will not be sent.");
-    }
-  }
-
-  /**
-   * Send SMS via Twilio
-   */
-  async sendSms(to, message) {
-    if (!this.twilioClient) {
-      console.log("SMS not sent – Twilio not configured");
-      return;
-    }
-    try {
-      await this.twilioClient.messages.create({
-        body: message,
-        from: this.twilioPhoneNumber,
-        to,
-      });
-      console.log(`SMS sent to ${to}`);
-    } catch (error) {
-      console.error("SMS sending failed:", error);
-      // Don't throw – we don't want to break the flow if SMS fails
-    }
-  }
-
   /**
    * Generate JWT token for user
    * Only active and email_verified users can get tokens

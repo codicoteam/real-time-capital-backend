@@ -34,14 +34,15 @@ router.use(authMiddleware);
  *             properties:
  *               category:
  *                 type: string
- *                 enum: [electronics, vehicle, jewellery]
+ *                 enum: [small_loans, motor_vehicle, jewellery]
  *               title:
  *                 type: string
  *               owner_user:
  *                 type: string
  *               asset_type:
  *                 type: string
- *                 enum: [ElectronicsAsset, VehicleAsset, JewelleryAsset]
+ *                 enum: [small_loans, motor_vehicle, jewellery]
+ *                 description: Discriminator key matching the category
  *               description:
  *                 type: string
  *               condition:
@@ -84,7 +85,7 @@ router.post("/",
  *         name: category
  *         schema:
  *           type: string
- *           enum: [electronics, vehicle, jewellery]
+ *           enum: [small_loans, motor_vehicle, jewellery]
  *       - in: query
  *         name: status
  *         schema:
@@ -148,7 +149,7 @@ router.get("/",
  *         name: category
  *         schema:
  *           type: string
- *           enum: [electronics, vehicle, jewellery]
+ *           enum: [small_loans, motor_vehicle, jewellery]
  *       - in: query
  *         name: status
  *         schema:

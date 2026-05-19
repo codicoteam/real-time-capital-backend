@@ -451,29 +451,16 @@ class AssetService {
 
   /**
    * Validate category-specific fields
+   * Category maps to discriminator: small_loans → small_loans, motor_vehicle → motor_vehicle, jewellery → jewellery
    */
   validateAssetFields(assetData) {
-    const { category, asset_type } = assetData;
+    const { category } = assetData;
+    const validCategories = ["small_loans", "motor_vehicle", "jewellery"];
 
-    if (category === "electronics" && asset_type !== "ElectronicsAsset") {
+    if (category && !validCategories.includes(category)) {
       throw {
         status: 400,
-        message:
-          "For electronics category, asset_type must be 'ElectronicsAsset'",
-      };
-    }
-
-    if (category === "vehicle" && asset_type !== "VehicleAsset") {
-      throw {
-        status: 400,
-        message: "For vehicle category, asset_type must be 'VehicleAsset'",
-      };
-    }
-
-    if (category === "jewellery" && asset_type !== "JewelleryAsset") {
-      throw {
-        status: 400,
-        message: "For jewellery category, asset_type must be 'JewelleryAsset'",
+        message: `Invalid category. Must be one of: ${validCategories.join(", ")}`,
       };
     }
   }

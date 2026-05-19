@@ -112,10 +112,14 @@ const LoanApplicationSchema = new mongoose.Schema(
     // Workflow status
     status: {
       type: String,
-      enum: ["submitted", "processing", "approved", "rejected", "cancelled"],
+      enum: ["submitted", "processing", "approved", "rejected", "cancelled", "loan_created"],
       default: "submitted",
       index: true,
     },
+
+    // Set once a loan is created from this application
+    loan_created: { type: Boolean, default: false },
+    loan_id: { type: mongoose.Schema.Types.ObjectId, ref: "Loan", index: true },
 
     // Debtors list check
     debtor_check: {
