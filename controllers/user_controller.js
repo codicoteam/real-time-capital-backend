@@ -963,6 +963,28 @@ class UserController {
       });
     }
   }
+  /**
+   * GET /users/:userId — Fetch a single user by ID (admin / staff access)
+   */
+  async getUserById(req, res) {
+    try {
+      const User = require("../models/user.model");
+      const { userId } = req.params;
+      if (!userId) {
+        return res.status(400).json({ success: false, message: "User ID is required" });
+      }
+      const user = await User.findById(userId).select("-password_hash");
+      if (!user) {
+        return res.status(404).json({ success: false, message: "User not found" });
+      }
+      res.json({ success: true, data: { user } });
+    } catch (error) {
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message || "Failed to get user",
+      });
+    }
+  }
 }
 
 module.exports = new UserController();

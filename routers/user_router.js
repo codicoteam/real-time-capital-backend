@@ -796,6 +796,43 @@ router.post(
 
 /**
  * @swagger
+ * /api/v1/users/{userId}:
+ *   get:
+ *     summary: Get a single user by ID (Admin / Staff)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: User data
+ *       401:
+ *         description: Unauthorized
+ *       404:
+ *         description: User not found
+ */
+router.get(
+  "/:userId",
+  authMiddleware,
+  requireRoles(
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management",
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "call_centre_support",
+    "agent",
+  ),
+  userController.getUserById,
+);
+
+/**
+ * @swagger
  * /api/v1/users/{userId}/status:
  *   patch:
  *     summary: Update user status (Admin only)

@@ -139,7 +139,11 @@ class UserService {
       });
       if (user.phone) {
         const smsMessage = `Your Real Time Capital verification code is: ${user.email_verification_otp}. It expires in 15 minutes.`;
-        await sendSmsWithMessage(user.phone, smsMessage);
+        try {
+          await sendSmsWithMessage(user.phone, smsMessage);
+        } catch (smsErr) {
+          console.warn("SMS verification send failed (non-critical):", smsErr.message);
+        }
       }
     }
 
@@ -220,7 +224,11 @@ class UserService {
     // Send SMS if phone exists
     if (user.phone) {
       const smsMessage = `Your new Real Time Capital verification code is: ${user.email_verification_otp}. It expires in 15 minutes.`;
-      await sendSmsWithMessage(user.phone, smsMessage);
+      try {
+        await sendSmsWithMessage(user.phone, smsMessage);
+      } catch (smsErr) {
+        console.warn("SMS resend failed (non-critical):", smsErr.message);
+      }
     }
 
     return user;
@@ -305,7 +313,11 @@ class UserService {
     // Send SMS if phone exists
     if (user.phone) {
       const smsMessage = `Your Real Time Capital password reset code is: ${user.reset_password_otp}. It expires in 15 minutes.`;
-      await sendSmsWithMessage(user.phone, smsMessage);
+      try {
+        await sendSmsWithMessage(user.phone, smsMessage);
+      } catch (smsErr) {
+        console.warn("SMS password reset send failed (non-critical):", smsErr.message);
+      }
     }
 
     return { message: "OTP sent to email and SMS (if phone number provided)" };
