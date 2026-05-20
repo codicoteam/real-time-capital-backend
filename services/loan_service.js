@@ -678,10 +678,6 @@ class LoanService {
             "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type installment_count installment_frequency interest_rate interest_amount total_repayable_amount small_loan_details motor_vehicle_details jewellery_details collateral_images surety_description",
         },
         {
-          path: "attachments",
-          select: "filename url mime_type category signed signed_at",
-        },
-        {
           path: "created_by",
           select: "first_name last_name email roles",
         },
