@@ -196,6 +196,18 @@ class UserService {
 
   /**
    * Resend verification OTP
+   *
+   * Behaviour:
+   *  1. If a valid OTP exists AND was sent < 60 s ago → silently skip (prevents
+   *     the double-send that happens when the frontend calls resend immediately
+   *     after registration before the first email arrives).
+   *  2. If a valid OTP exists AND cooldown has passed → reuse the SAME OTP
+   *     (refresh its expiry so the user gets a full 15 minutes) and send it to
+   *     both email and SMS.
+   *  3. If no OTP exists or the existing one has expired → generate a fresh OTP,
+   *     save it, then send to both email and SMS.
+   *
+   * In all cases the same OTP is delivered to both channels.
    */
   async resendVerificationOtp(email) {
     const user = await User.findOne({ email });
@@ -208,22 +220,48 @@ class UserService {
       throw { status: 400, message: "Email already verified" };
     }
 
-    // Generate new OTP
-    user.email_verification_otp = generateOTP();
-    user.email_verification_expires_at = new Date(Date.now() + 15 * 60 * 1000);
+    const OTP_VALIDITY_MS = 15 * 60 * 1000; // 15 minutes
+    const COOLDOWN_MS     =      60 * 1000; // 60-second minimum between sends
 
-    await user.save();
+    const now = new Date();
+    const hasValidOtp =
+      user.email_verification_otp &&
+      user.email_verification_expires_at &&
+      now < user.email_verification_expires_at;
 
-    // Send email
+    if (hasValidOtp) {
+      // Estimate when the OTP was originally sent:
+      //   sent_at ≈ expires_at − 15 min
+      const sentAt      = new Date(user.email_verification_expires_at.getTime() - OTP_VALIDITY_MS);
+      const msSinceSent = now.getTime() - sentAt.getTime();
+
+      if (msSinceSent < COOLDOWN_MS) {
+        // Too soon after the last send (e.g. the auto-resend right after
+        // registration). Return silently — the user already has an email/SMS
+        // on the way.
+        console.log(`[resendVerificationOtp] Cooldown active for ${email} (${Math.round(msSinceSent / 1000)}s since last send). Skipping duplicate send.`);
+        return user;
+      }
+
+      // Cooldown passed but OTP still valid — reuse the same OTP, refresh expiry
+      user.email_verification_expires_at = new Date(now.getTime() + OTP_VALIDITY_MS);
+      await user.save();
+    } else {
+      // OTP missing or expired — generate a fresh one
+      user.email_verification_otp        = generateOTP();
+      user.email_verification_expires_at = new Date(now.getTime() + OTP_VALIDITY_MS);
+      await user.save();
+    }
+
+    // Send the single OTP to both email and SMS
     await sendVerificationEmail({
-      to: email,
+      to:       email,
       fullName: user.full_name,
-      otp: user.email_verification_otp,
+      otp:      user.email_verification_otp,
     });
 
-    // Send SMS if phone exists
     if (user.phone) {
-      const smsMessage = `Your new Real Time Capital verification code is: ${user.email_verification_otp}. It expires in 15 minutes.`;
+      const smsMessage = `Your Real Time Capital verification code is: ${user.email_verification_otp}. It expires in 15 minutes.`;
       try {
         await sendSmsWithMessage(user.phone, smsMessage);
       } catch (smsErr) {
