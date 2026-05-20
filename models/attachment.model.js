@@ -12,6 +12,8 @@ const AttachmentSchema = new mongoose.Schema(
       type: String,
       enum: [
         "national_id",
+        "national_id_front",
+        "national_id_back",
         "loan_request_form",
         "pawn_ticket",
         "contract",

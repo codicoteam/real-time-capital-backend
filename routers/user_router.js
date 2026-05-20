@@ -521,7 +521,7 @@ router.put(
  *             properties:
  *               type:
  *                 type: string
- *                 enum: [national_id, passport, proof_of_address, other]
+ *                 enum: [national_id, national_id_front, national_id_back, passport, proof_of_address, other]
  *               url:
  *                 type: string
  *               file_name:

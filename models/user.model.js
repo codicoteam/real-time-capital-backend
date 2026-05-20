@@ -5,7 +5,7 @@ const UserDocumentSchema = new mongoose.Schema(
   {
     type: {
       type: String,
-      enum: ["national_id", "passport", "proof_of_address", "other"],
+      enum: ["national_id", "national_id_front", "national_id_back", "passport", "proof_of_address", "other"],
       required: true,
     },
     url: { type: String, required: true, trim: true },

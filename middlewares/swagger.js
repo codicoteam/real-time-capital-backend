@@ -57,7 +57,7 @@ const options = {
           properties: {
             type: {
               type: "string",
-              enum: ["national_id", "passport", "proof_of_address", "other"],
+              enum: ["national_id", "national_id_front", "national_id_back", "passport", "proof_of_address", "other"],
               example: "national_id",
             },
             url: {
@@ -630,6 +630,8 @@ const options = {
               type: "string",
               enum: [
                 "national_id",
+                "national_id_front",
+                "national_id_back",
                 "loan_request_form",
                 "pawn_ticket",
                 "contract",

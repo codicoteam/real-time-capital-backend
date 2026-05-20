@@ -53,7 +53,7 @@ const { authMiddleware, requireRoles } = require('../middlewares/auth_middleware
  *                 description: ID of the entity
  *               category:
  *                 type: string
- *                 enum: [national_id, loan_request_form, pawn_ticket, contract, proof_of_residence, asset_photos, other]
+ *                 enum: [national_id, national_id_front, national_id_back, loan_request_form, pawn_ticket, contract, proof_of_residence, asset_photos, other]
  *                 default: other
  *               storage:
  *                 type: string
@@ -361,7 +361,7 @@ router.get(
  *             properties:
  *               category:
  *                 type: string
- *                 enum: [national_id, loan_request_form, pawn_ticket, contract, proof_of_residence, asset_photos, other]
+ *                 enum: [national_id, national_id_front, national_id_back, loan_request_form, pawn_ticket, contract, proof_of_residence, asset_photos, other]
  *               filename:
  *                 type: string
  *               signed:
