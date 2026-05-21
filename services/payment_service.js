@@ -186,10 +186,10 @@ class PaymentService {
       });
       await payment.save();
 
-      // Create PayNow payment object — use a non-personal email so it never blocks redirect
+      // Empty string = guest/anonymous payment — skips PayNow login and goes straight to payment page
       const paynowPayment = this.paynowIntegration.createPayment(
         paymentData.receipt_no,
-        "realtimecapitalmicrofinance@gmail.com",
+        "",
       );
 
       paynowPayment.add(
