@@ -1157,4 +1157,39 @@ router.get(
   },
 );
 
+/**
+ * @swagger
+ * /api/v1/loan-applications/{id}:
+ *   delete:
+ *     summary: Delete a loan application permanently (admin/loan officer only)
+ *     tags: [Loan Applications]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Loan application deleted successfully
+ *       403:
+ *         description: Not authorized
+ *       404:
+ *         description: Application not found
+ */
+router.delete(
+  "/:id",
+  authMiddleware,
+  requireRoles(
+    "super_admin_vendor",
+    "admin_pawn_limited",
+    "management",
+    "loan_officer_processor",
+    "loan_officer_approval",
+  ),
+  loanApplicationController.deleteLoanApplication,
+);
+
 module.exports = router;

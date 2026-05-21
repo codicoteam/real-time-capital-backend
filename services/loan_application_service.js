@@ -1312,6 +1312,48 @@ class LoanApplicationService {
       throw new Error(`Failed to send document requirement: ${error.message}`);
     }
   }
+
+  /**
+   * Delete a loan application permanently (admin/super_admin only)
+   * Customers cannot delete their own applications.
+   */
+  async deleteLoanApplication(id, requestingUser) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw new Error("Invalid application ID");
+      }
+
+      const allowedRoles = [
+        "super_admin_vendor",
+        "admin_pawn_limited",
+        "management",
+        "loan_officer_processor",
+        "loan_officer_approval",
+      ];
+      const userRoles = requestingUser?.roles || [];
+      const isAllowed = userRoles.some((r) => allowedRoles.includes(r));
+      if (!isAllowed) {
+        throw new Error(
+          "Not authorized to delete loan applications. Admin or loan officer access required.",
+        );
+      }
+
+      const application = await LoanApplication.findById(id);
+      if (!application) {
+        throw new Error("Loan application not found");
+      }
+
+      await LoanApplication.findByIdAndDelete(id);
+
+      return {
+        success: true,
+        message: `Loan application ${application.application_no || id} deleted successfully`,
+      };
+    } catch (error) {
+      console.error("Error deleting loan application:", error);
+      throw new Error(error.message || "Failed to delete loan application");
+    }
+  }
 }
 
 module.exports = new LoanApplicationService();

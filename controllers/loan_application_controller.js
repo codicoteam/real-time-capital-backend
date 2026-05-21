@@ -676,6 +676,35 @@ class LoanApplicationController {
       }
     }
   }
+
+  /**
+   * Delete a loan application (admin/super_admin only)
+   */
+  async deleteLoanApplication(req, res) {
+    try {
+      const { id } = req.params;
+      const requestingUser = req.user;
+
+      const result = await loanApplicationService.deleteLoanApplication(
+        id,
+        requestingUser,
+      );
+
+      res.json({
+        success: true,
+        message: result.message,
+      });
+    } catch (error) {
+      const status =
+        error.message?.includes("not found") ? 404
+        : error.message?.includes("authorized") ? 403
+        : 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to delete loan application",
+      });
+    }
+  }
 }
 
 module.exports = new LoanApplicationController();
