@@ -402,6 +402,31 @@ router.get("/", AuctionController.getAuctions);
  */
 router.get("/live", AuctionController.getLiveAuctions);
 
+// ── /stats and /statistics must come BEFORE /:id so Express doesn't treat them as IDs ──
+router.get(
+  "/stats",
+  requireRoles(
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "admin_pawn_limited",
+    "management",
+    "super_admin_vendor"
+  ),
+  AuctionController.getAuctionStats
+);
+// Alias so both /stats and /statistics work
+router.get(
+  "/statistics",
+  requireRoles(
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "admin_pawn_limited",
+    "management",
+    "super_admin_vendor"
+  ),
+  AuctionController.getAuctionStats
+);
+
 /**
  * @swagger
  * /api/v1/auctions/{id}:
@@ -644,18 +669,6 @@ router.get("/:id/bids", AuctionController.getAuctionBids);
  *       401:
  *         description: Unauthorized
  */
-router.get(
-  "/stats",
-  requireRoles(
-    "loan_officer_processor",
-    "loan_officer_approval",
-    "admin_pawn_limited",
-    "management",
-    "super_admin_vendor"
-  ),
-  AuctionController.getAuctionStats
-);
-
 /**
  * @swagger
  * /api/v1/auctions/{id}:
