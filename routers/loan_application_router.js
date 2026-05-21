@@ -1179,6 +1179,29 @@ router.get(
  *       404:
  *         description: Application not found
  */
+/**
+ * Status-updates timeline
+ */
+router.get(
+  "/:id/status-updates",
+  authMiddleware,
+  requireRoles(
+    "loan_officer_processor", "loan_officer_approval",
+    "super_admin_vendor", "admin_pawn_limited", "management",
+  ),
+  loanApplicationController.getStatusUpdates,
+);
+
+router.post(
+  "/:id/status-updates",
+  authMiddleware,
+  requireRoles(
+    "loan_officer_processor", "loan_officer_approval",
+    "super_admin_vendor", "admin_pawn_limited", "management",
+  ),
+  loanApplicationController.addStatusUpdate,
+);
+
 router.delete(
   "/:id",
   authMiddleware,

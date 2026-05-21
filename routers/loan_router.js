@@ -43,6 +43,7 @@ router.use(authMiddleware);
  *                 type: string
  *               application:
  *                 type: string
+ *                 description: When provided, an asset is automatically created from the application's collateral details
  *               principal_amount:
  *                 type: number
  *               interest_rate_percent:
@@ -56,9 +57,6 @@ router.use(authMiddleware);
  *               collateral_category:
  *                 type: string
  *                 enum: [small_loans, motor_vehicle, jewellery]
- *               application:
- *                 type: string
- *                 description: When provided, an asset is automatically created from the application's collateral details
  *     responses:
  *       201:
  *         description: Loan created successfully

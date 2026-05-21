@@ -695,7 +695,13 @@ class LoanApplicationService {
         throw new Error("Invalid application ID");
       }
 
-      const validStatuses = ["processing", "approved", "rejected", "cancelled"];
+      const validStatuses = [
+        "draft", "submitted", "processing",
+        "under_review", "pending_approval", "awaiting_approval",
+        "admin_review", "in_review",
+        "approved", "rejected", "cancelled", "loan_created",
+        "disbursed", "declined", "denied",
+      ];
       if (!validStatuses.includes(status)) {
         throw new Error(
           `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
@@ -728,6 +734,16 @@ class LoanApplicationService {
             ? `${application.internal_notes}\n[${new Date().toISOString()}] ${user.first_name}: ${notes}`
             : `[${new Date().toISOString()}] ${user.first_name}: ${notes}`;
         }
+
+        // Append to status timeline
+        if (!application.status_updates) application.status_updates = [];
+        application.status_updates.push({
+          status,
+          note: notes || "",
+          created_by: user._id,
+          created_at: new Date(),
+          attachments: [],
+        });
 
         await application.save({ session });
 

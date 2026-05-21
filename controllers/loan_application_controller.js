@@ -678,6 +678,63 @@ class LoanApplicationController {
   }
 
   /**
+   * GET /:id/status-updates – return the status change timeline
+   */
+  async getStatusUpdates(req, res) {
+    try {
+      const { id } = req.params;
+      const application = await require("../models/loanApplication.model")
+        .findById(id)
+        .populate("status_updates.created_by", "first_name last_name email role")
+        .lean();
+
+      if (!application) {
+        return res.status(404).json({ success: false, message: "Application not found" });
+      }
+
+      const updates = (application.status_updates || [])
+        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+      return res.status(200).json({ success: true, data: updates });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: error.message || "Server error" });
+    }
+  }
+
+  /**
+   * POST /:id/status-updates – append a timeline entry (note + optional attachments)
+   */
+  async addStatusUpdate(req, res) {
+    try {
+      const { id } = req.params;
+      const { status, note, attachments = [] } = req.body;
+
+      const LoanApplication = require("../models/loanApplication.model");
+      const application = await LoanApplication.findById(id);
+
+      if (!application) {
+        return res.status(404).json({ success: false, message: "Application not found" });
+      }
+
+      const entry = {
+        status: status || application.status,
+        note: note || "",
+        created_by: req.user?._id,
+        created_at: new Date(),
+        attachments: attachments || [],
+      };
+
+      application.status_updates = application.status_updates || [];
+      application.status_updates.push(entry);
+      await application.save();
+
+      return res.status(201).json({ success: true, data: entry, message: "Status update added" });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: error.message || "Server error" });
+    }
+  }
+
+  /**
    * Delete a loan application (admin/super_admin only)
    */
   async deleteLoanApplication(req, res) {

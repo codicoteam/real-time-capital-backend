@@ -36,6 +36,23 @@ const JewelleryDetailsSchema = new mongoose.Schema(
   { _id: false },
 );
 
+// Status update timeline subdocument
+const StatusUpdateSchema = new mongoose.Schema(
+  {
+    status: { type: String, trim: true },
+    note: { type: String, trim: true, default: "" },
+    created_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    created_at: { type: Date, default: Date.now },
+    attachments: [
+      {
+        url: { type: String },
+        filename: { type: String },
+      },
+    ],
+  },
+  { _id: true },
+);
+
 // Admin notes subdocument
 const AdminNoteSchema = new mongoose.Schema(
   {
@@ -112,7 +129,13 @@ const LoanApplicationSchema = new mongoose.Schema(
     // Workflow status
     status: {
       type: String,
-      enum: ["submitted", "processing", "approved", "rejected", "cancelled", "loan_created"],
+      enum: [
+        "draft", "submitted", "processing",
+        "under_review", "pending_approval", "awaiting_approval",
+        "admin_review", "in_review",
+        "approved", "rejected", "cancelled", "loan_created",
+        "disbursed", "declined", "denied",
+      ],
       default: "submitted",
       index: true,
     },
@@ -135,6 +158,9 @@ const LoanApplicationSchema = new mongoose.Schema(
 
     // Admin notes (for corrections, problems, etc.)
     admin_notes: { type: [AdminNoteSchema], default: [] },
+
+    // Status change timeline
+    status_updates: { type: [StatusUpdateSchema], default: [] },
 
     // Custom terms & conditions for this specific loan
     custom_terms_and_conditions: { type: String, trim: true },
