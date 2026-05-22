@@ -310,12 +310,18 @@ class LoanController {
   }
 
   /**
-   * Update loan status
+   * Update loan status — when activating, accepts disbursement details
    */
   async updateStatus(req, res) {
     try {
       const { id } = req.params;
-      const { status, notes } = req.body;
+      const {
+        status,
+        notes,
+        disbursement_reference,
+        disbursement_notes,
+        disbursement_payment_method,
+      } = req.body;
       const userId = req.user?.id;
 
       if (!status) {
@@ -325,11 +331,21 @@ class LoanController {
         });
       }
 
+      const disbursementDetails =
+        status === "active"
+          ? {
+              disbursement_reference: disbursement_reference || null,
+              disbursement_notes: disbursement_notes || null,
+              payment_method: disbursement_payment_method || null,
+            }
+          : null;
+
       const result = await loanService.updateLoanStatus(
         id,
         status,
         notes,
         userId,
+        disbursementDetails,
       );
 
       res.status(200).json({

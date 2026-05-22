@@ -929,7 +929,7 @@ class LoanService {
   /**
    * Update loan status with business logic
    */
-  async updateLoanStatus(loanId, status, notes = "", userId) {
+  async updateLoanStatus(loanId, status, notes = "", userId, disbursementDetails = null) {
     try {
       const validStatuses = [
         "draft",
@@ -995,14 +995,21 @@ class LoanService {
         },
       };
 
-      // Set approval/processing user based on status
-      if (status === "active" && !loan.processed_by && userId) {
-        updateData.processed_by = userId;
+      // Set disbursement fields when activating (cashing out)
+      if (status === "active") {
         updateData.disbursement_date = new Date();
-      }
+        updateData.disbursed_by = userId;
+        if (!loan.processed_by && userId) updateData.processed_by = userId;
+        if (!loan.approved_by && userId) updateData.approved_by = userId;
 
-      if (status === "active" && !loan.approved_by && userId) {
-        updateData.approved_by = userId;
+        if (disbursementDetails) {
+          if (disbursementDetails.disbursement_reference)
+            updateData.disbursement_reference = disbursementDetails.disbursement_reference;
+          if (disbursementDetails.disbursement_notes)
+            updateData.disbursement_notes = disbursementDetails.disbursement_notes;
+          if (disbursementDetails.payment_method)
+            updateData.payment_method = disbursementDetails.payment_method;
+        }
       }
 
       const updatedLoan = await Loan.findByIdAndUpdate(loanId, updateData, {
