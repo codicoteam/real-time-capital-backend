@@ -934,6 +934,7 @@ class LoanService {
       const validStatuses = [
         "draft",
         "pending_approval",
+        "approved",
         "active",
         "overdue",
         "in_grace",
@@ -1690,7 +1691,7 @@ class LoanService {
   validateStatusTransition(currentStatus, newStatus, loan) {
     const validTransitions = {
       draft: ["pending_approval", "active", "cancelled"],
-      pending_approval: ["active", "cancelled"],
+      pending_approval: ["approved", "active", "cancelled"],
       approved: ["active", "cancelled"],
       active: [
         "overdue",
