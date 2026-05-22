@@ -888,6 +888,76 @@ async function sendDocumentRequirementEmail({
   await sendEmail({ to, subject, html });
 }
 
+/**
+ * Send KYC approval notification email to customer
+ */
+async function sendKycApprovedEmail({ to, fullName, webLoginUrl = process.env.WEB_LOGIN_URL }) {
+  const subject = "Your Account Has Been Approved — Real Time Capital";
+  const title = "KYC Verification Approved";
+
+  const approvalDate = new Date().toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  const message = `
+    <p style="margin: 0 0 15px 0;">Dear ${fullName},</p>
+    <p style="margin: 0 0 15px 0;">
+      We are pleased to inform you that your identity verification (KYC) has been successfully reviewed and
+      <strong style="color: #6ba547;">approved</strong>.
+    </p>
+    <p style="margin: 0 0 15px 0;">
+      Your Real Time Capital account is now fully active. You can now access all available services,
+      including loan applications, pawn transactions, and account management.
+    </p>
+    <p style="margin: 0 0 20px 0;">
+      <a href="${webLoginUrl}" style="display:inline-block;padding:12px 28px;background-color:#6ba547;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:bold;font-size:14px;">
+        Sign In to Your Account
+      </a>
+    </p>
+    <p style="margin: 0 0 15px 0;">
+      If you have any questions or require assistance, please do not hesitate to contact our customer support team.
+    </p>
+    <p style="margin: 0;">
+      Thank you for choosing Real Time Capital.
+    </p>
+  `;
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0; background-color: #f0f7ec; border: 1px solid #6ba547; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #1a1a1a; font-size: 12px; margin: 0 0 10px 0; font-weight: bold; border-bottom: 2px solid #6ba547; padding-bottom: 5px;">
+            ACCOUNT STATUS
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px; width: 160px;">Account Holder:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">${fullName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">KYC Status:</td>
+              <td style="padding: 5px 0; color: #6ba547; font-size: 12px; font-weight: bold;">VERIFIED</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Account Status:</td>
+              <td style="padding: 5px 0; color: #6ba547; font-size: 12px; font-weight: bold;">ACTIVE</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Approval Date:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${approvalDate}</td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  const html = generateDocumentTemplate({ title, message, details: detailsHtml });
+  await sendEmail({ to, subject, html });
+}
+
 // Helper function to get status color
 function getStatusColor(status) {
   const colors = {
@@ -919,5 +989,6 @@ module.exports = {
   sendLoanApplicationAdminNotification,
   sendLoanApplicationStatusUpdateEmail,
   sendDocumentRequirementEmail,
+  sendKycApprovedEmail,
   generateOTP
 };

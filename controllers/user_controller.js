@@ -1,4 +1,5 @@
 const userService = require("../services/user_service");
+const { sendKycApprovedEmail } = require("../utils/emails_util");
 
 class UserController {
   /**
@@ -938,6 +939,14 @@ class UserController {
       let message = `KYC verification status updated to ${kyc_verification_status}`;
       if (kyc_verification_status === "verified") {
         message = "KYC verified successfully. User account has been activated.";
+
+        // Fire-and-forget approval email — don't block the response
+        sendKycApprovedEmail({
+          to: user.email,
+          fullName: `${user.first_name ?? ""} ${user.last_name ?? ""}`.trim() || user.email,
+        }).catch((err) =>
+          console.error("KYC approval email failed for", user.email, err.message)
+        );
       }
 
       res.json({
