@@ -1,4 +1,5 @@
 // server.js
+const http    = require("http");
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
@@ -41,9 +42,13 @@ const emailRouter = require("./routers/email_routes");
 const notificationsRouter = require("./routers/notifications_router");
 const loanReportRouter = require("./routers/loan_dashboard_routers");
 const auctionReportRouter = require("./routers/auction_report_routers");
+const chatRouter          = require("./routers/chat_router");
 
 // Services
 const auctionService = require("./services/assets_auction_service");
+
+// Socket.io
+const initSocket = require("./configs/socket");
 
 // ================= FIREBASE INIT (FIXED) =================
 if (!admin.apps.length) {
@@ -290,7 +295,7 @@ app.use("/api/v1/email", emailRouter);
 app.use("/api/v1/notifications", notificationsRouter);
 app.use("/api/v1/loan-report", loanReportRouter);
 app.use("/api/v1/auction-report", auctionReportRouter);
-
+app.use("/api/v1/chat",          chatRouter);
 
 // Global error handler
 app.use((err, req, res, next) => {
@@ -298,12 +303,19 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: "Something went wrong!" });
 });
 
-// Start server
+// Start server — use http.createServer so Socket.io can share the same port
 const PORT = process.env.PORT || 7070;
 
-app.listen(PORT, () => {
+const httpServer = http.createServer(app);
+
+// Attach Socket.io
+const io = initSocket(httpServer);
+app.set("io", io); // make io available in routes via req.app.get("io")
+
+httpServer.listen(PORT, () => {
   console.log(`🚗 Server running on port ${PORT}`);
   console.log(`📘 Swagger docs: http://localhost:${PORT}/api-docs`);
+  console.log(`💬 Socket.io chat ready on ws://localhost:${PORT}`);
   console.log(`🧪 Test endpoints:`);
   console.log(`   - GET  /test-firebase`);
   console.log(`   - GET  /check-fcm-tokens/:email`);
