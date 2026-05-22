@@ -996,6 +996,12 @@ class LoanService {
         },
       };
 
+      // When a loan is approved, stamp approval_status and approved_by
+      if (status === "approved") {
+        updateData.approval_status = "approved";
+        if (userId) updateData.approved_by = userId;
+      }
+
       // Set disbursement fields when activating (cashing out)
       if (status === "active") {
         updateData.disbursement_date = new Date();

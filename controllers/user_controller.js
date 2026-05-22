@@ -506,7 +506,7 @@ class UserController {
     try {
       const {
         page = 1,
-        limit = 20,
+        limit = 100,
         status,
         role,
         search,
@@ -521,8 +521,8 @@ class UserController {
 
       const result = await userService.getAllUsers(
         filters,
-        parseInt(page),
-        parseInt(limit),
+        parseInt(page) || 1,
+        parseInt(limit) || 100,
       );
 
       res.json({

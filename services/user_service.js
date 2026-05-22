@@ -714,15 +714,29 @@ class UserService {
    * Get all users (for admin)
    * Now populates 'added_by' with first_name, last_name, email
    */
-  async getAllUsers(filters = {}, page = 1, limit = 20) {
+  async getAllUsers(filters = {}, page = 1, limit = 100) {
+    // Cap limit to prevent runaway queries while allowing large admin fetches
+    const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 1000);
     const query = {};
 
-    // Apply filters - exclude deleted users by default unless specifically requested
+    // Always exclude hard-deleted users unless caller explicitly opts in
     if (filters.includeDeleted !== true) {
       query.status = { $ne: "deleted" };
     }
 
-    if (filters.status) query.status = filters.status;
+    // Status filter — if provided, apply as an additional condition alongside
+    // the deleted guard so deleted users are never inadvertently shown
+    if (filters.status) {
+      if (filters.includeDeleted !== true && filters.status !== "deleted") {
+        // Keep both: non-deleted AND the requested status
+        query.status = filters.status;
+      } else if (filters.status === "deleted") {
+        query.status = "deleted";
+      } else {
+        query.status = filters.status;
+      }
+    }
+
     if (filters.role) query.roles = { $in: [filters.role] };
     if (filters.search) {
       query.$or = [
@@ -733,24 +747,30 @@ class UserService {
       ];
     }
 
-    const skip = (page - 1) * limit;
+    const safePage = Math.max(Number(page) || 1, 1);
+    const skip = (safePage - 1) * safeLimit;
 
     const [users, total] = await Promise.all([
       User.find(query)
         .populate("added_by", "first_name last_name email")
         .sort({ created_at: -1 })
         .skip(skip)
-        .limit(limit),
+        .limit(safeLimit),
       User.countDocuments(query),
     ]);
+
+    const pages = Math.max(Math.ceil(total / safeLimit), 1);
+    const hasNextPage = safePage < pages;
 
     return {
       users,
       pagination: {
-        page,
-        limit,
+        page: safePage,
+        limit: safeLimit,
         total,
-        pages: Math.ceil(total / limit),
+        pages,
+        hasNextPage,
+        hasPrevPage: safePage > 1,
       },
     };
   }
