@@ -568,6 +568,25 @@ class LoanController {
   }
 
   /**
+   * Refresh pending PayNow payments for a loan — polls gateway and updates statuses
+   */
+  async refreshPendingPayments(req, res) {
+    try {
+      const { id } = req.params;
+      const paymentService = require("../services/payment_service");
+      const result = await paymentService.refreshPendingPayments(id);
+      res.status(200).json(result);
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to refresh pending payments",
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
    * Process loan payment
    */
   async processPayment(req, res) {

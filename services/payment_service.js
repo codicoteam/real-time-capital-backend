@@ -186,10 +186,11 @@ class PaymentService {
       });
       await payment.save();
 
-      // Empty string = guest/anonymous payment — skips PayNow login and goes straight to payment page
+      // Use hardcoded company email — Paynow requires a valid email address
+      const PAYNOW_EMAIL = "realtimecapitalmicrofinance@gmail.com";
       const paynowPayment = this.paynowIntegration.createPayment(
         paymentData.receipt_no,
-        "",
+        PAYNOW_EMAIL,
       );
 
       paynowPayment.add(
@@ -253,6 +254,23 @@ class PaymentService {
         };
 
         await payment.save();
+
+        // Add a PENDING entry to the loan's embedded payments so it appears immediately
+        // with status "pending". reference_no = receipt_no is the link we use to update it later.
+        await Loan.findByIdAndUpdate(paymentData.loan, {
+          $push: {
+            payments: {
+              amount: paymentData.amount,
+              payment_date: new Date(),
+              payment_method: ["ecocash", "onemoney", "telecash"].includes(paymentData.provider)
+                ? "mobile_money"
+                : "cash",
+              status: "pending",
+              reference_no: payment.receipt_no,
+              notes: `${paymentData.provider.toUpperCase()} initiated — awaiting confirmation`,
+            },
+          },
+        });
 
         // Populate before returning
         await payment.populate([
@@ -968,19 +986,35 @@ class PaymentService {
         loan.status = "redeemed";
       }
 
-      // Push payment into the embedded payments array
-      loan.payments.push({
-        amount: payment.amount,
-        payment_date: payment.paid_at || new Date(),
-        payment_method: payment.provider === "cash" ? "cash"
-          : ["bank_transfer"].includes(payment.provider) ? "bank_transfer"
-          : ["ecocash", "onemoney", "telecash"].includes(payment.provider) ? "mobile_money"
-          : "cash",
-        status: "paid",
-        reference_no: payment.receipt_no || payment.provider_ref || null,
-        received_by: payment.received_by || null,
-        notes: `Via ${payment.provider || "payment gateway"} — ref: ${payment.receipt_no || "N/A"}`,
-      });
+      // Find an existing pending embedded payment with the same receipt_no.
+      // If found, update it to "paid" so we don't create a duplicate entry.
+      const embeddedIdx = loan.payments.findIndex(
+        (p) => p.reference_no === payment.receipt_no && p.status === "pending",
+      );
+
+      const resolvedMethod = payment.provider === "cash" ? "cash"
+        : payment.provider === "bank_transfer" ? "bank_transfer"
+        : ["ecocash", "onemoney", "telecash"].includes(payment.provider) ? "mobile_money"
+        : "cash";
+
+      if (embeddedIdx !== -1) {
+        loan.payments[embeddedIdx].status = "paid";
+        loan.payments[embeddedIdx].payment_date = payment.paid_at || new Date();
+        loan.payments[embeddedIdx].payment_method = resolvedMethod;
+        loan.payments[embeddedIdx].notes =
+          `Via ${payment.provider || "gateway"} — confirmed ref: ${payment.receipt_no || "N/A"}`;
+      } else {
+        // No pending entry found (e.g. cash/bank payment or webhook arrived before initial push)
+        loan.payments.push({
+          amount: payment.amount,
+          payment_date: payment.paid_at || new Date(),
+          payment_method: resolvedMethod,
+          status: "paid",
+          reference_no: payment.receipt_no || payment.provider_ref || null,
+          received_by: payment.received_by || null,
+          notes: `Via ${payment.provider || "payment gateway"} — ref: ${payment.receipt_no || "N/A"}`,
+        });
+      }
 
       // Keep meta reference for backward-compat
       loan.meta = loan.meta || {};
@@ -1175,6 +1209,49 @@ class PaymentService {
     } catch (error) {
       console.error("Get mobile payment methods error:", error);
       throw this.handleError(500, "Failed to fetch payment methods");
+    }
+  }
+
+  /**
+   * Poll PayNow status for all pending payments on a loan and update them.
+   * Called automatically when the loan detail screen opens.
+   */
+  async refreshPendingPayments(loanId) {
+    try {
+      const pendingPayments = await Payment.find({
+        loan: loanId,
+        payment_status: { $nin: ["paid", "failed", "cancelled", "refunded"] },
+        poll_url: { $exists: true, $ne: null },
+      });
+
+      const results = [];
+      for (const pmt of pendingPayments) {
+        try {
+          const result = await this.checkPayNowStatus(pmt._id);
+          results.push({
+            payment_id: pmt._id,
+            receipt_no: pmt.receipt_no,
+            status: result.data.status,
+            paid: result.data.paid,
+          });
+        } catch (err) {
+          results.push({ payment_id: pmt._id, receipt_no: pmt.receipt_no, error: err.message });
+        }
+      }
+
+      const updatedLoan = await Loan.findById(loanId).populate([
+        { path: "customer_user", select: "first_name last_name email phone" },
+        { path: "asset", select: "asset_no title status" },
+        { path: "payments.received_by", select: "first_name last_name email" },
+      ]);
+
+      return {
+        success: true,
+        data: { results, loan: updatedLoan, checked: pendingPayments.length },
+        message: `Checked ${pendingPayments.length} pending payment(s)`,
+      };
+    } catch (error) {
+      throw this.handleMongoError(error);
     }
   }
 

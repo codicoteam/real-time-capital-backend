@@ -730,6 +730,20 @@ router.post(
   loanController.processPayment,
 );
 
+router.post(
+  "/:id/refresh-pending-payments",
+  requireRoles(
+    "customer",
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "admin_pawn_limited",
+    "super_admin_vendor",
+    "management",
+    "agent",
+  ),
+  loanController.refreshPendingPayments,
+);
+
 /**
  * @swagger
  * /api/v1/loans/{id}/charges:
