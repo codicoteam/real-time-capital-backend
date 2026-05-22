@@ -955,14 +955,34 @@ class PaymentService {
 
       // Calculate new balance
       const newBalance = Math.max(0, loan.current_balance - payment.amount);
-      loan.current_balance = newBalance;
+      const newTotalPaid = (loan.total_paid || 0) + payment.amount;
 
-      // Update loan status if fully paid
-      if (newBalance === 0) {
+      // Fully redeemed when total paid meets or exceeds what was owed
+      const totalRepayable = loan.expected_total_repayable || loan.principal_amount;
+      const isFullyPaid = newTotalPaid >= totalRepayable || newBalance <= 0;
+
+      loan.current_balance = isFullyPaid ? 0 : newBalance;
+      loan.total_paid = newTotalPaid;
+
+      if (isFullyPaid) {
         loan.status = "redeemed";
       }
 
-      // Add payment record to loan meta
+      // Push payment into the embedded payments array
+      loan.payments.push({
+        amount: payment.amount,
+        payment_date: payment.paid_at || new Date(),
+        payment_method: payment.provider === "cash" ? "cash"
+          : ["bank_transfer"].includes(payment.provider) ? "bank_transfer"
+          : ["ecocash", "onemoney", "telecash"].includes(payment.provider) ? "mobile_money"
+          : "cash",
+        status: "paid",
+        reference_no: payment.receipt_no || payment.provider_ref || null,
+        received_by: payment.received_by || null,
+        notes: `Via ${payment.provider || "payment gateway"} — ref: ${payment.receipt_no || "N/A"}`,
+      });
+
+      // Keep meta reference for backward-compat
       loan.meta = loan.meta || {};
       loan.meta.payments = loan.meta.payments || [];
       loan.meta.payments.push({
@@ -977,12 +997,11 @@ class PaymentService {
 
       // Update associated asset if exists
       if (loan.asset) {
-        const Asset = require("../models/asset_model");
-        await Asset.findByIdAndUpdate(loan.asset, {
-          $set: {
-            status: newBalance === 0 ? "redeemed" : "pawned",
-          },
-        });
+        const Asset = require("../models/asset.model");
+        const assetUpdate = isFullyPaid
+          ? { $set: { status: "redeemed" }, $unset: { active_loan: "" } }
+          : { $set: { status: "pawned", active_loan: loan._id } };
+        await Asset.findByIdAndUpdate(loan.asset, assetUpdate);
       }
     } catch (error) {
       console.error("Failed to update loan balance:", error);

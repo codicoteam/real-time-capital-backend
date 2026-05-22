@@ -28,10 +28,8 @@ class LoanService {
         loanData.created_by = userId;
       }
 
-      // Set initial current_balance to principal_amount if not provided
-      if (!loanData.current_balance && loanData.principal_amount) {
-        loanData.current_balance = loanData.principal_amount;
-      }
+      // Calculate total repayable (principal + interest + storage) and set current_balance
+      this.calculateRepaymentBreakdown(loanData);
 
       // Determine if super admin approval is needed (amount > 500)
       if (loanData.principal_amount > 500) {
@@ -1563,13 +1561,18 @@ class LoanService {
         amount: amount,
         payment_date: new Date(),
         payment_method: payment_method,
+        status: "paid",
         reference_no: reference_no || `PAY-${Date.now()}`,
         received_by: received_by || loan.processed_by || loan.created_by,
         notes: notes || null,
       };
 
+      // Loan is fully redeemed when total paid meets or exceeds what was owed
+      const totalRepayable = loan.expected_total_repayable || loan.principal_amount;
+      const isFullyPaid = newTotalPaid >= totalRepayable || newBalance <= 0;
+
       const updateData = {
-        current_balance: newBalance,
+        current_balance: isFullyPaid ? 0 : newBalance,
         total_paid: newTotalPaid,
         updated_at: new Date(),
         $push: {
@@ -1578,7 +1581,7 @@ class LoanService {
       };
 
       // Update status based on payment
-      if (newBalance === 0) {
+      if (isFullyPaid) {
         updateData.status = "redeemed";
       } else if (newBalance > 0 && loan.status === "overdue") {
         // If still has balance but was overdue, check if should remain overdue
@@ -1644,7 +1647,7 @@ class LoanService {
       ]);
 
       // Update asset status if loan is redeemed
-      if (newBalance === 0 && loan.asset) {
+      if (isFullyPaid && loan.asset) {
         await Asset.findByIdAndUpdate(loan.asset, {
           status: "redeemed",
           $unset: { active_loan: "" },
@@ -1659,13 +1662,15 @@ class LoanService {
           summary: {
             amount_paid: amount,
             previous_balance: loan.current_balance,
-            new_balance: newBalance,
+            new_balance: isFullyPaid ? 0 : newBalance,
             total_paid_to_date: newTotalPaid,
-            remaining_balance: newBalance,
-            fully_paid: newBalance === 0,
+            remaining_balance: isFullyPaid ? 0 : newBalance,
+            fully_paid: isFullyPaid,
+            repayment_breakdown: updatedLoan.repayment_breakdown || null,
+            total_repayable: totalRepayable,
           },
         },
-        message: `Payment of ${amount} processed successfully`,
+        message: `Payment of ${amount} processed successfully${isFullyPaid ? ". Loan fully redeemed." : ""}`,
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -1751,6 +1756,67 @@ class LoanService {
     } else {
       await Asset.findByIdAndUpdate(assetId, { status: newAssetStatus });
     }
+  }
+
+  /**
+   * Calculate interest, storage charge, and total repayable from loan terms.
+   * Sets interest_amount, storage_charge_amount, expected_total_repayable,
+   * repayment_breakdown, and current_balance on loanData in-place.
+   */
+  calculateRepaymentBreakdown(loanData) {
+    const principal = loanData.principal_amount;
+    const interestRate = loanData.interest_rate_percent;
+    const storageRate = loanData.storage_charge_percent;
+    const interestPeriodDays = loanData.interest_period_days || 30;
+
+    if (!principal || interestRate == null || storageRate == null) {
+      // Not enough data to calculate — fall back to principal as balance
+      if (!loanData.current_balance && principal) {
+        loanData.current_balance = principal;
+      }
+      return;
+    }
+
+    let loanPeriodDays = null;
+    let numberOfPeriods = 1;
+
+    if (loanData.start_date && loanData.due_date) {
+      const startDate = new Date(loanData.start_date);
+      const dueDate = new Date(loanData.due_date);
+      loanPeriodDays = Math.ceil((dueDate - startDate) / (1000 * 60 * 60 * 24));
+      numberOfPeriods = loanPeriodDays / interestPeriodDays;
+    } else if (loanData.installment_count) {
+      numberOfPeriods = loanData.installment_count;
+    }
+
+    const interestAmount = parseFloat(
+      (principal * (interestRate / 100) * numberOfPeriods).toFixed(2)
+    );
+    const storageChargeAmount = parseFloat(
+      (principal * (storageRate / 100) * numberOfPeriods).toFixed(2)
+    );
+    const totalRepayable = parseFloat(
+      (principal + interestAmount + storageChargeAmount).toFixed(2)
+    );
+
+    loanData.interest_amount = interestAmount;
+    loanData.storage_charge_amount = storageChargeAmount;
+    loanData.expected_total_repayable = totalRepayable;
+    loanData.current_balance = totalRepayable;
+
+    loanData.repayment_breakdown = {
+      principal_amount: principal,
+      loan_period_days: loanPeriodDays,
+      interest_period_days: interestPeriodDays,
+      number_of_periods: parseFloat(numberOfPeriods.toFixed(4)),
+      interest_rate_percent: interestRate,
+      interest_amount: interestAmount,
+      storage_charge_percent: storageRate,
+      storage_charge_amount: storageChargeAmount,
+      expected_total_repayable: totalRepayable,
+      calculation_note:
+        "Total = Principal + (Principal × Interest% × Periods) + (Principal × Storage% × Periods)",
+    };
   }
 
   /**

@@ -10,6 +10,11 @@ const PaymentSchema = new mongoose.Schema(
       enum: ["cash", "bank_transfer", "mobile_money", "cheque"],
       required: true,
     },
+    status: {
+      type: String,
+      enum: ["paid", "pending"],
+      default: "pending",
+    },
     reference_no: { type: String, trim: true },
     received_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     notes: { type: String, trim: true },
@@ -50,7 +55,7 @@ const LoanSchema = new mongoose.Schema(
 
     // Financials
     principal_amount: { type: Number, required: true, min: 0 },
-    current_balance: { type: Number, required: true, min: 0 }, // reduces with payments
+    current_balance: { type: Number, required: true, min: 0 }, // reduces with payments; starts at expected_total_repayable
     currency: { type: String, default: "USD" },
 
     // Terms snapshot (set at loan creation)
@@ -59,6 +64,12 @@ const LoanSchema = new mongoose.Schema(
     storage_charge_percent: { type: Number, required: true },
     penalty_percent: { type: Number, default: 10 }, // late payment penalty %
     grace_days: { type: Number, default: 7 },
+
+    // Calculated financial breakdown (set at loan creation)
+    interest_amount: { type: Number, min: 0, default: 0 },        // interest charged
+    storage_charge_amount: { type: Number, min: 0, default: 0 },  // storage fee charged
+    expected_total_repayable: { type: Number, min: 0 },           // principal + interest + storage
+    repayment_breakdown: { type: mongoose.Schema.Types.Mixed, default: null }, // full calculation detail
 
     // Repayment structure (mirror from application)
     repayment_type: {
@@ -72,7 +83,6 @@ const LoanSchema = new mongoose.Schema(
       enum: ["weekly", "biweekly", "monthly", "quarterly"],
     },
     installment_amount: { type: Number, min: 0 },
-    expected_total_repayable: { type: Number, min: 0 },
 
     // Disbursement details (when money is given to customer)
     disbursement_date: { type: Date },
@@ -149,9 +159,9 @@ const LoanSchema = new mongoose.Schema(
 LoanSchema.index({ customer_user: 1, status: 1, due_date: 1 });
 LoanSchema.index({ asset: 1, status: 1 });
 
-// Virtual: remaining balance after payments
+// Virtual: remaining balance after payments (current_balance already reduces with each payment)
 LoanSchema.virtual("remaining_balance").get(function () {
-  return Math.max(0, this.current_balance - this.total_paid);
+  return this.current_balance;
 });
 
 LoanSchema.set("toJSON", { virtuals: true });
