@@ -511,7 +511,6 @@ async function moveLoanToAuction(loan) {
       );
 
       // 3. Notify admins about the auction
-      const customer = await User.findById(loan.customer_user).lean();
       const customerName = customer
         ? `${customer.first_name || ""} ${customer.last_name || ""}`.trim()
         : "Unknown Client";
