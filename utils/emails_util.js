@@ -958,6 +958,229 @@ async function sendKycApprovedEmail({ to, fullName, webLoginUrl = process.env.WE
   await sendEmail({ to, subject, html });
 }
 
+/**
+ * Helper – resolve admin email list from env
+ */
+function getAdminEmails() {
+  return (
+    process.env.ADMIN_NOTIFICATION_EMAILS?.split(",")
+      .map((e) => e.trim())
+      .filter(Boolean) || [process.env.EMAIL_USER]
+  );
+}
+
+/**
+ * Notify admins that a loan has been disbursed (status → active)
+ */
+async function sendLoanDisbursedAdminEmail({ loanNo, customerName, principalAmount, loanPeriodType, dueDate, disbursedBy }) {
+  const subject = `Loan Disbursed — Loan #${loanNo}`;
+  const title = "Loan Disbursement Notification";
+  const periodLabel = loanPeriodType
+    ? loanPeriodType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+    : "N/A";
+  const dueDateStr = dueDate
+    ? new Date(dueDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+    : "N/A";
+
+  const message = `
+    <p style="margin: 0 0 15px 0;">Administrative Team,</p>
+    <p style="margin: 0 0 15px 0;">
+      A loan has been <strong style="color: #6ba547;">disbursed</strong> and funds have been issued to the client.
+      Please ensure the disbursement is recorded and the client has received the funds.
+    </p>
+  `;
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0; background-color: #f0f7ec; border: 1px solid #6ba547; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #1a1a1a; font-size: 12px; margin: 0 0 15px 0; font-weight: bold; border-bottom: 2px solid #6ba547; padding-bottom: 5px;">
+            DISBURSEMENT DETAILS
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px; width: 180px;">Loan Number:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">${loanNo}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Client Name:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${customerName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Amount Disbursed:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">$${Number(principalAmount).toLocaleString()}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Loan Period:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${periodLabel}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Repayment Due:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${dueDateStr}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Disbursed By:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${disbursedBy || "System"}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Disbursement Time:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">
+                ${new Date().toLocaleString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  const html = generateDocumentTemplate({ title, message, details: detailsHtml });
+  const adminEmails = getAdminEmails();
+  for (const email of adminEmails) {
+    await sendEmail({ to: email, subject, html }).catch((err) =>
+      console.error(`Disbursement admin email failed (${email}):`, err.message)
+    );
+  }
+}
+
+/**
+ * Notify admins that a loan has been redeemed (fully paid / status → redeemed)
+ */
+async function sendLoanRedeemedAdminEmail({ loanNo, customerName, principalAmount, amountPaid, loanPeriodType }) {
+  const subject = `Loan Redeemed — Loan #${loanNo}`;
+  const title = "Loan Redemption Notification";
+  const periodLabel = loanPeriodType
+    ? loanPeriodType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+    : "N/A";
+
+  const message = `
+    <p style="margin: 0 0 15px 0;">Administrative Team,</p>
+    <p style="margin: 0 0 15px 0;">
+      A loan has been <strong style="color: #6ba547;">redeemed</strong>. The client has settled their outstanding balance
+      and the collateral asset is ready for collection.
+    </p>
+  `;
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0; background-color: #f0f7ec; border: 1px solid #6ba547; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #1a1a1a; font-size: 12px; margin: 0 0 15px 0; font-weight: bold; border-bottom: 2px solid #6ba547; padding-bottom: 5px;">
+            REDEMPTION DETAILS
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px; width: 180px;">Loan Number:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">${loanNo}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Client Name:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${customerName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Original Principal:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">$${Number(principalAmount).toLocaleString()}</td>
+            </tr>
+            ${amountPaid != null ? `
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Payment Amount:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">$${Number(amountPaid).toLocaleString()}</td>
+            </tr>` : ""}
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Loan Period:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${periodLabel}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Redeemed On:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">
+                ${new Date().toLocaleString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  const html = generateDocumentTemplate({ title, message, details: detailsHtml });
+  const adminEmails = getAdminEmails();
+  for (const email of adminEmails) {
+    await sendEmail({ to: email, subject, html }).catch((err) =>
+      console.error(`Redemption admin email failed (${email}):`, err.message)
+    );
+  }
+}
+
+/**
+ * Notify admins that a loan asset has been moved to auction
+ */
+async function sendLoanAuctionAdminEmail({ loanNo, customerName, principalAmount, assetTitle, assetNo, totalOwed, auctionNo }) {
+  const subject = `Asset Listed for Auction — Loan #${loanNo}`;
+  const title = "Loan Asset Moved to Auction";
+
+  const message = `
+    <p style="margin: 0 0 15px 0;">Administrative Team,</p>
+    <p style="margin: 0 0 15px 0;">
+      A collateral asset has been <strong style="color: #d97706;">listed for auction</strong> due to non-payment.
+      Please ensure the auction process is followed and records are updated accordingly.
+    </p>
+  `;
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0; background-color: #fff9e6; border: 1px solid #ffa500; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #8b5a00; font-size: 12px; margin: 0 0 15px 0; font-weight: bold; border-bottom: 2px solid #ffa500; padding-bottom: 5px;">
+            AUCTION DETAILS
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px; width: 180px;">Loan Number:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">${loanNo}</td>
+            </tr>
+            ${auctionNo ? `
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Auction Reference:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">${auctionNo}</td>
+            </tr>` : ""}
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Client Name:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${customerName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Asset:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${assetTitle || "N/A"}${assetNo ? ` (${assetNo})` : ""}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Original Principal:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">$${Number(principalAmount).toLocaleString()}</td>
+            </tr>
+            ${totalOwed != null ? `
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Total Amount Owed:</td>
+              <td style="padding: 5px 0; color: #d97706; font-size: 12px; font-weight: bold;">$${Number(totalOwed).toLocaleString()}</td>
+            </tr>` : ""}
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Listed On:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">
+                ${new Date().toLocaleString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  const html = generateDocumentTemplate({ title, message, details: detailsHtml });
+  const adminEmails = getAdminEmails();
+  for (const email of adminEmails) {
+    await sendEmail({ to: email, subject, html }).catch((err) =>
+      console.error(`Auction admin email failed (${email}):`, err.message)
+    );
+  }
+}
+
 // Helper function to get status color
 function getStatusColor(status) {
   const colors = {
@@ -990,5 +1213,8 @@ module.exports = {
   sendLoanApplicationStatusUpdateEmail,
   sendDocumentRequirementEmail,
   sendKycApprovedEmail,
+  sendLoanDisbursedAdminEmail,
+  sendLoanRedeemedAdminEmail,
+  sendLoanAuctionAdminEmail,
   generateOTP
 };

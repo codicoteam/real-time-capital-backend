@@ -1,10 +1,16 @@
 const Loan = require("../models/loan.model");
 const LoanApplication = require("../models/loanApplication.model");
+const { LOAN_PERIODS } = require("../configs/loan_periods");
 const User = require("../models/user.model");
 const Asset = require("../models/asset.model");
 const Attachment = require("../models/attachment.model");
 const { sendSmsWithMessage } = require("../utils/sms_utils");
-const { sendEmail } = require("../utils/emails_util");
+const {
+  sendEmail,
+  sendLoanDisbursedAdminEmail,
+  sendLoanRedeemedAdminEmail,
+  sendLoanAuctionAdminEmail,
+} = require("../utils/emails_util");
 const NotificationService = require("../services/notifications_service");
 
 class LoanService {
@@ -26,6 +32,26 @@ class LoanService {
       // Set created_by if not provided
       if (!loanData.created_by && userId) {
         loanData.created_by = userId;
+      }
+
+      // Apply hardcoded rates from loan_period_type
+      if (loanData.loan_period_type) {
+        const period = LOAN_PERIODS[loanData.loan_period_type];
+        if (!period) {
+          throw { status: 400, message: `Invalid loan_period_type. Must be one of: ${Object.keys(LOAN_PERIODS).join(", ")}` };
+        }
+        loanData.interest_rate_percent = period.interest_rate_percent;
+        loanData.storage_charge_percent = period.storage_charge_percent;
+        loanData.interest_period_days = period.days;
+        loanData.repayment_type = "once_off";
+        // Set due_date from start_date + period.days if not already set
+        if (loanData.start_date && !loanData.due_date) {
+          const due = new Date(loanData.start_date);
+          due.setDate(due.getDate() + period.days);
+          loanData.due_date = due;
+        }
+      } else {
+        throw { status: 400, message: "loan_period_type is required. Must be one of: " + Object.keys(LOAN_PERIODS).join(", ") };
       }
 
       // Calculate total repayable (principal + interest + storage) and set current_balance
@@ -92,22 +118,11 @@ class LoanService {
           loanData.declared_asset_value = application.declared_asset_value;
         }
 
-        // Populate repayment terms from application
-        if (!loanData.repayment_type && application.repayment_type) {
-          loanData.repayment_type = application.repayment_type;
+        // Populate loan_period_type from application if not set
+        if (!loanData.loan_period_type && application.loan_period_type) {
+          loanData.loan_period_type = application.loan_period_type;
         }
-        if (!loanData.installment_count && application.installment_count) {
-          loanData.installment_count = application.installment_count;
-        }
-        if (
-          !loanData.installment_frequency &&
-          application.installment_frequency
-        ) {
-          loanData.installment_frequency = application.installment_frequency;
-        }
-        if (!loanData.installment_amount && application.installment_amount) {
-          loanData.installment_amount = application.installment_amount;
-        }
+        loanData.repayment_type = "once_off";
       }
 
       // Auto-create asset from collateral when application is provided and no asset given
@@ -153,7 +168,7 @@ class LoanService {
         {
           path: "application",
           select:
-            "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type installment_count installment_frequency interest_rate interest_amount total_repayable_amount",
+            "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type loan_period_type repayment_days interest_rate interest_amount total_repayable_amount",
         },
         {
           path: "created_by",
@@ -214,7 +229,7 @@ class LoanService {
       }
 
       const customer = application.customer_user;
-      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+      const frontendUrl = process.env.FRONTEND_URL || "https://www.rtcapital.co.zw/";
 
       // Create notification for the customer
       const notificationData = {
@@ -673,7 +688,7 @@ class LoanService {
         {
           path: "application",
           select:
-            "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type installment_count installment_frequency interest_rate interest_amount total_repayable_amount small_loan_details motor_vehicle_details jewellery_details collateral_images surety_description",
+            "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type loan_period_type repayment_days interest_rate interest_amount total_repayable_amount small_loan_details motor_vehicle_details jewellery_details collateral_images surety_description",
         },
         {
           path: "created_by",
@@ -783,7 +798,7 @@ class LoanService {
             {
               path: "application",
               select:
-                "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type installment_count installment_frequency interest_rate interest_amount total_repayable_amount",
+                "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type loan_period_type repayment_days interest_rate interest_amount total_repayable_amount",
             },
           ])
           .sort(sort)
@@ -844,7 +859,7 @@ class LoanService {
           {
             path: "application",
             select:
-              "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type installment_count installment_frequency interest_rate interest_amount total_repayable_amount",
+              "application_no requested_loan_amount collateral_category collateral_description declared_asset_value status repayment_type loan_period_type repayment_days interest_rate interest_amount total_repayable_amount",
           },
         ])
         .sort(sort)
@@ -1034,6 +1049,39 @@ class LoanService {
       // Update associated asset status
       await this.updateAssetStatusBasedOnLoan(updatedLoan);
 
+      // Admin email notifications for key status changes
+      const customer = updatedLoan.customer_user;
+      const customerName = customer
+        ? `${customer.first_name || ""} ${customer.last_name || ""}`.trim()
+        : "Unknown Client";
+
+      if (status === "active") {
+        sendLoanDisbursedAdminEmail({
+          loanNo: updatedLoan.loan_no,
+          customerName,
+          principalAmount: updatedLoan.principal_amount,
+          loanPeriodType: updatedLoan.loan_period_type,
+          dueDate: updatedLoan.due_date,
+        }).catch((err) => console.error("Disbursement admin email error:", err.message));
+      } else if (status === "redeemed") {
+        sendLoanRedeemedAdminEmail({
+          loanNo: updatedLoan.loan_no,
+          customerName,
+          principalAmount: updatedLoan.principal_amount,
+          loanPeriodType: updatedLoan.loan_period_type,
+        }).catch((err) => console.error("Redemption admin email error:", err.message));
+      } else if (status === "auction") {
+        const asset = updatedLoan.asset;
+        sendLoanAuctionAdminEmail({
+          loanNo: updatedLoan.loan_no,
+          customerName,
+          principalAmount: updatedLoan.principal_amount,
+          assetTitle: asset?.title,
+          assetNo: asset?.asset_no,
+          totalOwed: updatedLoan.current_balance,
+        }).catch((err) => console.error("Auction admin email error:", err.message));
+      }
+
       return {
         success: true,
         data: updatedLoan,
@@ -1105,7 +1153,7 @@ class LoanService {
       await loan.save();
 
       // Prepare notification content
-      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+      const frontendUrl = process.env.FRONTEND_URL || "https://www.rtcapital.co.zw/";
       const approvalLink = `${frontendUrl}/loans/${loan._id}?approve=true`;
       const subject = `Loan Approval Request: ${loan.loan_no}`;
       const text = `A loan of $${loan.principal_amount} requires your approval. Click here to review: ${approvalLink}`;
@@ -1612,40 +1660,6 @@ class LoanService {
         updateData.status = "partially_paid";
       }
 
-      // Update installment tracking if applicable
-      if (loan.repayment_type === "installment" && loan.installment_amount) {
-        const installmentsPaid = Math.floor(
-          newTotalPaid / loan.installment_amount,
-        );
-        const remainingInstallments = Math.max(
-          0,
-          loan.installment_count - installmentsPaid,
-        );
-        updateData.remaining_installments = remainingInstallments;
-
-        // Calculate next installment due date
-        if (remainingInstallments > 0 && loan.installment_frequency) {
-          const lastPaymentDate = new Date();
-          let nextDueDate = new Date();
-
-          switch (loan.installment_frequency) {
-            case "weekly":
-              nextDueDate.setDate(lastPaymentDate.getDate() + 7);
-              break;
-            case "biweekly":
-              nextDueDate.setDate(lastPaymentDate.getDate() + 14);
-              break;
-            case "monthly":
-              nextDueDate.setMonth(lastPaymentDate.getMonth() + 1);
-              break;
-            case "quarterly":
-              nextDueDate.setMonth(lastPaymentDate.getMonth() + 3);
-              break;
-          }
-          updateData.next_installment_due_date = nextDueDate;
-        }
-      }
-
       const updatedLoan = await Loan.findByIdAndUpdate(loanId, updateData, {
         new: true,
         runValidators: true,
@@ -1666,6 +1680,21 @@ class LoanService {
           status: "redeemed",
           $unset: { active_loan: "" },
         });
+      }
+
+      // Notify admins when loan is fully redeemed via payment
+      if (isFullyPaid) {
+        const cu = updatedLoan.customer_user;
+        const customerName = cu
+          ? `${cu.first_name || ""} ${cu.last_name || ""}`.trim()
+          : "Unknown Client";
+        sendLoanRedeemedAdminEmail({
+          loanNo: updatedLoan.loan_no,
+          customerName,
+          principalAmount: updatedLoan.principal_amount,
+          amountPaid: amount,
+          loanPeriodType: updatedLoan.loan_period_type,
+        }).catch((err) => console.error("Redemption admin email error:", err.message));
       }
 
       return {
@@ -1799,8 +1828,6 @@ class LoanService {
       const dueDate = new Date(loanData.due_date);
       loanPeriodDays = Math.ceil((dueDate - startDate) / (1000 * 60 * 60 * 24));
       numberOfPeriods = loanPeriodDays / interestPeriodDays;
-    } else if (loanData.installment_count) {
-      numberOfPeriods = loanData.installment_count;
     }
 
     const interestAmount = parseFloat(

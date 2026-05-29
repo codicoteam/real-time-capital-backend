@@ -2,6 +2,7 @@ const LoanApplication = require("../models/loanApplication.model");
 const User = require("../models/user.model");
 const DebtorRecord = require("../models/debtorRecord.model");
 const mongoose = require("mongoose");
+const { LOAN_PERIODS } = require("../configs/loan_periods");
 const emailService = require("../utils/emails_util");
 const twilio = require("twilio");
 const { sendSmsWithMessage } = require("../utils/sms_utils");
@@ -286,10 +287,10 @@ class LoanApplicationService {
 
     try {
       // Validate required fields
-      const requiredFields = ["requested_loan_amount", "collateral_category"];
+      const requiredFields = ["requested_loan_amount", "collateral_category", "loan_period_type"];
       for (const field of requiredFields) {
         if (!applicationData[field]) {
-          throw new Error(`${field.replace("_", " ")} is required`);
+          throw new Error(`${field.replace(/_/g, " ")} is required`);
         }
       }
 
@@ -299,6 +300,15 @@ class LoanApplicationService {
           `Invalid collateral category. Must be one of: ${validCategories.join(", ")}`,
         );
       }
+
+      // Apply hardcoded rates from loan_period_type
+      const period = LOAN_PERIODS[applicationData.loan_period_type];
+      if (!period) {
+        throw new Error(`Invalid loan_period_type. Must be one of: ${Object.keys(LOAN_PERIODS).join(", ")}`);
+      }
+      applicationData.repayment_type = "once_off";
+      applicationData.repayment_days = period.days;
+      applicationData.interest_rate = period.interest_rate_percent;
 
       // Determine the customer (borrower)
       const finalCustomerUserId = customerUserId || createdByUser._id;
@@ -939,10 +949,8 @@ class LoanApplicationService {
         "jewellery_details",
         "collateral_images", // ✅ ALLOW collateral_images to be updated
         "repayment_type",
+        "loan_period_type",
         "repayment_days",
-        "installment_count",
-        "installment_frequency",
-        "installment_amount",
         "declaration_text",
         "declaration_signed_at",
         "declaration_signature_name",

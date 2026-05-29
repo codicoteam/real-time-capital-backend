@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { LOAN_PERIOD_TYPES } = require("../configs/loan_periods");
 
 // Small loan collateral details
 const SmallLoanDetailsSchema = new mongoose.Schema(
@@ -82,10 +83,17 @@ const LoanApplicationSchema = new mongoose.Schema(
     // Loan specific fields
     requested_loan_amount: { type: Number, required: true, min: 0 },
 
-    // Interest and total repayment (set by admin/loan officer)
-    interest_rate: { type: Number, min: 0 }, // percentage, e.g., 5.5
-    interest_amount: { type: Number, min: 0 }, // calculated or entered interest value
-    total_repayable_amount: { type: Number, min: 0 }, // principal + interest
+    // Loan period (two_weeks or one_month) — drives interest & storage rates
+    loan_period_type: {
+      type: String,
+      enum: LOAN_PERIOD_TYPES,
+      required: true,
+    },
+
+    // Interest and total repayment (derived from loan_period_type)
+    interest_rate: { type: Number, min: 0 },
+    interest_amount: { type: Number, min: 0 },
+    total_repayable_amount: { type: Number, min: 0 },
 
     collateral_category: {
       type: String,
@@ -105,21 +113,13 @@ const LoanApplicationSchema = new mongoose.Schema(
     // Collateral images (array of URLs)
     collateral_images: { type: [String], default: [] },
 
-    // Repayment preferences
+    // All applications use once-off repayment
     repayment_type: {
       type: String,
-      enum: ["once_off", "installment"],
+      enum: ["once_off"],
       default: "once_off",
     },
-    repayment_days: { type: Number, min: 1 }, // expected days to repay (for once_off or total duration)
-
-    // Installment specific fields (only used if repayment_type = "installment")
-    installment_count: { type: Number, min: 1 },
-    installment_frequency: {
-      type: String,
-      enum: ["weekly", "biweekly", "monthly", "quarterly"],
-    },
-    installment_amount: { type: Number, min: 0 },
+    repayment_days: { type: Number, min: 1 }, // derived from loan_period_type
 
     // Declaration (signed by customer)
     declaration_text: { type: String, trim: true },

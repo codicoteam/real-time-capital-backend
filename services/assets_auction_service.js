@@ -5,7 +5,7 @@ const Loan = require("../models/loan.model");
 const Auction = require("../models/auction.model");
 const User = require("../models/user.model");
 const { sendSmsWithMessage } = require("../utils/sms_utils"); // your twilio file
-const { sendEmail, generateDocumentTemplate } = require("../utils/emails_util");
+const { sendEmail, generateDocumentTemplate, sendLoanAuctionAdminEmail } = require("../utils/emails_util");
 const NotificationService = require("./notifications_service");
 
 // ─────────────────────────────────────────────
@@ -508,6 +508,23 @@ async function moveLoanToAuction(loan) {
         loan,
         auction,
         breakdown,
+      );
+
+      // 3. Notify admins about the auction
+      const customer = await User.findById(loan.customer_user).lean();
+      const customerName = customer
+        ? `${customer.first_name || ""} ${customer.last_name || ""}`.trim()
+        : "Unknown Client";
+      await sendLoanAuctionAdminEmail({
+        loanNo: loan.loan_no,
+        customerName,
+        principalAmount: loan.principal_amount,
+        assetTitle: asset.title,
+        assetNo: asset.asset_no,
+        totalOwed: breakdown.total,
+        auctionNo: auction.auction_no,
+      }).catch((err) =>
+        console.error(`Auction admin email failed for loan ${loan.loan_no}:`, err.message)
       );
     } catch (notifyErr) {
       console.error("Notification error (non-fatal):", notifyErr.message);

@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { LOAN_PERIOD_TYPES } = require("../configs/loan_periods");
 
 // Payment subdocument (records each repayment)
 const PaymentSchema = new mongoose.Schema(
@@ -58,9 +59,16 @@ const LoanSchema = new mongoose.Schema(
     current_balance: { type: Number, required: true, min: 0 }, // reduces with payments; starts at expected_total_repayable
     currency: { type: String, default: "USD" },
 
-    // Terms snapshot (set at loan creation)
-    interest_rate_percent: { type: Number, required: true }, // e.g. 4% per period
-    interest_period_days: { type: Number, required: true }, // 30 days for monthly
+    // Loan period (hardcoded: two_weeks = 2%/18%, one_month = 4%/21%)
+    loan_period_type: {
+      type: String,
+      enum: LOAN_PERIOD_TYPES,
+      required: true,
+    },
+
+    // Terms snapshot (set at loan creation from loan_period_type)
+    interest_rate_percent: { type: Number, required: true },
+    interest_period_days: { type: Number, required: true },
     storage_charge_percent: { type: Number, required: true },
     penalty_percent: { type: Number, default: 10 }, // late payment penalty %
     grace_days: { type: Number, default: 7 },
@@ -71,18 +79,13 @@ const LoanSchema = new mongoose.Schema(
     expected_total_repayable: { type: Number, min: 0 },           // principal + interest + storage
     repayment_breakdown: { type: mongoose.Schema.Types.Mixed, default: null }, // full calculation detail
 
-    // Repayment structure (mirror from application)
+    // All loans are once-off payments
     repayment_type: {
       type: String,
-      enum: ["once_off", "installment"],
+      enum: ["once_off"],
+      default: "once_off",
       required: true,
     },
-    installment_count: { type: Number, min: 1 },
-    installment_frequency: {
-      type: String,
-      enum: ["weekly", "biweekly", "monthly", "quarterly"],
-    },
-    installment_amount: { type: Number, min: 0 },
 
     // Disbursement details (when money is given to customer)
     disbursement_date: { type: Date },
@@ -101,8 +104,6 @@ const LoanSchema = new mongoose.Schema(
     // Repayment tracking
     payments: { type: [PaymentSchema], default: [] },
     total_paid: { type: Number, default: 0, min: 0 },
-    next_installment_due_date: { type: Date },
-    remaining_installments: { type: Number, min: 0 },
 
     // Loan status (loan lifecycle)
     status: {

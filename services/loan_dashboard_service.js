@@ -573,7 +573,7 @@ class LoanReportService {
   async _getInterestRevenueTrend(start, end) {
     /**
      * Unwind the embedded payments array on each loan and group by date.
-     * interest_component proxy = amount - (principal/installment_count) capped at 0.
+     * interest_component proxy = amount - principal, capped at 0.
      * When expected_total_repayable is set we can derive the interest fraction.
      */
     const rows = await Loan.aggregate([
@@ -651,14 +651,14 @@ class LoanReportService {
   }
 
   /**
-   * Repayment type split for loans in period (once_off vs installment).
+   * Loan period split — two_weeks vs one_month breakdown for loans in period.
    */
   async _getRepaymentTypeSplit(start, end) {
     const rows = await Loan.aggregate([
       { $match: { created_at: { $gte: start, $lte: end } } },
       {
         $group: {
-          _id: "$repayment_type",
+          _id: "$loan_period_type",
           count: { $sum: 1 },
           total_principal: { $sum: "$principal_amount" },
         },
@@ -666,7 +666,7 @@ class LoanReportService {
     ]);
 
     return rows.map((r) => ({
-      type: r._id,
+      type: r._id || "unknown",
       count: r.count,
       total_principal: this._round(r.total_principal),
     }));
@@ -705,7 +705,8 @@ class LoanReportService {
         loan_no: l.loan_no,
         status: l.status,
         collateral_category: l.collateral_category,
-        repayment_type: l.repayment_type,
+        repayment_type: "once_off",
+        loan_period_type: l.loan_period_type || null,
         currency: l.currency || "USD",
 
         // Financials
@@ -764,7 +765,8 @@ class LoanReportService {
         application_no: a.application_no,
         status: a.status,
         collateral_category: a.collateral_category,
-        repayment_type: a.repayment_type,
+        repayment_type: "once_off",
+        loan_period_type: a.loan_period_type || null,
         application_source: a.application_source,
 
         // Financials
