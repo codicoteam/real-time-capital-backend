@@ -37,6 +37,30 @@ class AuctionReportController {
       });
     }
   }
+
+  async exportAuctionReportExcel(req, res) {
+    try {
+      const { startDate, endDate } = req.query;
+      const wb = await auctionReportService.exportAuctionReportExcel({ startDate, endDate });
+
+      const start = startDate ? startDate.slice(0, 10) : "start";
+      const end   = endDate   ? endDate.slice(0, 10)   : "end";
+      const filename = `RealTimeCapital_AuctionReport_${start}_to_${end}.xlsx`;
+
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+
+      await wb.xlsx.write(res);
+      res.end();
+    } catch (error) {
+      console.error("[AuctionReportController] exportAuctionReportExcel error:", error);
+      return res.status(400).json({
+        success: false,
+        error: error.message || "Failed to export Excel report.",
+      });
+    }
+  }
 }
 
 module.exports = new AuctionReportController();

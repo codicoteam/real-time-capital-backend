@@ -175,4 +175,28 @@ const { authMiddleware } = require("../middlewares/auth_middleware");
  */
 router.get("/", authMiddleware, loanReportController.getLoanReport.bind(loanReportController));
 
+/**
+ * @swagger
+ * /api/v1/loan-report/export/excel:
+ *   get:
+ *     summary: Export loan report as a detailed Excel workbook
+ *     tags: [LoanReport]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: startDate
+ *         schema: { type: string, format: date }
+ *       - in: query
+ *         name: endDate
+ *         schema: { type: string, format: date }
+ *     responses:
+ *       200:
+ *         description: Excel file stream
+ *         content:
+ *           application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+ *             schema: { type: string, format: binary }
+ */
+router.get("/export/excel", authMiddleware, loanReportController.exportLoanReportExcel.bind(loanReportController));
+
 module.exports = router;

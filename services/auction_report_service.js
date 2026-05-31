@@ -2,6 +2,7 @@
 "use strict";
 
 const mongoose = require("mongoose");
+const ExcelJS = require("exceljs");
 const Asset = require("../models/asset.model");
 const Auction = require("../models/auction.model");
 const Bid = require("../models/bid.model");
@@ -899,6 +900,456 @@ class AuctionReportService {
           : null,
       };
     });
+  }
+
+  // ─────────────────────── Excel Export ─────────────────────────────────────
+
+  async exportAuctionReportExcel(options = {}) {
+    const { startDate, endDate } = options;
+
+    const now = new Date();
+    const defaultStart = new Date(now);
+    defaultStart.setDate(now.getDate() - DEFAULT_DATE_RANGE_DAYS);
+
+    const start = startDate ? new Date(startDate) : defaultStart;
+    const end   = endDate   ? new Date(endDate)   : now;
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) throw new Error("Invalid dates.");
+    if (start > end) throw new Error("startDate must be before endDate.");
+
+    const [
+      auctionSummary, bidSummary, paymentSummary, assetSummary,
+      auctionsByStatus, collateralCategoryBreakdown,
+      topAuctions, auctionList,
+    ] = await Promise.all([
+      this._getAuctionSummary(start, end),
+      this._getBidSummary(start, end),
+      this._getPaymentSummary(start, end),
+      this._getAssetSummary(start, end),
+      this._getAuctionsByStatus(start, end),
+      this._getCollateralCategoryBreakdown(start, end),
+      this._getTopAuctions(start, end),
+      this._getAuctionList(start, end),
+    ]);
+
+    // ── Shared styles ─────────────────────────────────────────────────────────
+    const BRAND   = "10B981";
+    const DARK    = "0F172A";
+    const HEADER  = "064E3B";
+    const SUB_HDR = "D1FAE5";
+    const ALT_ROW = "F0FDF4";
+    const WHITE   = "FFFFFF";
+    const AMBER   = "FFFBEB";
+    const BLUE_H  = "1E3A5F";
+    const BORDER_COLOR = "CBD5E1";
+
+    const thin = { style: "thin", color: { argb: `FF${BORDER_COLOR}` } };
+    const cellBorder = { top: thin, left: thin, bottom: thin, right: thin };
+    const hdrFont  = { bold: true, size: 11, color: { argb: `FF${WHITE}` }, name: "Calibri" };
+    const bodyFont = { size: 10, name: "Calibri" };
+    const boldFont = { bold: true, size: 10, name: "Calibri" };
+    const centerAlign = { horizontal: "center", vertical: "middle" };
+    const leftAlign   = { horizontal: "left",   vertical: "middle" };
+    const rightAlign  = { horizontal: "right",  vertical: "middle" };
+
+    const USD = '"$"#,##0.00';
+    const NUM = '#,##0';
+    const PCT = '0.00"%"';
+    const DT  = 'yyyy-mm-dd';
+
+    const fmtDate = (d) => {
+      if (!d) return "";
+      try { return new Date(d).toISOString().split("T")[0]; } catch { return ""; }
+    };
+
+    const applyHdrStyle = (row, bgArgb = `FF${HEADER}`) => {
+      row.height = 22;
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.font   = hdrFont;
+        cell.fill   = { type: "pattern", pattern: "solid", fgColor: { argb: bgArgb } };
+        cell.border = cellBorder;
+        cell.alignment = centerAlign;
+      });
+    };
+
+    const applyAltRow = (row, idx) => {
+      const bg = idx % 2 === 0 ? `FF${WHITE}` : `FF${ALT_ROW}`;
+      row.height = 18;
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.font   = bodyFont;
+        cell.fill   = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+        cell.border = cellBorder;
+        if (!cell.alignment?.horizontal || cell.alignment.horizontal === "general") {
+          cell.alignment = leftAlign;
+        }
+      });
+    };
+
+    const statusFill = (status) => {
+      const map = {
+        live:      "D1FAE5", closed:    "DBEAFE", cancelled: "FEE2E2",
+        draft:     "F1F5F9", scheduled: "FEF3C7",
+      };
+      const key = String(status || "").toLowerCase();
+      return map[key] ? `FF${map[key]}` : `FF${WHITE}`;
+    };
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Workbook
+    // ══════════════════════════════════════════════════════════════════════════
+    const wb = new ExcelJS.Workbook();
+    wb.creator  = "RealTimeCapital System";
+    wb.created  = new Date();
+    wb.modified = new Date();
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // SHEET 1 — Executive Summary
+    // ══════════════════════════════════════════════════════════════════════════
+    const s1 = wb.addWorksheet("Executive Summary", { properties: { tabColor: { argb: `FF${BRAND}` } } });
+    s1.views = [{ showGridLines: false }];
+
+    s1.mergeCells("A1:F1");
+    const t1 = s1.getCell("A1");
+    t1.value = "REALTIMECAPITAL — Auction Financial Report";
+    t1.font  = { bold: true, size: 16, color: { argb: `FF${WHITE}` }, name: "Calibri" };
+    t1.fill  = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${DARK}` } };
+    t1.alignment = centerAlign;
+    s1.getRow(1).height = 36;
+
+    s1.mergeCells("A2:F2");
+    const sub = s1.getCell("A2");
+    sub.value = `Report Period: ${fmtDate(start)} to ${fmtDate(end)}   |   Generated: ${fmtDate(now)}`;
+    sub.font  = { size: 10, color: { argb: `FF${WHITE}` }, name: "Calibri" };
+    sub.fill  = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${HEADER}` } };
+    sub.alignment = centerAlign;
+    s1.getRow(2).height = 20;
+    s1.addRow([]);
+
+    // Auction KPIs
+    const kpiHdr = s1.addRow(["AUCTION KPI", "Value", "", "REVENUE / BID KPI", "Value", ""]);
+    applyHdrStyle(kpiHdr);
+
+    const kpis = [
+      ["Total Auctions (Period)",    auctionSummary.total || 0,                          "Total Winning Bid Revenue", this._round(auctionSummary.total_winning_revenue)],
+      ["Live Auctions",              auctionSummary.live || 0,                           "Avg Winning Bid",            this._round(auctionSummary.avg_winning_bid)],
+      ["Closed Auctions",            auctionSummary.closed || 0,                         "Highest Winning Bid",        this._round(auctionSummary.highest_winning_bid)],
+      ["Cancelled Auctions",         auctionSummary.cancelled || 0,                      "Lowest Winning Bid",         this._round(auctionSummary.lowest_winning_bid)],
+      ["Draft Auctions",             auctionSummary.draft || 0,                          "Total Bids Placed",          bidSummary.total_bids || 0],
+      ["Total Assets in Auction",    assetSummary.total_in_auction || 0,                 "Unique Bidders",             bidSummary.unique_bidders || 0],
+      ["Total Assets Sold",          assetSummary.total_sold || 0,                       "Avg Bids / Auction",         this._round(bidSummary.avg_bids_per_auction)],
+      ["Total Declared Value",       this._round(assetSummary.total_declared_value),     "Total Bid Value",            this._round(bidSummary.total_bid_value)],
+      ["Total Evaluated Value",      this._round(assetSummary.total_evaluated_value),    "Avg Bid Amount",             this._round(bidSummary.avg_bid_amount)],
+      ["Value Recovery Rate",        this._round(assetSummary.value_recovery_rate),      "Disputed Bids",              bidSummary.disputed_bids || 0],
+      ["Payments Received (Count)",  paymentSummary.total_received || 0,                 "Total Payment Amount",       this._round(paymentSummary.total_amount)],
+      ["Total Refunded",             this._round(paymentSummary.total_refunded),         "Pending Payments",           paymentSummary.pending || 0],
+    ];
+
+    const MONEY_ROWS_LEFT  = new Set([7, 8, 11]);
+    const MONEY_ROWS_RIGHT = new Set([0, 1, 2, 3, 7, 8, 10]);
+    const PCT_ROWS_LEFT    = new Set([9]);
+
+    kpis.forEach((row, i) => {
+      const r = s1.addRow([row[0], row[1], "", row[2], row[3], ""]);
+      const bg = i % 2 === 0 ? `FF${WHITE}` : `FF${ALT_ROW}`;
+      r.height = 20;
+
+      [1, 4].forEach((col) => {
+        const lc = r.getCell(col);
+        lc.font   = boldFont;
+        lc.fill   = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+        lc.border = cellBorder;
+        lc.alignment = leftAlign;
+      });
+
+      const vc2 = r.getCell(2);
+      vc2.font  = { size: 10, name: "Calibri", color: { argb: `FF${HEADER}` }, bold: true };
+      vc2.fill  = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+      vc2.border = cellBorder;
+      vc2.alignment = rightAlign;
+      if (MONEY_ROWS_LEFT.has(i))  vc2.numFmt = USD;
+      else if (PCT_ROWS_LEFT.has(i)) vc2.numFmt = PCT;
+      else vc2.numFmt = NUM;
+
+      const vc5 = r.getCell(5);
+      vc5.font  = { size: 10, name: "Calibri", color: { argb: `FF${HEADER}` }, bold: true };
+      vc5.fill  = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+      vc5.border = cellBorder;
+      vc5.alignment = rightAlign;
+      if (MONEY_ROWS_RIGHT.has(i)) vc5.numFmt = USD;
+      else vc5.numFmt = NUM;
+
+      r.getCell(3).border = cellBorder;
+      r.getCell(6).border = cellBorder;
+    });
+
+    s1.addRow([]);
+
+    // Auctions by status
+    const statHdr = s1.addRow(["AUCTIONS BY STATUS", "", "", "PAYMENT METHODS", "", ""]);
+    s1.mergeCells(`A${statHdr.number}:C${statHdr.number}`);
+    s1.mergeCells(`D${statHdr.number}:F${statHdr.number}`);
+    applyHdrStyle(statHdr);
+
+    const statColHdr = s1.addRow(["Status", "Count", "", "Method", "Amount (USD)", "Count"]);
+    statColHdr.height = 20;
+    statColHdr.eachCell({ includeEmpty: true }, (c) => {
+      c.font   = { bold: true, size: 10, name: "Calibri" };
+      c.fill   = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${SUB_HDR}` } };
+      c.border = cellBorder;
+      c.alignment = c.col === 1 || c.col === 4 ? leftAlign : rightAlign;
+    });
+
+    const statusLabels = auctionsByStatus.labels || [];
+    const statusData   = auctionsByStatus.data   || [];
+    const methodEntries = Object.entries(paymentSummary.by_method || {});
+    const maxRows = Math.max(statusLabels.length, methodEntries.length);
+
+    for (let i = 0; i < maxRows; i++) {
+      const sLabel = statusLabels[i] || "";
+      const sCount = statusData[i] ?? "";
+      const [mLabel, mVal] = methodEntries[i] || ["", ""];
+      const r = s1.addRow([sLabel, sCount, "", mLabel, mVal ? mVal.total : "", mVal ? mVal.count : ""]);
+      r.height = 18;
+      const bg = i % 2 === 0 ? `FF${WHITE}` : `FF${ALT_ROW}`;
+
+      const sc = r.getCell(1);
+      sc.fill   = { type: "pattern", pattern: "solid", fgColor: { argb: statusFill(sLabel) } };
+      sc.font   = boldFont;
+      sc.border = cellBorder;
+      sc.alignment = leftAlign;
+
+      [2, 5, 6].forEach((col) => {
+        const c = r.getCell(col);
+        c.fill   = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+        c.border = cellBorder;
+        c.numFmt = col === 5 ? USD : NUM;
+        c.alignment = rightAlign;
+      });
+
+      const mc = r.getCell(4);
+      mc.fill   = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+      mc.font   = boldFont;
+      mc.border = cellBorder;
+      mc.alignment = leftAlign;
+      r.getCell(3).border = cellBorder;
+    }
+
+    [36, 18, 2, 36, 18, 10].forEach((w, i) => { s1.getColumn(i + 1).width = w; });
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // SHEET 2 — All Auctions
+    // ══════════════════════════════════════════════════════════════════════════
+    const s2 = wb.addWorksheet("Auctions", { properties: { tabColor: { argb: "FF3B82F6" } } });
+    s2.views = [{ showGridLines: false, state: "frozen", ySplit: 2 }];
+
+    s2.mergeCells("A1:O1");
+    const s2t = s2.getCell("A1");
+    s2t.value = `Auctions — ${fmtDate(start)} to ${fmtDate(end)} (${auctionList.length} records)`;
+    s2t.font  = { bold: true, size: 13, color: { argb: `FF${WHITE}` }, name: "Calibri" };
+    s2t.fill  = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${DARK}` } };
+    s2t.alignment = leftAlign;
+    s2.getRow(1).height = 28;
+
+    const aCols = [
+      { header: "Auction #",        width: 16, numFmt: null, align: "left"  },
+      { header: "Status",           width: 14, numFmt: null, align: "left"  },
+      { header: "Type",             width: 14, numFmt: null, align: "left"  },
+      { header: "Asset Title",      width: 28, numFmt: null, align: "left"  },
+      { header: "Asset No",         width: 14, numFmt: null, align: "left"  },
+      { header: "Category",         width: 18, numFmt: null, align: "left"  },
+      { header: "Condition",        width: 14, numFmt: null, align: "left"  },
+      { header: "Starting Bid",     width: 16, numFmt: USD,  align: "right" },
+      { header: "Winning Bid",      width: 16, numFmt: USD,  align: "right" },
+      { header: "Highest Bid",      width: 16, numFmt: USD,  align: "right" },
+      { header: "Total Bids",       width: 12, numFmt: NUM,  align: "right" },
+      { header: "Payment Collected",width: 18, numFmt: USD,  align: "right" },
+      { header: "Winner Name",      width: 24, numFmt: null, align: "left"  },
+      { header: "Winner Email",     width: 26, numFmt: null, align: "left"  },
+      { header: "Created",          width: 14, numFmt: DT,   align: "center"},
+    ];
+
+    const s2Hdr = s2.addRow(aCols.map((c) => c.header));
+    applyHdrStyle(s2Hdr, `FF${BLUE_H}`);
+    aCols.forEach((col, i) => { s2.getColumn(i + 1).width = col.width; });
+
+    auctionList.forEach((a, idx) => {
+      const r = s2.addRow([
+        a.auction_no,
+        a.status,
+        a.auction_type || "",
+        a.asset?.title || "",
+        a.asset?.asset_no || "",
+        a.asset?.category || "",
+        a.asset?.condition || "",
+        a.starting_bid_amount,
+        a.winning_bid_amount || null,
+        a.highest_bid || null,
+        a.total_bids,
+        a.total_payment_collected || null,
+        a.winner?.full_name || "",
+        a.winner?.email || "",
+        a.created_at ? new Date(a.created_at) : "",
+      ]);
+      applyAltRow(r, idx);
+
+      const sc = r.getCell(2);
+      sc.fill   = { type: "pattern", pattern: "solid", fgColor: { argb: statusFill(a.status) } };
+      sc.font   = boldFont;
+      sc.border = cellBorder;
+
+      aCols.forEach((col, i) => {
+        const c = r.getCell(i + 1);
+        if (col.numFmt) c.numFmt = col.numFmt;
+        c.alignment = { horizontal: col.align, vertical: "middle" };
+      });
+    });
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // SHEET 3 — Top 10 Auctions
+    // ══════════════════════════════════════════════════════════════════════════
+    const s3 = wb.addWorksheet("Top 10 Auctions", { properties: { tabColor: { argb: "FFF59E0B" } } });
+    s3.views = [{ showGridLines: false, state: "frozen", ySplit: 2 }];
+
+    s3.mergeCells("A1:K1");
+    const s3t = s3.getCell("A1");
+    s3t.value = `Top 10 Auctions by Winning Bid — ${fmtDate(start)} to ${fmtDate(end)}`;
+    s3t.font  = { bold: true, size: 13, color: { argb: `FF${WHITE}` }, name: "Calibri" };
+    s3t.fill  = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${DARK}` } };
+    s3t.alignment = leftAlign;
+    s3.getRow(1).height = 28;
+
+    const tCols = [
+      { header: "Rank",           width: 8,  numFmt: NUM,  align: "center" },
+      { header: "Auction #",      width: 16, numFmt: null, align: "left"   },
+      { header: "Asset Title",    width: 28, numFmt: null, align: "left"   },
+      { header: "Category",       width: 18, numFmt: null, align: "left"   },
+      { header: "Starting Bid",   width: 16, numFmt: USD,  align: "right"  },
+      { header: "Reserve Price",  width: 16, numFmt: USD,  align: "right"  },
+      { header: "Winning Bid",    width: 16, numFmt: USD,  align: "right"  },
+      { header: "Declared Value", width: 16, numFmt: USD,  align: "right"  },
+      { header: "Evaluated Value",width: 16, numFmt: USD,  align: "right"  },
+      { header: "Winner Name",    width: 24, numFmt: null, align: "left"   },
+      { header: "Ended",          width: 14, numFmt: DT,   align: "center" },
+    ];
+
+    const s3Hdr = s3.addRow(tCols.map((c) => c.header));
+    applyHdrStyle(s3Hdr, `FF92400E`);
+    tCols.forEach((col, i) => { s3.getColumn(i + 1).width = col.width; });
+
+    topAuctions.forEach((a, idx) => {
+      const r = s3.addRow([
+        idx + 1,
+        a.auction_no,
+        a.asset?.title || "",
+        a.asset?.category || "",
+        a.starting_bid_amount,
+        a.reserve_price,
+        a.winning_bid_amount,
+        a.asset?.declared_value || null,
+        a.asset?.evaluated_value || null,
+        a.winner?.full_name || "—",
+        a.ends_at ? new Date(a.ends_at) : "",
+      ]);
+      applyAltRow(r, idx);
+
+      // Gold highlight for rank 1
+      if (idx === 0) {
+        r.eachCell({ includeEmpty: true }, (c) => {
+          c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${AMBER}` } };
+          c.font = { ...boldFont, color: { argb: "FF92400E" } };
+        });
+      }
+
+      tCols.forEach((col, i) => {
+        const c = r.getCell(i + 1);
+        if (col.numFmt) c.numFmt = col.numFmt;
+        c.alignment = { horizontal: col.align, vertical: "middle" };
+      });
+    });
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // SHEET 4 — Breakdowns
+    // ══════════════════════════════════════════════════════════════════════════
+    const s4 = wb.addWorksheet("Breakdowns", { properties: { tabColor: { argb: "FF8B5CF6" } } });
+    s4.views = [{ showGridLines: false }];
+    [28, 16, 18, 18, 4, 28, 16, 14].forEach((w, i) => { s4.getColumn(i + 1).width = w; });
+
+    s4.mergeCells("A1:H1");
+    const s4t = s4.getCell("A1");
+    s4t.value = `Breakdowns & Analytics — ${fmtDate(start)} to ${fmtDate(end)}`;
+    s4t.font  = { bold: true, size: 14, color: { argb: `FF${WHITE}` }, name: "Calibri" };
+    s4t.fill  = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${DARK}` } };
+    s4t.alignment = leftAlign;
+    s4.getRow(1).height = 30;
+    s4.addRow([]);
+
+    const addSection = (title, colHeaders, rows) => {
+      const tr = s4.addRow([]);
+      const endCol = colHeaders.length;
+      s4.mergeCells(`A${tr.number}:${String.fromCharCode(64 + endCol)}${tr.number}`);
+      const tc = tr.getCell(1);
+      tc.value = title;
+      tc.font  = { bold: true, size: 11, color: { argb: `FF${WHITE}` }, name: "Calibri" };
+      tc.fill  = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${HEADER}` } };
+      tc.alignment = centerAlign;
+      tr.height = 22;
+
+      const hr = s4.addRow([]);
+      colHeaders.forEach((h, i) => {
+        const c = hr.getCell(i + 1);
+        c.value = h;
+        c.font  = { bold: true, size: 10, name: "Calibri" };
+        c.fill  = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${SUB_HDR}` } };
+        c.border = cellBorder;
+        c.alignment = i === 0 ? leftAlign : rightAlign;
+      });
+      hr.height = 20;
+
+      rows.forEach((row, idx) => {
+        const r = s4.addRow([]);
+        const bg = idx % 2 === 0 ? `FF${WHITE}` : `FF${ALT_ROW}`;
+        row.forEach((val, i) => {
+          const c = r.getCell(i + 1);
+          c.value  = val;
+          c.font   = i === 0 ? boldFont : bodyFont;
+          c.fill   = { type: "pattern", pattern: "solid", fgColor: { argb: i === 0 ? statusFill(String(val)) : bg } };
+          c.border = cellBorder;
+          c.alignment = i === 0 ? leftAlign : rightAlign;
+          if (i > 0 && typeof val === "number") {
+            c.numFmt = (colHeaders[i] || "").includes("USD") ? USD : (colHeaders[i] || "").includes("%") ? PCT : NUM;
+          }
+        });
+        r.height = 18;
+      });
+      s4.addRow([]);
+    };
+
+    addSection(
+      "Auctions by Status",
+      ["Status", "Count"],
+      (auctionsByStatus.labels || []).map((lbl, i) => [lbl, (auctionsByStatus.data || [])[i] ?? 0]),
+    );
+
+    addSection(
+      "Payment Methods (Successful Payments)",
+      ["Method", "Count", "Total Amount (USD)"],
+      Object.entries(paymentSummary.by_method || {}).map(([m, v]) => [m, v.count, v.total]),
+    );
+
+    addSection(
+      "Bid Payment Status Split",
+      ["Payment Status", "Count"],
+      Object.entries(bidSummary.payment_status_split || {}).map(([s, v]) => [s, v]),
+    );
+
+    const collRaw = Array.isArray(collateralCategoryBreakdown.raw) ? collateralCategoryBreakdown.raw : [];
+    addSection(
+      "Collateral Category Breakdown",
+      ["Category", "Asset Count", "Declared Value (USD)", "Evaluated Value (USD)", "Winning Revenue (USD)"],
+      collRaw.map((r) => [r.category || "Unknown", r.asset_count, r.total_declared_value, r.total_evaluated_value, r.total_winning_revenue]),
+    );
+
+    return wb;
   }
 }
 

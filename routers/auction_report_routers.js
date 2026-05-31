@@ -202,4 +202,32 @@ router.get(
   auctionReportController.getAuctionReport.bind(auctionReportController),
 );
 
+/**
+ * @swagger
+ * /api/v1/auction-report/export/excel:
+ *   get:
+ *     summary: Export auction report as a detailed Excel workbook
+ *     tags: [AuctionReport]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: startDate
+ *         schema: { type: string, format: date }
+ *       - in: query
+ *         name: endDate
+ *         schema: { type: string, format: date }
+ *     responses:
+ *       200:
+ *         description: Excel file stream
+ *         content:
+ *           application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+ *             schema: { type: string, format: binary }
+ */
+router.get(
+  "/export/excel",
+  authMiddleware,
+  auctionReportController.exportAuctionReportExcel.bind(auctionReportController),
+);
+
 module.exports = router;
