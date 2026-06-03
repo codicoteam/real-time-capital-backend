@@ -1,5 +1,6 @@
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
+const admin = require("firebase-admin");
 const User = require("../models/user.model");
 const chatService = require("../services/chat_service");
 
@@ -118,30 +119,68 @@ function initSocket(httpServer) {
         // Push a notification to the OTHER participant(s) if they are not in the room
         const conv = result.conversation;
         const hasImages = Array.isArray(images_url) && images_url.length > 0;
-        conv.participants.forEach((participant) => {
-          const pid = String(participant._id || participant);
-          if (pid !== userId) {
-            const socketsInRoom = io.sockets.adapter.rooms.get(`conv:${conversationId}`);
-            const participantSids = onlineUsers.get(pid);
-            const isInRoom = participantSids &&
-              [...participantSids].some((sid) => socketsInRoom?.has(sid));
+        const senderName = `${socket.user.first_name} ${socket.user.last_name}`.trim();
+        const preview = hasImages && !content?.trim()
+          ? `📷 ${images_url.length > 1 ? `${images_url.length} Images` : "Image"}`
+          : (content?.trim() || "");
 
-            if (!isInRoom) {
-              emitToUser(pid, "notification:message", {
-                conversationId,
-                from: {
-                  _id:        socket.user._id,
-                  first_name: socket.user.first_name,
-                  last_name:  socket.user.last_name,
-                },
-                preview: hasImages && !content?.trim()
-                  ? `📷 ${images_url.length > 1 ? `${images_url.length} Images` : "Image"}`
-                  : (content?.trim() || ""),
-                sent_at: result.data.sent_at,
-              });
+        for (const participant of conv.participants) {
+          const pid = String(participant._id || participant);
+          if (pid === userId) continue;
+
+          const socketsInRoom = io.sockets.adapter.rooms.get(`conv:${conversationId}`);
+          const participantSids = onlineUsers.get(pid);
+          const isInRoom = participantSids &&
+            [...participantSids].some((sid) => socketsInRoom?.has(sid));
+
+          if (!isInRoom) {
+            // Real-time socket notification (for online users on other screens)
+            emitToUser(pid, "notification:message", {
+              conversationId,
+              from: {
+                _id:        socket.user._id,
+                first_name: socket.user.first_name,
+                last_name:  socket.user.last_name,
+              },
+              preview,
+              sent_at: result.data.sent_at,
+            });
+
+            // FCM push notification (for offline / background users)
+            try {
+              const recipient = await User.findById(pid).select("fcm_tokens");
+              if (recipient?.fcm_tokens?.length) {
+                for (const token of recipient.fcm_tokens) {
+                  try {
+                    await admin.messaging().send({
+                      token,
+                      notification: { title: senderName, body: preview || "New message" },
+                      data: {
+                        type: "chat_message",
+                        conversationId,
+                        senderId: String(socket.user._id),
+                        senderName,
+                      },
+                      android: { priority: "high" },
+                      apns: { payload: { aps: { sound: "default", badge: "1" } } },
+                    });
+                    console.log(`[Chat] FCM push sent to user ${pid}`);
+                  } catch (err) {
+                    if (
+                      err.code === "messaging/invalid-registration-token" ||
+                      err.code === "messaging/registration-token-not-registered"
+                    ) {
+                      await User.updateOne({ _id: pid }, { $pull: { fcm_tokens: token } });
+                      console.log(`[Chat] Removed invalid FCM token for user ${pid}`);
+                    }
+                  }
+                }
+              }
+            } catch (err) {
+              console.error(`[Chat] FCM push failed for ${pid}:`, err.message);
             }
           }
-        });
+        }
       } catch (err) {
         socket.emit("error", { message: err.message || "Failed to send message" });
       }
