@@ -38,27 +38,28 @@ class ChatController {
   }
 
   async sendMessage(req, res) {
+    const conversationId = String(req.params.id);
+    const senderId       = String(req.user._id);
+    console.log(`[REST] sendMessage — userId=${senderId}, convId=${conversationId}, content="${req.body.content || ""}", images=${(req.body.images_url||[]).length}`);
     try {
       const { content, images_url, image_names } = req.body;
       const result = await chatService.sendMessage(
-        req.params.id,
+        conversationId,
         req.user._id,
         { content, images_url, image_names },
       );
+      console.log(`[REST] ✅ Message saved — msgId=${result.data._id}`);
 
       // ── Real-time broadcast ────────────────────────────────────────────────
       // Emit socket events so web and mobile clients receive this message
       // instantly, regardless of whether the sender used socket or REST.
-      const io             = req.app.get("io");
-      const conversationId = String(req.params.id);
-      const senderId       = String(req.user._id);
+      const io = req.app.get("io");
 
       if (io) {
-        // Broadcast to everyone currently in the conversation room
-        io.to(`conv:${conversationId}`).emit("message:new", {
-          conversationId,
-          message: result.data,
-        });
+        const room = `conv:${conversationId}`;
+        const roomSockets = io.sockets.adapter.rooms.get(room);
+        console.log(`[REST] Broadcasting message:new to ${room} — ${roomSockets?.size || 0} socket(s)`);
+        io.to(room).emit("message:new", { conversationId, message: result.data });
 
         const senderName = `${req.user.first_name} ${req.user.last_name}`.trim();
         const hasImages  = Array.isArray(images_url) && images_url.length > 0;
@@ -70,7 +71,6 @@ class ChatController {
           const pid = String(participant._id || participant);
           if (pid === senderId) continue;
 
-          // Notify user via socket if they are online but not in the room
           const convRoom = io.sockets.adapter.rooms.get(`conv:${conversationId}`);
           const userRoom = io.sockets.adapter.rooms.get(`user:${pid}`);
           const isInRoom = userRoom
@@ -80,11 +80,7 @@ class ChatController {
           if (!isInRoom) {
             io.to(`user:${pid}`).emit("notification:message", {
               conversationId,
-              from: {
-                _id:        req.user._id,
-                first_name: req.user.first_name,
-                last_name:  req.user.last_name,
-              },
+              from: { _id: req.user._id, first_name: req.user.first_name, last_name: req.user.last_name },
               preview,
               sent_at: result.data.sent_at,
             });
@@ -93,44 +89,44 @@ class ChatController {
           // FCM push — reach background / closed app
           try {
             const recipient = await User.findById(pid).select("fcm_tokens");
+            console.log(`[REST] FCM lookup for userId=${pid} — tokens=${recipient?.fcm_tokens?.length || 0}`);
             if (recipient?.fcm_tokens?.length) {
               for (const token of recipient.fcm_tokens) {
                 try {
                   await admin.messaging().send({
                     token,
                     notification: { title: senderName, body: preview || "New message" },
-                    data: {
-                      type:           "chat_message",
-                      conversationId,
-                      senderId,
-                      senderName,
-                    },
-                    android: {
-                      priority: "high",
-                      notification: { tag: `chat_${conversationId}` },
-                    },
+                    data: { type: "chat_message", conversationId, senderId, senderName },
+                    android: { priority: "high", notification: { tag: `chat_${conversationId}` } },
                     apns: { payload: { aps: { sound: "default", badge: "1" } } },
                   });
+                  console.log(`[REST] ✅ FCM push sent to userId=${pid}`);
                 } catch (err) {
                   if (
                     err.code === "messaging/invalid-registration-token" ||
                     err.code === "messaging/registration-token-not-registered"
                   ) {
                     await User.updateOne({ _id: pid }, { $pull: { fcm_tokens: token } });
+                    console.log(`[REST] 🗑 Removed stale FCM token for userId=${pid}`);
                   } else {
-                    console.error(`[Chat REST] FCM error for ${pid}:`, err.message);
+                    console.error(`[REST] ❌ FCM error for userId=${pid}: ${err.code} — ${err.message}`);
                   }
                 }
               }
+            } else {
+              console.warn(`[REST] ⚠️ No FCM tokens for userId=${pid} — push skipped`);
             }
           } catch (err) {
-            console.error(`[Chat REST] FCM lookup failed for ${pid}:`, err.message);
+            console.error(`[REST] ❌ FCM lookup failed for userId=${pid}: ${err.message}`);
           }
         }
+      } else {
+        console.warn(`[REST] ⚠️ io not available — socket broadcast skipped`);
       }
 
       res.status(201).json({ success: true, data: result.data, message: "Message sent" });
     } catch (e) {
+      console.error(`[REST] ❌ sendMessage error: ${e.message}`);
       res.status(e.status || 500).json({ success: false, message: e.message });
     }
   }

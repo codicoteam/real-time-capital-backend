@@ -24,18 +24,41 @@ function initSocket(httpServer) {
         socket.handshake.auth?.token ||
         socket.handshake.headers?.authorization?.replace("Bearer ", "");
 
-      if (!token) return next(new Error("Authentication token required"));
+      if (!token) {
+        console.error("[Socket] ❌ Auth rejected — no token provided");
+        return next(new Error("Authentication token required"));
+      }
 
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      let decoded;
+      try {
+        decoded = jwt.verify(token, process.env.JWT_SECRET);
+      } catch (jwtErr) {
+        console.error(`[Socket] ❌ JWT verify failed: ${jwtErr.message}`);
+        return next(new Error("Invalid or expired token"));
+      }
+
       const userId  = decoded.userId || decoded.sub || decoded.id;
-      const user    = await User.findById(userId).select("first_name last_name email roles status");
+      if (!userId) {
+        console.error("[Socket] ❌ JWT decoded but no userId field — check token shape:", JSON.stringify(decoded));
+        return next(new Error("Token missing userId"));
+      }
 
-      if (!user || user.status === "inactive")
-        return next(new Error("User not found or inactive"));
+      const user = await User.findById(userId).select("first_name last_name email roles status");
+
+      if (!user) {
+        console.error(`[Socket] ❌ User ${userId} not found in DB`);
+        return next(new Error("User not found"));
+      }
+      if (user.status === "inactive") {
+        console.error(`[Socket] ❌ User ${user.email} is inactive`);
+        return next(new Error("User account is inactive"));
+      }
 
       socket.user = user;
+      console.log(`[Socket] ✅ Auth OK — ${user.first_name} ${user.last_name} (${userId})`);
       next();
-    } catch {
+    } catch (err) {
+      console.error("[Socket] ❌ Auth middleware error:", err.message);
       next(new Error("Invalid or expired token"));
     }
   });
@@ -75,20 +98,23 @@ function initSocket(httpServer) {
     // Broadcast presence update
     io.emit("user:online", { userId, online: true });
 
-    console.log(`✅ [Chat] ${socket.user.first_name} connected (${socket.id})`);
+    console.log(`✅ [Socket] Connected: ${socket.user.first_name} ${socket.user.last_name} | userId=${userId} | socketId=${socket.id} | transport=${socket.conn.transport.name}`);
 
     // ── Join a conversation room ──────────────────────────────────────────
     socket.on("conversation:join", async ({ conversationId }) => {
+      console.log(`[Socket] conversation:join — userId=${userId}, convId=${conversationId}`);
       try {
         // Verify membership before joining
         const result = await chatService.getConversation(conversationId, userId);
         socket.join(`conv:${conversationId}`);
         socket.emit("conversation:joined", { conversationId });
+        console.log(`[Socket] ✅ Joined room conv:${conversationId}`);
 
         // Mark as read when joining
         await chatService.markAsRead(conversationId, userId);
         io.to(`conv:${conversationId}`).emit("messages:read", { conversationId, userId });
       } catch (err) {
+        console.error(`[Socket] ❌ conversation:join failed: ${err.message}`);
         socket.emit("error", { message: err.message || "Cannot join conversation" });
       }
     });
@@ -101,17 +127,21 @@ function initSocket(httpServer) {
     // ── Send a text/image message ─────────────────────────────────────────
     // Payload: { conversationId, content?, images_url?: string[], image_names?: string[] }
     socket.on("message:send", async (payload) => {
+      const { conversationId, content, images_url, image_names } = payload;
+      console.log(`[Socket] message:send — userId=${userId}, convId=${conversationId}, content="${content || ""}", images=${(images_url||[]).length}`);
       try {
-        const { conversationId, content, images_url, image_names } = payload;
-
         const result = await chatService.sendMessage(
           conversationId,
           userId,
           { content, images_url, image_names },
         );
+        console.log(`[Socket] ✅ Message saved — msgId=${result.data._id}`);
 
         // Broadcast the new message to everyone in the conversation room
-        io.to(`conv:${conversationId}`).emit("message:new", {
+        const room = `conv:${conversationId}`;
+        const roomSockets = io.sockets.adapter.rooms.get(room);
+        console.log(`[Socket] Broadcasting message:new to room ${room} — ${roomSockets?.size || 0} socket(s) in room`);
+        io.to(room).emit("message:new", {
           conversationId,
           message: result.data,
         });
@@ -151,6 +181,7 @@ function initSocket(httpServer) {
           // (Duplicate with the socket snackbar is acceptable; FCM deduplicates by tag.)
           try {
             const recipient = await User.findById(pid).select("fcm_tokens");
+            console.log(`[Socket] FCM lookup for userId=${pid} — tokens=${recipient?.fcm_tokens?.length || 0}`);
             if (recipient?.fcm_tokens?.length) {
               for (const token of recipient.fcm_tokens) {
                 try {
@@ -169,27 +200,28 @@ function initSocket(httpServer) {
                     },
                     apns: { payload: { aps: { sound: "default", badge: "1" } } },
                   });
-                  console.log(`[Chat] FCM push sent to user ${pid}`);
+                  console.log(`[Socket] ✅ FCM push sent to userId=${pid}`);
                 } catch (err) {
                   if (
                     err.code === "messaging/invalid-registration-token" ||
                     err.code === "messaging/registration-token-not-registered"
                   ) {
                     await User.updateOne({ _id: pid }, { $pull: { fcm_tokens: token } });
-                    console.log(`[Chat] Removed stale FCM token for user ${pid}`);
+                    console.log(`[Socket] 🗑 Removed stale FCM token for userId=${pid}`);
                   } else {
-                    console.error(`[Chat] FCM send error for user ${pid}:`, err.message);
+                    console.error(`[Socket] ❌ FCM send error for userId=${pid}: ${err.code} — ${err.message}`);
                   }
                 }
               }
             } else {
-              console.log(`[Chat] No FCM tokens for user ${pid} — push skipped`);
+              console.warn(`[Socket] ⚠️  No FCM tokens for userId=${pid} — push notification skipped (user may not have logged in on mobile)`);
             }
           } catch (err) {
-            console.error(`[Chat] FCM lookup failed for ${pid}:`, err.message);
+            console.error(`[Socket] ❌ FCM lookup failed for userId=${pid}: ${err.message}`);
           }
         }
       } catch (err) {
+        console.error(`[Socket] ❌ message:send handler error: ${err.message}`);
         socket.emit("error", { message: err.message || "Failed to send message" });
       }
     });
@@ -235,12 +267,12 @@ function initSocket(httpServer) {
     });
 
     // ── Disconnect ────────────────────────────────────────────────────────
-    socket.on("disconnect", () => {
+    socket.on("disconnect", (reason) => {
       removeOnline(userId, socket.id);
       if (!isOnline(userId)) {
         io.emit("user:online", { userId, online: false });
       }
-      console.log(`❌ [Chat] ${socket.user.first_name} disconnected (${socket.id})`);
+      console.log(`❌ [Socket] Disconnected: ${socket.user.first_name} | userId=${userId} | socketId=${socket.id} | reason=${reason}`);
     });
   });
 
