@@ -53,12 +53,6 @@ class BidService {
           throw new Error("Auction has ended");
         }
 
-        // Check if user is the auction owner (cannot bid on own auction)
-        const asset = await Asset.findById(auction.asset).session(session);
-        if (asset && asset.owner_user && asset.owner_user.equals(user._id)) {
-          throw new Error("You cannot bid on your own auction");
-        }
-
         // Get current highest bid
         const highestBid = await Bid.findOne({
           auction: auctionId,
