@@ -40,19 +40,42 @@ function formatPhoneNumber(phoneNumber) {
  * @param {string} body
  */
 async function sendSmsWithMessage(phoneNumber, body) {
+  const formattedNumber = formatPhoneNumber(phoneNumber);
+
+  // Build the Twilio payload — prefer direct 'from' number for Zimbabwe
+  // delivery reliability; fall back to messaging service if no number is set.
+  const params = { body, to: formattedNumber };
+  if (process.env.TWILIO_PHONE_NUMBER) {
+    params.from = process.env.TWILIO_PHONE_NUMBER;
+  } else if (process.env.TWILIO_MESSAGING_SERVICE_SID) {
+    params.messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID;
+  } else {
+    throw new Error("No Twilio sender configured (set TWILIO_PHONE_NUMBER or TWILIO_MESSAGING_SERVICE_SID)");
+  }
+
   try {
-    const formattedNumber = formatPhoneNumber(phoneNumber);
+    const message = await client.messages.create(params);
 
-    const message = await client.messages.create({
-      body: body,
-      to: formattedNumber,
-      messagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID,
-    });
+    console.log(
+      `[SMS] Sent to ${formattedNumber} | SID: ${message.sid} | Status: ${message.status}`
+    );
 
-    console.log(`SMS sent to ${formattedNumber}: ${message.sid}`);
+    if (message.status === "failed" || message.status === "undelivered") {
+      console.error(
+        `[SMS] Delivery failed: ${message.errorMessage || "unknown"} (code ${message.errorCode})`
+      );
+    }
+
     return message;
   } catch (error) {
-    console.error("SMS sending failed:", error.message);
+    const hint =
+      error.code === 21211 ? "Invalid 'To' number format" :
+      error.code === 21408 ? "Zimbabwe not enabled in Twilio Geo Permissions" :
+      error.code === 21606 ? "'From' number cannot send SMS" :
+      error.code === 20003 ? "Invalid Twilio credentials" :
+      error.message;
+
+    console.error(`[SMS] Failed to ${formattedNumber}: ${hint}`);
     throw error;
   }
 }

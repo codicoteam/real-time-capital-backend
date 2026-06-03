@@ -133,8 +133,8 @@ function initSocket(httpServer) {
           const isInRoom = participantSids &&
             [...participantSids].some((sid) => socketsInRoom?.has(sid));
 
+          // Socket notification — only when user is online but on a different screen
           if (!isInRoom) {
-            // Real-time socket notification (for online users on other screens)
             emitToUser(pid, "notification:message", {
               conversationId,
               from: {
@@ -145,40 +145,48 @@ function initSocket(httpServer) {
               preview,
               sent_at: result.data.sent_at,
             });
+          }
 
-            // FCM push notification (for offline / background users)
-            try {
-              const recipient = await User.findById(pid).select("fcm_tokens");
-              if (recipient?.fcm_tokens?.length) {
-                for (const token of recipient.fcm_tokens) {
-                  try {
-                    await admin.messaging().send({
-                      token,
-                      notification: { title: senderName, body: preview || "New message" },
-                      data: {
-                        type: "chat_message",
-                        conversationId,
-                        senderId: String(socket.user._id),
-                        senderName,
-                      },
-                      android: { priority: "high" },
-                      apns: { payload: { aps: { sound: "default", badge: "1" } } },
-                    });
-                    console.log(`[Chat] FCM push sent to user ${pid}`);
-                  } catch (err) {
-                    if (
-                      err.code === "messaging/invalid-registration-token" ||
-                      err.code === "messaging/registration-token-not-registered"
-                    ) {
-                      await User.updateOne({ _id: pid }, { $pull: { fcm_tokens: token } });
-                      console.log(`[Chat] Removed invalid FCM token for user ${pid}`);
-                    }
+          // FCM push — ALWAYS send so background/closed app users are notified.
+          // (Duplicate with the socket snackbar is acceptable; FCM deduplicates by tag.)
+          try {
+            const recipient = await User.findById(pid).select("fcm_tokens");
+            if (recipient?.fcm_tokens?.length) {
+              for (const token of recipient.fcm_tokens) {
+                try {
+                  await admin.messaging().send({
+                    token,
+                    notification: { title: senderName, body: preview || "New message" },
+                    data: {
+                      type:           "chat_message",
+                      conversationId: String(conversationId),
+                      senderId:       String(socket.user._id),
+                      senderName,
+                    },
+                    android: {
+                      priority: "high",
+                      notification: { tag: `chat_${conversationId}` },
+                    },
+                    apns: { payload: { aps: { sound: "default", badge: "1" } } },
+                  });
+                  console.log(`[Chat] FCM push sent to user ${pid}`);
+                } catch (err) {
+                  if (
+                    err.code === "messaging/invalid-registration-token" ||
+                    err.code === "messaging/registration-token-not-registered"
+                  ) {
+                    await User.updateOne({ _id: pid }, { $pull: { fcm_tokens: token } });
+                    console.log(`[Chat] Removed stale FCM token for user ${pid}`);
+                  } else {
+                    console.error(`[Chat] FCM send error for user ${pid}:`, err.message);
                   }
                 }
               }
-            } catch (err) {
-              console.error(`[Chat] FCM push failed for ${pid}:`, err.message);
+            } else {
+              console.log(`[Chat] No FCM tokens for user ${pid} — push skipped`);
             }
+          } catch (err) {
+            console.error(`[Chat] FCM lookup failed for ${pid}:`, err.message);
           }
         }
       } catch (err) {
