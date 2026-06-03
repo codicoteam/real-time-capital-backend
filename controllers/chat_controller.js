@@ -1,4 +1,6 @@
 const chatService = require("../services/chat_service");
+const admin = require("firebase-admin");
+const User  = require("../models/user.model");
 
 class ChatController {
 
@@ -43,6 +45,90 @@ class ChatController {
         req.user._id,
         { content, images_url, image_names },
       );
+
+      // ── Real-time broadcast ────────────────────────────────────────────────
+      // Emit socket events so web and mobile clients receive this message
+      // instantly, regardless of whether the sender used socket or REST.
+      const io             = req.app.get("io");
+      const conversationId = String(req.params.id);
+      const senderId       = String(req.user._id);
+
+      if (io) {
+        // Broadcast to everyone currently in the conversation room
+        io.to(`conv:${conversationId}`).emit("message:new", {
+          conversationId,
+          message: result.data,
+        });
+
+        const senderName = `${req.user.first_name} ${req.user.last_name}`.trim();
+        const hasImages  = Array.isArray(images_url) && images_url.length > 0;
+        const preview    = hasImages && !content?.trim()
+          ? `📷 ${images_url.length > 1 ? `${images_url.length} Images` : "Image"}`
+          : (content?.trim() || "");
+
+        for (const participant of result.conversation.participants) {
+          const pid = String(participant._id || participant);
+          if (pid === senderId) continue;
+
+          // Notify user via socket if they are online but not in the room
+          const convRoom = io.sockets.adapter.rooms.get(`conv:${conversationId}`);
+          const userRoom = io.sockets.adapter.rooms.get(`user:${pid}`);
+          const isInRoom = userRoom
+            ? [...userRoom].some((sid) => convRoom?.has(sid))
+            : false;
+
+          if (!isInRoom) {
+            io.to(`user:${pid}`).emit("notification:message", {
+              conversationId,
+              from: {
+                _id:        req.user._id,
+                first_name: req.user.first_name,
+                last_name:  req.user.last_name,
+              },
+              preview,
+              sent_at: result.data.sent_at,
+            });
+          }
+
+          // FCM push — reach background / closed app
+          try {
+            const recipient = await User.findById(pid).select("fcm_tokens");
+            if (recipient?.fcm_tokens?.length) {
+              for (const token of recipient.fcm_tokens) {
+                try {
+                  await admin.messaging().send({
+                    token,
+                    notification: { title: senderName, body: preview || "New message" },
+                    data: {
+                      type:           "chat_message",
+                      conversationId,
+                      senderId,
+                      senderName,
+                    },
+                    android: {
+                      priority: "high",
+                      notification: { tag: `chat_${conversationId}` },
+                    },
+                    apns: { payload: { aps: { sound: "default", badge: "1" } } },
+                  });
+                } catch (err) {
+                  if (
+                    err.code === "messaging/invalid-registration-token" ||
+                    err.code === "messaging/registration-token-not-registered"
+                  ) {
+                    await User.updateOne({ _id: pid }, { $pull: { fcm_tokens: token } });
+                  } else {
+                    console.error(`[Chat REST] FCM error for ${pid}:`, err.message);
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            console.error(`[Chat REST] FCM lookup failed for ${pid}:`, err.message);
+          }
+        }
+      }
+
       res.status(201).json({ success: true, data: result.data, message: "Message sent" });
     } catch (e) {
       res.status(e.status || 500).json({ success: false, message: e.message });
