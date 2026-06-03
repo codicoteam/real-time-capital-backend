@@ -198,7 +198,7 @@ function initSocket(httpServer) {
                       priority: "high",
                       notification: { tag: `chat_${conversationId}` },
                     },
-                    apns: { payload: { aps: { sound: "default", badge: "1" } } },
+                    apns: { payload: { aps: { sound: "default", badge: 1 } } },
                   });
                   console.log(`[Socket] ✅ FCM push sent to userId=${pid}`);
                 } catch (err) {

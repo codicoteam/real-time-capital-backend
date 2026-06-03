@@ -98,7 +98,7 @@ class ChatController {
                     notification: { title: senderName, body: preview || "New message" },
                     data: { type: "chat_message", conversationId, senderId, senderName },
                     android: { priority: "high", notification: { tag: `chat_${conversationId}` } },
-                    apns: { payload: { aps: { sound: "default", badge: "1" } } },
+                    apns: { payload: { aps: { sound: "default", badge: 1 } } },
                   });
                   console.log(`[REST] ✅ FCM push sent to userId=${pid}`);
                 } catch (err) {
