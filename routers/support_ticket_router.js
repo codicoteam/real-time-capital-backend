@@ -289,6 +289,84 @@ router.get(
 
 /**
  * @swagger
+ * /api/v1/support-tickets/stats:
+ *   get:
+ *     summary: Get ticket statistics
+ *     tags: [Support Tickets]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Ticket statistics
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     total:
+ *                       type: integer
+ *                     open:
+ *                       type: integer
+ *                     in_progress:
+ *                       type: integer
+ *                     resolved:
+ *                       type: integer
+ *                     closed:
+ *                       type: integer
+ *                     priority:
+ *                       type: object
+ *                       properties:
+ *                         urgent:
+ *                           type: integer
+ *                         high:
+ *                           type: integer
+ *                         medium:
+ *                           type: integer
+ *                         low:
+ *                           type: integer
+ *       401:
+ *         description: Unauthorized
+ */
+router.get(
+  "/stats",
+  SupportTicketController.getTicketStats
+);
+
+/**
+ * @swagger
+ * /api/v1/support-tickets/search:
+ *   get:
+ *     summary: Search tickets
+ *     tags: [Support Tickets]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Search term (minimum 2 characters)
+ *     responses:
+ *       200:
+ *         description: Search results
+ *       400:
+ *         description: Search term too short
+ *       401:
+ *         description: Unauthorized
+ */
+router.get(
+  "/search",
+  SupportTicketController.searchTickets
+);
+
+/**
+ * @swagger
  * /api/v1/support-tickets/{id}:
  *   get:
  *     summary: Get ticket by ID
@@ -487,56 +565,6 @@ router.post(
 
 /**
  * @swagger
- * /api/v1/support-tickets/stats:
- *   get:
- *     summary: Get ticket statistics
- *     tags: [Support Tickets]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Ticket statistics
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     total:
- *                       type: integer
- *                     open:
- *                       type: integer
- *                     in_progress:
- *                       type: integer
- *                     resolved:
- *                       type: integer
- *                     closed:
- *                       type: integer
- *                     priority:
- *                       type: object
- *                       properties:
- *                         urgent:
- *                           type: integer
- *                         high:
- *                           type: integer
- *                         medium:
- *                           type: integer
- *                         low:
- *                           type: integer
- *       401:
- *         description: Unauthorized
- */
-router.get(
-  "/stats",
-  SupportTicketController.getTicketStats
-);
-
-/**
- * @swagger
  * /api/v1/support-tickets/customer/{customerId}:
  *   get:
  *     summary: Get tickets by customer
@@ -610,34 +638,6 @@ router.get(
     "super_admin_vendor"
   ),
   SupportTicketController.getMyAssignedTickets
-);
-
-/**
- * @swagger
- * /api/v1/support-tickets/search:
- *   get:
- *     summary: Search tickets
- *     tags: [Support Tickets]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: q
- *         required: true
- *         schema:
- *           type: string
- *         description: Search term (minimum 2 characters)
- *     responses:
- *       200:
- *         description: Search results
- *       400:
- *         description: Search term too short
- *       401:
- *         description: Unauthorized
- */
-router.get(
-  "/search",
-  SupportTicketController.searchTickets
 );
 
 module.exports = router;
