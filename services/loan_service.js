@@ -43,6 +43,8 @@ class LoanService {
         loanData.interest_rate_percent = period.interest_rate_percent;
         loanData.storage_charge_percent = period.storage_charge_percent;
         loanData.interest_period_days = period.days;
+        loanData.penalty_percent = period.penalty_percent;
+        loanData.grace_days = period.grace_days;
         loanData.repayment_type = "once_off";
         // Set due_date from start_date + period.days if not already set
         if (loanData.start_date && !loanData.due_date) {
@@ -1017,6 +1019,32 @@ class LoanService {
         if (userId) updateData.approved_by = userId;
       }
 
+      // When entering grace period: apply penalty immediately to current_balance
+      // Penalty is only applied once (guard against double-application)
+      if (status === "in_grace") {
+        const existingBreakdown = loan.repayment_breakdown || {};
+        if (!existingBreakdown.penalty_applied) {
+          const penaltyPercent = loan.penalty_percent ?? 10;
+          const balanceBeforePenalty = loan.current_balance;
+          const penaltyAmount = parseFloat(
+            (balanceBeforePenalty * (penaltyPercent / 100)).toFixed(2)
+          );
+          const totalWithPenalty = parseFloat(
+            (balanceBeforePenalty + penaltyAmount).toFixed(2)
+          );
+          updateData.current_balance = totalWithPenalty;
+          updateData.repayment_breakdown = {
+            ...existingBreakdown,
+            penalty_applied: true,
+            penalty_percent: penaltyPercent,
+            penalty_amount: penaltyAmount,
+            balance_before_penalty: balanceBeforePenalty,
+            total_with_penalty: totalWithPenalty,
+            penalty_applied_at: new Date().toISOString(),
+          };
+        }
+      }
+
       // Set disbursement fields when activating (cashing out)
       if (status === "active") {
         updateData.disbursement_date = new Date();
@@ -1520,37 +1548,59 @@ class LoanService {
       const storageCharge =
         (loan.principal_amount * loan.storage_charge_percent) / 100;
 
-      // Calculate penalty if overdue
-      let penalty = 0;
-      if (now > dueDate && loan.status === "overdue") {
-        const overdueDays = Math.ceil((now - dueDate) / (1000 * 60 * 60 * 24));
-        penalty =
-          loan.current_balance * (loan.penalty_percent / 100) * overdueDays;
-      }
+      const graceDays = loan.grace_days ?? 7;
+      const penaltyPercent = loan.penalty_percent ?? 10;
+      const isLate = now > dueDate;
+      const overdueDays = isLate
+        ? Math.ceil((now - dueDate) / (1000 * 60 * 60 * 24))
+        : 0;
+      const inGrace =
+        isLate && overdueDays <= graceDays && loan.status === "in_grace";
 
-      const totalDue =
-        loan.current_balance + interestAccrued + storageCharge + penalty;
+      // Penalty breakdown from repayment_breakdown (set when loan entered in_grace)
+      const bd = loan.repayment_breakdown || {};
+      const penaltyAlreadyApplied = Boolean(bd.penalty_applied);
+      const penaltyAmount = penaltyAlreadyApplied
+        ? parseFloat((bd.penalty_amount || 0).toFixed(2))
+        : 0;
+      const balanceBeforePenalty = penaltyAlreadyApplied
+        ? parseFloat((bd.balance_before_penalty || loan.current_balance).toFixed(2))
+        : loan.current_balance;
+
+      // If penalty not yet applied but loan is in_grace (race condition), compute it
+      const pendingPenalty =
+        !penaltyAlreadyApplied && inGrace
+          ? parseFloat((loan.current_balance * (penaltyPercent / 100)).toFixed(2))
+          : 0;
+
+      const effectivePenalty = penaltyAlreadyApplied ? penaltyAmount : pendingPenalty;
+
+      // current_balance already includes penalty for in_grace loans
+      const totalDue = parseFloat(
+        (loan.current_balance + interestAccrued + storageCharge).toFixed(2)
+      );
 
       return {
         success: true,
         data: {
           principal: loan.principal_amount,
           current_balance: loan.current_balance,
+          balance_before_penalty: balanceBeforePenalty,
           days_elapsed: daysElapsed,
           total_loan_days: totalLoanDays,
           interest_rate: loan.interest_rate_percent,
           interest_accrued: parseFloat(interestAccrued.toFixed(2)),
           storage_charge_percent: loan.storage_charge_percent,
           storage_charge: parseFloat(storageCharge.toFixed(2)),
-          penalty_percent: loan.penalty_percent,
-          penalty: parseFloat(penalty.toFixed(2)),
-          total_due: parseFloat(totalDue.toFixed(2)),
+          penalty_percent: penaltyPercent,
+          grace_days: graceDays,
+          penalty: effectivePenalty,
+          penalty_applied: penaltyAlreadyApplied,
+          total_due: totalDue,
           due_date: loan.due_date,
-          is_overdue: now > dueDate,
-          overdue_days:
-            now > dueDate
-              ? Math.ceil((now - dueDate) / (1000 * 60 * 60 * 24))
-              : 0,
+          is_overdue: isLate,
+          in_grace: inGrace,
+          overdue_days: overdueDays,
         },
         message: "Loan charges calculated successfully",
       };
@@ -1575,6 +1625,7 @@ class LoanService {
       if (
         loan.status !== "active" &&
         loan.status !== "overdue" &&
+        loan.status !== "in_grace" &&
         loan.status !== "partially_paid"
       ) {
         throw {

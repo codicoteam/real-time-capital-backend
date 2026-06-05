@@ -133,6 +133,12 @@ const UserSchema = new mongoose.Schema(
     reset_password_otp: { type: String },
     reset_password_expires_at: { type: Date },
 
+    // SMS rate limiting — max 3 sends per 1-hour window per type
+    sms_otp_attempts: { type: Number, default: 0 },
+    sms_otp_window_start: { type: Date, default: null },
+    sms_reset_attempts: { type: Number, default: 0 },
+    sms_reset_window_start: { type: Date, default: null },
+
     added_by: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

@@ -3,7 +3,11 @@ const router = express.Router();
 const paymentController = require("../controllers/payment_controller");
 const { authMiddleware, requireRoles } = require("../middlewares/auth_middleware");
 
-// Apply authentication middleware to all routes
+// Webhook routes must be declared BEFORE router.use(authMiddleware)
+// because PayNow callbacks don't carry JWT tokens
+router.post("/webhook/paynow", paymentController.processPayNowWebhook);
+
+// Apply authentication middleware to all other routes
 router.use(authMiddleware);
 
 /**
@@ -557,6 +561,4 @@ router.get("/receipt/:receipt_no",
  *       400:
  *         description: Invalid webhook data
  */
-router.post("/webhook/paynow", paymentController.processPayNowWebhook);
-
 module.exports = router;

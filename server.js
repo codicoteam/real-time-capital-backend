@@ -1,8 +1,18 @@
 // server.js
+"use strict";
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err);
+  process.exit(1);
+});
+
 const http    = require("http");
 const express = require("express");
 const cors = require("cors");
-const bodyParser = require("body-parser");
 const dotenv = require("dotenv");
 const admin = require("firebase-admin");
 const path = require("path");
@@ -105,169 +115,12 @@ const app = express();
 
 // Middleware
 app.use(cors());
-app.use(bodyParser.json());
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 // Swagger
 setupSwagger(app);
 
-// ================= TEST ROUTES =================
-// Test Firebase initialization
-app.get("/test-firebase", (req, res) => {
-  try {
-    const isInitialized = admin.apps.length > 0;
-    const projectId = isInitialized ? admin.apps[0].options.projectId : null;
-
-    res.json({
-      success: true,
-      firebaseInitialized: isInitialized,
-      projectId: projectId,
-      message: isInitialized
-        ? "Firebase is working!"
-        : "Firebase not initialized",
-      credentialType: isInitialized
-        ? process.env.FIREBASE_SERVICE_ACCOUNT_PATH
-          ? "Service Account File"
-          : process.env.FIREBASE_PROJECT_ID
-            ? "Environment Variables"
-            : "Default Credentials"
-        : null,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-// Test direct push notification
-app.post("/test-push-direct", async (req, res) => {
-  try {
-    const { email, title, message } = req.body;
-
-    if (!email) {
-      return res.status(400).json({ error: "Email is required" });
-    }
-
-    // Find user
-    const User = require("./models/user.model");
-    const user = await User.findOne({ email });
-
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    if (!user.fcm_tokens || user.fcm_tokens.length === 0) {
-      return res.status(400).json({
-        error: "No FCM tokens for this user",
-        userEmail: user.email,
-        hasTokens: false,
-      });
-    }
-
-    // Send direct push
-    const results = [];
-    for (const token of user.fcm_tokens) {
-      try {
-        const response = await admin.messaging().send({
-          token: token,
-          notification: {
-            title: title || "Direct Test",
-            body: message || "This is a direct test from server",
-          },
-          data: {
-            type: "test",
-            timestamp: new Date().toISOString(),
-          },
-          android: {
-            priority: "high",
-          },
-          apns: {
-            payload: {
-              aps: {
-                sound: "default",
-                badge: 1,
-              },
-            },
-          },
-        });
-        results.push({
-          token: token.substring(0, 20) + "...",
-          success: true,
-          response,
-        });
-        console.log(`✅ Push sent to ${token.substring(0, 20)}...`);
-      } catch (error) {
-        results.push({
-          token: token.substring(0, 20) + "...",
-          success: false,
-          error: error.message,
-        });
-        console.error(
-          `❌ Failed to send to ${token.substring(0, 20)}...:`,
-          error.message,
-        );
-
-        // If token is invalid, remove it
-        if (
-          error.code === "messaging/invalid-registration-token" ||
-          error.code === "messaging/registration-token-not-registered"
-        ) {
-          await User.updateOne(
-            { _id: user._id },
-            { $pull: { fcm_tokens: token } },
-          );
-          console.log(`🗑️ Removed invalid token for user ${user.email}`);
-        }
-      }
-    }
-
-    const successful = results.filter((r) => r.success).length;
-
-    res.json({
-      success: successful > 0,
-      message: `Sent ${successful}/${user.fcm_tokens.length} notifications`,
-      results,
-      user: {
-        email: user.email,
-        tokenCount: user.fcm_tokens.length,
-      },
-    });
-  } catch (error) {
-    console.error("Test push error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Check user FCM tokens
-app.get("/check-fcm-tokens/:email", async (req, res) => {
-  try {
-    const { email } = req.params;
-    const User = require("./models/user.model");
-    const user = await User.findOne(
-      { email },
-      { fcm_tokens: 1, email: 1, full_name: 1 },
-    );
-
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    res.json({
-      success: true,
-      user: {
-        email: user.email,
-        full_name: user.full_name,
-        fcm_tokens: user.fcm_tokens || [],
-        tokenCount: (user.fcm_tokens || []).length,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-// ========================================================
 
 // Routes
 app.use("/api/v1/users", userRouter);
@@ -316,10 +169,6 @@ httpServer.listen(PORT, () => {
   console.log(`🚗 Server running on port ${PORT}`);
   console.log(`📘 Swagger docs: http://localhost:${PORT}/api-docs`);
   console.log(`💬 Socket.io chat ready on ws://localhost:${PORT}`);
-  console.log(`🧪 Test endpoints:`);
-  console.log(`   - GET  /test-firebase`);
-  console.log(`   - GET  /check-fcm-tokens/:email`);
-  console.log(`   - POST /test-push-direct`);
 
   // Start background jobs
   auctionService.startAuctionScheduler();

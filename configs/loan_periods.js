@@ -4,12 +4,16 @@ const LOAN_PERIODS = {
     days: 14,
     interest_rate_percent: 2,
     storage_charge_percent: 18,
+    penalty_percent: 10,
+    grace_days: 7,
   },
   one_month: {
     label: "1 Month",
     days: 30,
     interest_rate_percent: 4,
     storage_charge_percent: 21,
+    penalty_percent: 10,
+    grace_days: 7,
   },
 };
 

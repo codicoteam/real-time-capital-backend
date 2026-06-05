@@ -6,10 +6,6 @@ const mongoose = require("mongoose");
 const { sendSmsWithMessage } = require("../utils/sms_utils");
 const { sendEmail } = require("../utils/emails_util");
 
-(async () => {
-  ({ v4: uuidv4 } = await import("uuid"));
-})();
-
 /**
  * Auction Service
  * Contains all business logic for auctions

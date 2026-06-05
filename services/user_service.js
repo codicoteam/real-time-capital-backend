@@ -10,7 +10,42 @@ const {
 } = require("../utils/emails_util");
 const { sendSmsWithMessage } = require("../utils/sms_utils");
 
+const SMS_RATE_LIMIT_MAX = 3;
+const SMS_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
 class UserService {
+  /**
+   * Enforce SMS rate limiting per user per type.
+   * Mutates the user document fields in-memory — caller must save().
+   * Throws 429 if the user has hit the limit within the current window.
+   * @param {Object} user  - Mongoose user document
+   * @param {'otp'|'reset'} type - Which SMS flow to track
+   */
+  _checkAndIncrementSmsRateLimit(user, type) {
+    const countField  = type === 'otp' ? 'sms_otp_attempts'    : 'sms_reset_attempts';
+    const windowField = type === 'otp' ? 'sms_otp_window_start' : 'sms_reset_window_start';
+
+    const now = Date.now();
+    const windowStart = user[windowField] ? user[windowField].getTime() : 0;
+
+    if (!user[windowField] || (now - windowStart) >= SMS_RATE_LIMIT_WINDOW_MS) {
+      // Window expired or never started — reset
+      user[countField]  = 0;
+      user[windowField] = new Date(now);
+    }
+
+    if (user[countField] >= SMS_RATE_LIMIT_MAX) {
+      const resetAt      = windowStart + SMS_RATE_LIMIT_WINDOW_MS;
+      const minutesLeft  = Math.max(1, Math.ceil((resetAt - now) / 60000));
+      throw {
+        status: 429,
+        message: `Too many SMS requests. Please try again in ${minutesLeft} minute(s).`,
+      };
+    }
+
+    user[countField]++;
+  }
+
   /**
    * Generate JWT token for user
    * Only active and email_verified users can get tokens
@@ -138,6 +173,8 @@ class UserService {
         otp: user.email_verification_otp,
       });
       if (user.phone) {
+        this._checkAndIncrementSmsRateLimit(user, 'otp');
+        await user.save(); // persist rate limit counters
         const smsMessage = `Your Real Time Capital verification code is: ${user.email_verification_otp}. It expires in 15 minutes.`;
         try {
           await sendSmsWithMessage(user.phone, smsMessage);
@@ -245,13 +282,18 @@ class UserService {
 
       // Cooldown passed but OTP still valid — reuse the same OTP, refresh expiry
       user.email_verification_expires_at = new Date(now.getTime() + OTP_VALIDITY_MS);
-      await user.save();
     } else {
       // OTP missing or expired — generate a fresh one
       user.email_verification_otp        = generateOTP();
       user.email_verification_expires_at = new Date(now.getTime() + OTP_VALIDITY_MS);
-      await user.save();
     }
+
+    // Enforce SMS rate limit BEFORE saving — blocked users get no new OTP
+    if (user.phone) {
+      this._checkAndIncrementSmsRateLimit(user, 'otp');
+    }
+
+    await user.save(); // persist OTP refresh + rate limit counters in one write
 
     // Send the single OTP to both email and SMS
     await sendVerificationEmail({
@@ -339,7 +381,12 @@ class UserService {
     user.reset_password_otp = generateOTP();
     user.reset_password_expires_at = new Date(Date.now() + 15 * 60 * 1000);
 
-    await user.save();
+    // Enforce SMS rate limit before sending (only if phone exists)
+    if (user.phone) {
+      this._checkAndIncrementSmsRateLimit(user, 'reset');
+    }
+
+    await user.save(); // persist OTP + rate limit counters in one write
 
     // Send email
     await sendPasswordResetEmail({
