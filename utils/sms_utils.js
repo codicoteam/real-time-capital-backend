@@ -45,10 +45,10 @@ async function sendSmsWithMessage(phoneNumber, body) {
   // Build the Twilio payload — prefer direct 'from' number for Zimbabwe
   // delivery reliability; fall back to messaging service if no number is set.
   const params = { body, to: formattedNumber };
-  if (process.env.TWILIO_PHONE_NUMBER) {
-    params.from = process.env.TWILIO_PHONE_NUMBER;
-  } else if (process.env.TWILIO_MESSAGING_SERVICE_SID) {
+  if (process.env.TWILIO_MESSAGING_SERVICE_SID) {
     params.messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID;
+  } else if (process.env.TWILIO_PHONE_NUMBER) {
+    params.from = process.env.TWILIO_PHONE_NUMBER;
   } else {
     throw new Error("No Twilio sender configured (set TWILIO_PHONE_NUMBER or TWILIO_MESSAGING_SERVICE_SID)");
   }
