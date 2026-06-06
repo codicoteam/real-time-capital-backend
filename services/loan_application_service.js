@@ -755,7 +755,7 @@ class LoanApplicationService {
           attachments: [],
         });
 
-        await application.save({ session });
+        await application.save({ session, validateModifiedOnly: true });
 
         await application.populate(
           "customer_user",
@@ -773,28 +773,31 @@ class LoanApplicationService {
       }
 
       // Send notifications AFTER transaction is complete
-      try {
-        const customerFullName = `${application.customer_user.first_name} ${application.customer_user.last_name}`;
-        await emailService.sendLoanApplicationStatusUpdateEmail({
-          to: application.customer_user.email,
-          fullName: customerFullName,
-          applicationNo: application.application_no,
-          status,
-          notes,
-          officerName: `${user.first_name} ${user.last_name}`,
-          contactDetails:
-            "Please contact our loan department for any questions.",
-        });
-      } catch (emailError) {
-        console.error("Failed to send status update email:", emailError);
-      }
-
-      if (status === "approved" && application.customer_user.phone) {
+      const customer = application.customer_user;
+      if (customer) {
         try {
-          const smsMessage = `Your loan application (${application.application_no}) has been APPROVED. Please contact our loan department for further steps.`;
-          await sendSmsWithMessage(application.customer_user.phone, smsMessage);
-        } catch (smsError) {
-          console.error("Failed to send SMS notification:", smsError);
+          const customerFullName = `${customer.first_name ?? ""} ${customer.last_name ?? ""}`.trim();
+          await emailService.sendLoanApplicationStatusUpdateEmail({
+            to: customer.email,
+            fullName: customerFullName,
+            applicationNo: application.application_no,
+            status,
+            notes,
+            officerName: `${user.first_name} ${user.last_name}`,
+            contactDetails:
+              "Please contact our loan department for any questions.",
+          });
+        } catch (emailError) {
+          console.error("Failed to send status update email:", emailError);
+        }
+
+        if (status === "approved" && customer.phone) {
+          try {
+            const smsMessage = `Your loan application (${application.application_no}) has been APPROVED. Please contact our loan department for further steps.`;
+            await sendSmsWithMessage(customer.phone, smsMessage);
+          } catch (smsError) {
+            console.error("Failed to send SMS notification:", smsError);
+          }
         }
       }
 
@@ -866,7 +869,7 @@ class LoanApplicationService {
               : "No matching debtor records found",
         };
 
-        await application.save({ session });
+        await application.save({ session, validateModifiedOnly: true });
 
         await session.commitTransaction();
         session.endSession();
@@ -967,7 +970,7 @@ class LoanApplicationService {
       }
 
       application.updated_at = new Date();
-      await application.save();
+      await application.save({ validateModifiedOnly: true });
 
       const updatedApplication = await LoanApplication.findOne(query)
         .populate(
@@ -1016,7 +1019,7 @@ class LoanApplicationService {
 
       application.admin_notes.push(adminNote);
       application.updated_at = new Date();
-      await application.save();
+      await application.save({ validateModifiedOnly: true });
 
       await application.populate(
         "admin_notes.created_by",
@@ -1110,7 +1113,7 @@ class LoanApplicationService {
 
       application.admin_notes[noteIndex].note = noteText.trim();
       application.updated_at = new Date();
-      await application.save();
+      await application.save({ validateModifiedOnly: true });
 
       await application.populate(
         "admin_notes.created_by",
@@ -1169,7 +1172,7 @@ class LoanApplicationService {
 
       application.admin_notes.splice(noteIndex, 1);
       application.updated_at = new Date();
-      await application.save();
+      await application.save({ validateModifiedOnly: true });
 
       return {
         success: true,
@@ -1312,20 +1315,21 @@ class LoanApplicationService {
         throw new Error("You do not have permission to request documents");
       }
 
-      const customerFullName = `${application.customer_user.first_name} ${application.customer_user.last_name}`;
-
-      await emailService.sendDocumentRequirementEmail({
-        to: application.customer_user.email,
-        fullName: customerFullName,
-        applicationNo: application.application_no,
-        requiredDocuments,
-      });
+      if (application.customer_user) {
+        const customerFullName = `${application.customer_user.first_name ?? ""} ${application.customer_user.last_name ?? ""}`.trim();
+        await emailService.sendDocumentRequirementEmail({
+          to: application.customer_user.email,
+          fullName: customerFullName,
+          applicationNo: application.application_no,
+          requiredDocuments,
+        });
+      }
 
       application.internal_notes = application.internal_notes
         ? `${application.internal_notes}\n[${new Date().toISOString()}] ${user.first_name}: Requested additional documents: ${requiredDocuments.join(", ")}`
         : `[${new Date().toISOString()}] ${user.first_name}: Requested additional documents: ${requiredDocuments.join(", ")}`;
 
-      await application.save();
+      await application.save({ validateModifiedOnly: true });
 
       return {
         success: true,

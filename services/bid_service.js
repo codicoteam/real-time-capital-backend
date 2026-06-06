@@ -126,7 +126,7 @@ class BidService {
         // For now, I'll comment this out since it's not in your schema
         // auction.bid_count = (auction.bid_count || 0) + 1;
 
-        await auction.save({ session });
+        await auction.save({ session, validateModifiedOnly: true });
 
         await session.commitTransaction();
         session.endSession();
@@ -578,7 +578,7 @@ class BidService {
 
       // Update bid
       Object.assign(bid, updateData);
-      await bid.save();
+      await bid.save({ validateModifiedOnly: true });
 
       // Populate for response
       await bid.populate({
@@ -695,7 +695,7 @@ class BidService {
         }
       }
 
-      await bid.save();
+      await bid.save({ validateModifiedOnly: true });
 
       return {
         success: true,
@@ -759,7 +759,7 @@ class BidService {
         raised_at: new Date(),
       };
 
-      await bid.save();
+      await bid.save({ validateModifiedOnly: true });
 
       await bid.populate("dispute.raised_by", "name email");
 
@@ -842,7 +842,7 @@ class BidService {
         bid.payment_status = "refunded";
       }
 
-      await bid.save();
+      await bid.save({ validateModifiedOnly: true });
 
       await bid.populate("dispute.resolved_by", "name email");
 

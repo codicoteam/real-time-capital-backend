@@ -235,7 +235,7 @@ class SupportTicketService {
 
       // Update ticket
       Object.assign(ticket, updateData);
-      await ticket.save();
+      await ticket.save({ validateModifiedOnly: true });
 
       await ticket.populate("created_by_user", "name email phone");
       await ticket.populate("customer_user", "name email phone");
@@ -298,7 +298,7 @@ class SupportTicketService {
 
       // Update status
       ticket.status = status;
-      await ticket.save();
+      await ticket.save({ validateModifiedOnly: true });
 
       return {
         success: true,
@@ -339,7 +339,7 @@ class SupportTicketService {
       // Update assignment
       ticket.assigned_to = assigneeId;
       ticket.status = "in_progress"; // Auto move to in progress when assigned
-      await ticket.save();
+      await ticket.save({ validateModifiedOnly: true });
 
       await ticket.populate("assigned_to", "name email role");
 
@@ -385,7 +385,7 @@ class SupportTicketService {
       // Add attachment
       if (!ticket.attachments.includes(attachmentId)) {
         ticket.attachments.push(attachmentId);
-        await ticket.save();
+        await ticket.save({ validateModifiedOnly: true });
       }
 
       return {

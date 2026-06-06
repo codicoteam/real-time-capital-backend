@@ -361,7 +361,7 @@ class AuctionService {
 
       // Update auction
       Object.assign(auction, updateData);
-      await auction.save();
+      await auction.save({ validateModifiedOnly: true });
 
       const populatedAuction = await this.getAuctionWithDetails(auction._id);
 
@@ -468,7 +468,7 @@ class AuctionService {
 
       // Update status
       auction.status = status;
-      await auction.save();
+      await auction.save({ validateModifiedOnly: true });
 
       // Update asset status based on auction status
       if (status === "live") {

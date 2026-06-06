@@ -168,7 +168,7 @@ class InventoryTransactionService {
       // Update loan with disbursement date if not set
       if (!loan.disbursed_at) {
         loan.disbursed_at = new Date();
-        await loan.save();
+        await loan.save({ validateModifiedOnly: true });
       }
 
       return result;

@@ -1178,7 +1178,7 @@ class LoanService {
       loan.requires_super_admin_approval = true;
       loan.approval_status = "pending";
       loan.status = "pending_approval";
-      await loan.save();
+      await loan.save({ validateModifiedOnly: true });
 
       // Prepare notification content
       const frontendUrl = process.env.FRONTEND_URL || "https://www.rtcapital.co.zw/";
@@ -1288,7 +1288,7 @@ class LoanService {
       // Set overall approval_status to approved
       loan.approval_status = "approved";
 
-      await loan.save();
+      await loan.save({ validateModifiedOnly: true });
 
       // Notify loan processor
       const processorId = loan.processed_by || loan.created_by;
@@ -1365,7 +1365,7 @@ class LoanService {
       // Soft delete by changing status
       loan.status = "cancelled";
       loan.updated_at = new Date();
-      await loan.save();
+      await loan.save({ validateModifiedOnly: true });
 
       // Remove loan reference from asset and reset to submitted
       if (loan.asset) {

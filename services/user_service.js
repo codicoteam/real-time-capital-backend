@@ -156,7 +156,7 @@ class UserService {
       );
     }
 
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     // Send emails / SMS
     if (isSuperAdmin) {
@@ -174,7 +174,7 @@ class UserService {
       });
       if (user.phone) {
         this._checkAndIncrementSmsRateLimit(user, 'otp');
-        await user.save(); // persist rate limit counters
+        await user.save({ validateModifiedOnly: true }); // persist rate limit counters
         const smsMessage = `Your Real Time Capital verification code is: ${user.email_verification_otp}. It expires in 15 minutes.`;
         try {
           await sendSmsWithMessage(user.phone, smsMessage);
@@ -219,7 +219,7 @@ class UserService {
     user.email_verification_otp = null;
     user.email_verification_expires_at = null;
 
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     // Generate token after successful verification
     const token = this.generateToken(user);
@@ -293,7 +293,7 @@ class UserService {
       this._checkAndIncrementSmsRateLimit(user, 'otp');
     }
 
-    await user.save(); // persist OTP refresh + rate limit counters in one write
+    await user.save({ validateModifiedOnly: true }); // persist OTP refresh + rate limit counters in one write
 
     // Send the single OTP to both email and SMS
     await sendVerificationEmail({
@@ -386,7 +386,7 @@ class UserService {
       this._checkAndIncrementSmsRateLimit(user, 'reset');
     }
 
-    await user.save(); // persist OTP + rate limit counters in one write
+    await user.save({ validateModifiedOnly: true }); // persist OTP + rate limit counters in one write
 
     // Send email
     await sendPasswordResetEmail({
@@ -435,7 +435,7 @@ class UserService {
     user.reset_password_otp = null;
     user.reset_password_expires_at = null;
 
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     return { message: "Password reset successful" };
   }
@@ -486,7 +486,7 @@ class UserService {
       user.full_name = `${user.first_name} ${user.last_name}`.trim();
     }
 
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
     return user;
   }
 
@@ -501,7 +501,7 @@ class UserService {
     }
 
     user.profile_pic_url = profilePicUrl;
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     return user;
   }
@@ -535,7 +535,7 @@ class UserService {
       }
     });
 
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
     return user;
   }
 
@@ -592,7 +592,7 @@ class UserService {
       });
     }
 
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
     return user;
   }
 
@@ -617,7 +617,7 @@ class UserService {
 
     // Hash and update new password
     user.password_hash = await this.hashPassword(newPassword);
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     return { message: "Password updated successfully" };
   }
@@ -656,7 +656,7 @@ class UserService {
       user.full_name = `${user.first_name} ${user.last_name}`.trim();
     }
 
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
     return user;
   }
 
@@ -674,7 +674,7 @@ class UserService {
     user.delete_account_otp = generateOTP();
     user.delete_account_otp_expires_at = new Date(Date.now() + 15 * 60 * 1000);
 
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     // Send email
     await sendDeleteAccountEmail({
@@ -716,7 +716,7 @@ class UserService {
     user.delete_account_otp = null;
     user.delete_account_otp_expires_at = null;
 
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     return { message: "Account deleted successfully" };
   }
@@ -752,7 +752,7 @@ class UserService {
     user.reset_password_otp = null;
     user.reset_password_expires_at = null;
 
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     return { message: "User deleted successfully" };
   }
@@ -844,7 +844,7 @@ class UserService {
     }
 
     user.status = status;
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     return user;
   }
@@ -865,7 +865,7 @@ class UserService {
     };
 
     user.documents.push(document);
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     return user.documents[user.documents.length - 1];
   }
@@ -884,7 +884,7 @@ class UserService {
       (doc) => doc._id.toString() !== documentId,
     );
 
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
     return { message: "Document removed successfully" };
   }
 
@@ -905,7 +905,7 @@ class UserService {
     // Add token if not already present
     if (!user.fcm_tokens.includes(fcmToken)) {
       user.fcm_tokens.push(fcmToken);
-      await user.save();
+      await user.save({ validateModifiedOnly: true });
     }
 
     return { message: "FCM token added successfully" };
@@ -923,7 +923,7 @@ class UserService {
 
     if (user.fcm_tokens && fcmToken) {
       user.fcm_tokens = user.fcm_tokens.filter((t) => t !== fcmToken);
-      await user.save();
+      await user.save({ validateModifiedOnly: true });
     }
 
     return { message: "FCM token removed successfully" };
@@ -940,7 +940,7 @@ class UserService {
     }
 
     user.fcm_tokens = [];
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     return { message: "All FCM tokens removed successfully" };
   }
@@ -1057,7 +1057,7 @@ class UserService {
       user.status = "active";
     }
 
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     // Return user without sensitive data
     const userResponse = user.toObject();
