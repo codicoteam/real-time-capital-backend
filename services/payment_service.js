@@ -625,13 +625,16 @@ class PaymentService {
         throw this.handleError(502, "Unable to reach PayNow");
       }
 
-      // Map PayNow status to your system's status
+      // Map PayNow gateway status → model enum values
+      // Model enum: ["paid", "pending", "failed", "cancelled", "awaiting_confirmation"]
       const mapStatus = (status) => {
         const s = String(status || "").toLowerCase();
-        if (s.includes("paid") || s.includes("completed")) return "paid";
-        if (s.includes("awaiting delivery")) return "awaiting_delivery";
+        if (s.includes("paid") || s.includes("completed") || s === "ok") return "paid";
+        if (s.includes("awaiting delivery") || s.includes("delivered")) return "awaiting_confirmation";
         if (s.includes("awaiting confirmation")) return "awaiting_confirmation";
-        if (s.includes("sent") || s.includes("created")) return "sent";
+        // "Sent" = request sent to phone, still waiting for customer approval → pending
+        // "Created" = payment just created → pending
+        if (s.includes("sent") || s.includes("created")) return "pending";
         if (s.includes("cancel")) return "cancelled";
         if (s.includes("fail")) return "failed";
         return "pending";
@@ -713,12 +716,13 @@ class PaymentService {
 
       // Otherwise, update based on webhook status
       if (status) {
+        // Model enum: ["paid", "pending", "failed", "cancelled", "awaiting_confirmation"]
         const mapStatus = (s) => {
           const x = String(s || "").toLowerCase();
-          if (x.includes("paid") || x.includes("completed")) return "paid";
-          if (x.includes("awaiting delivery")) return "awaiting_delivery";
-          if (x.includes("awaiting confirmation"))
-            return "awaiting_confirmation";
+          if (x.includes("paid") || x.includes("completed") || x === "ok") return "paid";
+          if (x.includes("awaiting delivery") || x.includes("delivered")) return "awaiting_confirmation";
+          if (x.includes("awaiting confirmation")) return "awaiting_confirmation";
+          if (x.includes("sent") || x.includes("created")) return "pending";
           if (x.includes("cancel")) return "cancelled";
           if (x.includes("fail")) return "failed";
           return "pending";
