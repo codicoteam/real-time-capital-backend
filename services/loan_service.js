@@ -1575,10 +1575,14 @@ class LoanService {
 
       const effectivePenalty = penaltyAlreadyApplied ? penaltyAmount : pendingPenalty;
 
-      // current_balance already includes penalty for in_grace loans
-      const totalDue = parseFloat(
-        (loan.current_balance + interestAccrued + storageCharge).toFixed(2)
-      );
+      // current_balance = principal + interest + storage (set at creation, + penalty when in_grace).
+      // Do NOT add interestAccrued / storageCharge again — they are already inside current_balance.
+      const totalDue = parseFloat(loan.current_balance.toFixed(2));
+
+      // Use stored breakdown values so the displayed breakdown matches current_balance exactly.
+      const rb = loan.repayment_breakdown || {};
+      const displayInterest = parseFloat((rb.interest_amount ?? loan.interest_amount ?? interestAccrued).toFixed(2));
+      const displayStorage = parseFloat((rb.storage_charge_amount ?? loan.storage_charge_amount ?? storageCharge).toFixed(2));
 
       return {
         success: true,
@@ -1589,9 +1593,9 @@ class LoanService {
           days_elapsed: daysElapsed,
           total_loan_days: totalLoanDays,
           interest_rate: loan.interest_rate_percent,
-          interest_accrued: parseFloat(interestAccrued.toFixed(2)),
+          interest_accrued: displayInterest,
           storage_charge_percent: loan.storage_charge_percent,
-          storage_charge: parseFloat(storageCharge.toFixed(2)),
+          storage_charge: displayStorage,
           penalty_percent: penaltyPercent,
           grace_days: graceDays,
           penalty: effectivePenalty,
