@@ -186,11 +186,13 @@ class PaymentService {
       });
       await payment.save();
 
-      // Use hardcoded company email — Paynow requires a valid email address
-      const PAYNOW_EMAIL = "realtimecapitalmicrofinance@gmail.com";
+      // Use the customer's email from DB so PayNow links the transaction to them.
+      // Fall back to company email only if for some reason the customer has none.
+      const paynowEmail =
+        customer?.email?.trim() || "realtimecapitalmicrofinance@gmail.com";
       const paynowPayment = this.paynowIntegration.createPayment(
         paymentData.receipt_no,
-        PAYNOW_EMAIL,
+        paynowEmail,
       );
 
       paynowPayment.add(
