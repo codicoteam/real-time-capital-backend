@@ -546,55 +546,190 @@ async function moveLoanToAuction(loan) {
 }
 
 // ─────────────────────────────────────────────
-// Scheduled Job 1: Move expired loans to auction
-// Runs every hour (or however often you schedule it)
+// Helper – notify customer that their loan entered grace period
+// ─────────────────────────────────────────────
+async function sendGracePeriodNotification(loan, customer, penaltyAmount, graceDays, penaltyPercent) {
+  const fullName = `${customer.first_name} ${customer.last_name}`;
+  const subject = `URGENT: Grace Period Active – Loan #${loan.loan_no}`;
+  const title   = "Grace Period Has Started";
+
+  const message = `
+    <p style="margin:0 0 15px 0;">Dear ${fullName},</p>
+    <p style="margin:0 0 15px 0;">
+      Your loan <strong>#${loan.loan_no}</strong> has passed its due date without full repayment.
+      A <strong>${penaltyPercent}% late penalty of $${penaltyAmount.toLocaleString()}</strong>
+      has been added to your outstanding balance.
+    </p>
+    <p style="margin:0 0 15px 0;">
+      You now have a <strong>${graceDays}-day grace period</strong> to repay in full.
+      If payment is not received within this period, your collateral asset will be
+      <strong>automatically listed for auction</strong>.
+    </p>
+    <p style="margin:0;">Please contact us immediately to arrange payment.</p>
+  `;
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0"
+           style="margin:20px 0;background:#fff9e6;border:1px solid #ffa500;border-radius:8px;">
+      <tr><td style="padding:15px;">
+        <p style="color:#8b5a00;font-size:12px;margin:0 0 10px 0;font-weight:bold;">⚠ GRACE PERIOD DETAILS</p>
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="padding:4px 0;color:#666;font-size:12px;width:200px;">Loan No:</td>
+            <td style="padding:4px 0;color:#333;font-size:12px;font-weight:bold;">${loan.loan_no}</td>
+          </tr>
+          <tr>
+            <td style="padding:4px 0;color:#666;font-size:12px;">Penalty Rate:</td>
+            <td style="padding:4px 0;color:#c53030;font-size:12px;font-weight:bold;">${penaltyPercent}%</td>
+          </tr>
+          <tr>
+            <td style="padding:4px 0;color:#666;font-size:12px;">Penalty Amount Added:</td>
+            <td style="padding:4px 0;color:#c53030;font-size:12px;font-weight:bold;">$${penaltyAmount.toLocaleString()}</td>
+          </tr>
+          <tr>
+            <td style="padding:4px 0;color:#666;font-size:12px;">Grace Period:</td>
+            <td style="padding:4px 0;color:#333;font-size:12px;font-weight:bold;">${graceDays} days from due date</td>
+          </tr>
+          <tr>
+            <td style="padding:4px 0;color:#c53030;font-size:12px;font-weight:bold;padding-top:10px;">Action Required:</td>
+            <td style="padding:4px 0;color:#c53030;font-size:12px;font-weight:bold;padding-top:10px;">Pay in full to avoid auction</td>
+          </tr>
+        </table>
+      </td></tr>
+    </table>
+  `;
+
+  const { generateDocumentTemplate, sendEmail } = require("../utils/emails_util");
+  const html = generateDocumentTemplate({ title, message, details: detailsHtml });
+
+  if (customer.email) {
+    await sendEmail({ to: customer.email, subject, html }).catch((err) =>
+      console.error(`Grace period email failed for loan ${loan.loan_no}:`, err.message)
+    );
+  }
+
+  if (customer.phone) {
+    const smsBody =
+      `REAL TIME CAPITAL: Loan #${loan.loan_no} is overdue. ` +
+      `A ${penaltyPercent}% penalty ($${penaltyAmount.toLocaleString()}) has been added. ` +
+      `You have ${graceDays} days to repay or your asset will go to auction. Contact us now.`;
+    await sendSmsWithMessage(customer.phone, smsBody).catch((err) =>
+      console.error(`Grace period SMS failed for loan ${loan.loan_no}:`, err.message)
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// Scheduled Job 1: Two-phase grace → auction lifecycle
+//
+// Phase 1 (every run): active/overdue loans past due_date but inside grace
+//   → status = "in_grace", 10% penalty applied once to current_balance
+//
+// Phase 2 (every run): in_grace loans whose grace period has fully expired
+//   → move to auction
+//
+// Runs every hour.
 // ─────────────────────────────────────────────
 async function processExpiredLoans() {
   console.log("[AuctionService] Running processExpiredLoans...");
-
-  // First, update auction statuses based on dates
   await updateAuctionStatuses();
 
   const now = new Date();
+  let graced = 0;
+  let moved  = 0;
 
-  // Find all active/overdue/in_grace loans whose due_date has passed
-  // and whose linked asset is not already in auction/sold
-  const expiredLoans = await Loan.find({
+  // ── Phase 1: due_date passed but grace period still active → in_grace ──
+  const overdueLoans = await Loan.find({
+    status: { $in: ["active", "overdue"] },
+    due_date: { $lte: now },
+  }).lean();
+
+  for (const loan of overdueLoans) {
+    const graceDays   = loan.grace_days ?? 7;
+    const graceEndsAt = new Date(loan.due_date);
+    graceEndsAt.setDate(graceEndsAt.getDate() + graceDays);
+
+    // Only handle loans still inside the grace window here
+    if (now >= graceEndsAt) continue;
+
+    try {
+      const bd = loan.repayment_breakdown || {};
+      const penaltyAlreadyApplied = Boolean(bd.penalty_applied);
+      const penaltyPercent        = loan.penalty_percent ?? 10;
+
+      const updateData = { status: "in_grace" };
+
+      let penaltyAmount = 0;
+      if (!penaltyAlreadyApplied) {
+        const balanceBefore = loan.current_balance;
+        penaltyAmount       = parseFloat((balanceBefore * (penaltyPercent / 100)).toFixed(2));
+        const totalWithPenalty = parseFloat((balanceBefore + penaltyAmount).toFixed(2));
+
+        updateData.current_balance = totalWithPenalty;
+        updateData.repayment_breakdown = {
+          ...bd,
+          penalty_applied:        true,
+          penalty_percent:        penaltyPercent,
+          penalty_amount:         penaltyAmount,
+          balance_before_penalty: balanceBefore,
+          total_with_penalty:     totalWithPenalty,
+          penalty_applied_at:     new Date().toISOString(),
+        };
+      }
+
+      await Loan.findByIdAndUpdate(loan._id, updateData);
+      graced++;
+      console.log(
+        `[AuctionService] Loan ${loan.loan_no} → in_grace | ` +
+        `penalty applied: ${!penaltyAlreadyApplied} | grace ends: ${graceEndsAt.toDateString()}`
+      );
+
+      // Notify customer (non-fatal)
+      if (!penaltyAlreadyApplied) {
+        const customer = await User.findById(loan.customer_user).lean();
+        if (customer) {
+          sendGracePeriodNotification(loan, customer, penaltyAmount, graceDays, penaltyPercent)
+            .catch((err) => console.error("Grace period notification error:", err.message));
+        }
+      }
+    } catch (err) {
+      console.error(`[AuctionService] Failed to set loan ${loan.loan_no} to in_grace:`, err.message);
+    }
+  }
+
+  // ── Phase 2: grace period expired → auction ────────────────────────
+  // Covers both in_grace loans and any active/overdue loans that skipped phase 1
+  const auctionCandidates = await Loan.find({
     status: { $in: ["active", "overdue", "in_grace"] },
     due_date: { $lte: now },
-  })
-    .populate("asset")
-    .lean();
+  }).populate("asset").lean();
 
-  let moved = 0;
+  for (const loan of auctionCandidates) {
+    const graceDays   = loan.grace_days ?? 7;
+    const graceEndsAt = new Date(loan.due_date);
+    graceEndsAt.setDate(graceEndsAt.getDate() + graceDays);
 
-  for (const loan of expiredLoans) {
-    // Skip if asset already auctioned / sold
-    if (!loan.asset || ["auction", "sold"].includes(loan.asset.status)) {
-      continue;
-    }
+    if (now < graceEndsAt) continue; // still inside grace window, skip
 
-    // Double-check no live auction already exists for this asset
+    if (!loan.asset || ["auction", "sold"].includes(loan.asset.status)) continue;
+
     const existingAuction = await Auction.findOne({
       asset: loan.asset._id,
       status: { $in: ["draft", "live"] },
     }).lean();
-
     if (existingAuction) continue;
 
     try {
       await moveLoanToAuction(loan);
       moved++;
     } catch (err) {
-      console.error(
-        `[AuctionService] Failed to move loan ${loan.loan_no} to auction:`,
-        err.message,
-      );
+      console.error(`[AuctionService] Failed to move loan ${loan.loan_no} to auction:`, err.message);
     }
   }
 
   console.log(
-    `[AuctionService] processExpiredLoans complete – ${moved} loan(s) moved to auction.`,
+    `[AuctionService] processExpiredLoans complete – ` +
+    `${graced} loan(s) entered grace period, ${moved} loan(s) moved to auction.`
   );
 }
 
