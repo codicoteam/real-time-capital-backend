@@ -468,9 +468,12 @@ class UserService {
       "first_name",
       "last_name",
       "phone",
+      "alternative_phone",
       "date_of_birth",
       "address",
       "location",
+      "gender",
+      "marital_status",
       "profile_pic_url",
     ];
 
