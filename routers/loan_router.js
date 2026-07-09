@@ -472,6 +472,37 @@ router.get(
 
 /**
  * @swagger
+ * /api/v1/loans/rollovers/performance:
+ *   get:
+ *     summary: Per-loan-processor rollover performance stats
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: created_from
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: created_to
+ *         schema:
+ *           type: string
+ *           format: date
+ *     responses:
+ *       200:
+ *         description: Rollover performance stats
+ *       401:
+ *         description: Unauthorized
+ */
+router.get(
+  "/rollovers/performance",
+  requireRoles("admin_pawn_limited", "management", "super_admin_vendor"),
+  loanController.getRolloverPerformance,
+);
+
+/**
+ * @swagger
  * /api/v1/loans/{id}:
  *   get:
  *     summary: Get loan by ID
@@ -728,6 +759,103 @@ router.post(
     "admin_pawn_limited",
   ),
   loanController.processPayment,
+);
+
+/**
+ * @swagger
+ * /api/v1/loans/{id}/rollover:
+ *   post:
+ *     summary: Roll over a loan — close it out and open a new loan cycle on the same asset
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - payment_amount
+ *               - payment_method
+ *             properties:
+ *               payment_amount:
+ *                 type: number
+ *               payment_method:
+ *                 type: string
+ *                 enum: [cash, bank_transfer, mobile_money, cheque]
+ *               payment_reference:
+ *                 type: string
+ *               payment_notes:
+ *                 type: string
+ *               new_loan_period_type:
+ *                 type: string
+ *               start_date:
+ *                 type: string
+ *                 format: date
+ *               notes:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Loan rolled over successfully
+ *       400:
+ *         description: Invalid rollover data or loan not eligible for rollover
+ *       404:
+ *         description: Loan not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.post(
+  "/:id/rollover",
+  requireRoles(
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "admin_pawn_limited",
+    "super_admin_vendor",
+  ),
+  loanController.rolloverLoan,
+);
+
+/**
+ * @swagger
+ * /api/v1/loans/{id}/rollover-chain:
+ *   get:
+ *     summary: Get the full rollover chain for a loan
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Rollover chain retrieved
+ *       404:
+ *         description: Loan not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.get(
+  "/:id/rollover-chain",
+  requireRoles(
+    "customer",
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "admin_pawn_limited",
+    "super_admin_vendor",
+    "management",
+    "agent",
+  ),
+  loanController.getRolloverChain,
 );
 
 router.post(

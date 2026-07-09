@@ -619,6 +619,91 @@ class LoanController {
   }
 
   /**
+   * Roll over a loan — close it out and open a new loan cycle on the same asset
+   */
+  async rolloverLoan(req, res) {
+    try {
+      const { id } = req.params;
+      const rolloverData = req.body;
+      const userId = req.user?.id;
+
+      if (!rolloverData.payment_amount || rolloverData.payment_amount <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Rollover payment amount is required and must be greater than 0",
+        });
+      }
+
+      const result = await loanService.rolloverLoan(id, rolloverData, userId);
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to roll over loan",
+        errors: error.errors,
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
+   * Get the full rollover chain for a loan
+   */
+  async getRolloverChain(req, res) {
+    try {
+      const { id } = req.params;
+
+      const result = await loanService.getRolloverChain(id);
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to retrieve rollover chain",
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
+   * Per-loan-processor rollover performance stats
+   */
+  async getRolloverPerformance(req, res) {
+    try {
+      const { created_from, created_to } = req.query;
+
+      const result = await loanService.getRolloverPerformanceStats({
+        created_from,
+        created_to,
+      });
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to retrieve rollover performance stats",
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
    * Get loan application by ID (populated)
    */
   async getLoanApplication(req, res) {

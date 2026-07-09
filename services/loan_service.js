@@ -1,8 +1,10 @@
+const mongoose = require("mongoose");
 const Loan = require("../models/loan.model");
 const LoanApplication = require("../models/loanApplication.model");
 const { LOAN_PERIODS } = require("../configs/loan_periods");
 const User = require("../models/user.model");
 const Asset = require("../models/asset.model");
+const Auction = require("../models/auction.model");
 const Attachment = require("../models/attachment.model");
 const { sendSmsWithMessage } = require("../utils/sms_utils");
 const {
@@ -10,6 +12,7 @@ const {
   sendLoanDisbursedAdminEmail,
   sendLoanRedeemedAdminEmail,
   sendLoanAuctionAdminEmail,
+  sendLoanRolloverAdminEmail,
 } = require("../utils/emails_util");
 const NotificationService = require("../services/notifications_service");
 
@@ -22,11 +25,7 @@ class LoanService {
     try {
       // Generate loan number if not provided
       if (!loanData.loan_no) {
-        const date = new Date();
-        const year = date.getFullYear().toString().slice(-2);
-        const month = (date.getMonth() + 1).toString().padStart(2, "0");
-        const random = Math.floor(1000 + Math.random() * 9000);
-        loanData.loan_no = `LON${year}${month}${random}`;
+        loanData.loan_no = this.generateLoanNo();
       }
 
       // Set created_by if not provided
@@ -1776,6 +1775,368 @@ class LoanService {
   }
 
   /**
+   * Generate a loan number in the LON{yy}{mm}{random} format
+   */
+  generateLoanNo() {
+    const date = new Date();
+    const year = date.getFullYear().toString().slice(-2);
+    const month = (date.getMonth() + 1).toString().padStart(2, "0");
+    const random = Math.floor(1000 + Math.random() * 9000);
+    return `LON${year}${month}${random}`;
+  }
+
+  /**
+   * Roll over a loan: the customer pays down the interest/storage owed on the
+   * current loan (in full or in part) instead of the collateral going to
+   * auction. The current loan is closed with status "rolled_over" and a new
+   * loan cycle is opened on the SAME asset (and, when present, the same
+   * application — so collateral photos/details carry over with no re-upload).
+   *
+   * - Payment beyond what was owed above principal reduces the new loan's principal.
+   * - A shortfall (payment less than what was owed above principal) becomes
+   *   carried_forward_arrears on the new loan, added on top of its fresh
+   *   interest/storage charge.
+   * - The new loan skips the disbursement/approval workflow and goes straight
+   *   to "active" — no new cash is disbursed, so there is nothing to approve
+   *   for payout. `requires_super_admin_approval` is still recorded for
+   *   audit on high-value rollovers, but does not block activation.
+   */
+  async rolloverLoan(loanId, rolloverData, userId) {
+    const {
+      payment_amount,
+      payment_method,
+      payment_reference,
+      payment_notes,
+      new_loan_period_type,
+      start_date,
+      notes,
+    } = rolloverData || {};
+
+    const paymentAmount = Number(payment_amount);
+    if (!paymentAmount || paymentAmount <= 0) {
+      throw { status: 400, message: "Rollover payment amount must be greater than 0" };
+    }
+
+    const validPaymentMethods = ["cash", "bank_transfer", "mobile_money", "cheque"];
+    if (!validPaymentMethods.includes(payment_method)) {
+      throw {
+        status: 400,
+        message: `Invalid payment method. Must be one of: ${validPaymentMethods.join(", ")}`,
+      };
+    }
+
+    // "auction" is included so staff can roll over a loan that the scheduler already
+    // moved to auction — the rollover cancels the active auction listing in the same
+    // transaction, pulling the asset back out of auction without selling it.
+    const ROLLOVER_ELIGIBLE_STATUSES = ["active", "overdue", "in_grace", "partially_paid", "auction"];
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const oldLoan = await Loan.findById(loanId).session(session);
+      if (!oldLoan) {
+        throw { status: 404, message: `Loan with ID ${loanId} not found` };
+      }
+
+      if (!ROLLOVER_ELIGIBLE_STATUSES.includes(oldLoan.status)) {
+        throw {
+          status: 400,
+          message: `Cannot roll over a loan with status: ${oldLoan.status}. Loan must be active, overdue, in_grace, partially_paid, or auction.`,
+        };
+      }
+
+      const loanPeriodType = new_loan_period_type || oldLoan.loan_period_type;
+      const period = LOAN_PERIODS[loanPeriodType];
+      if (!period) {
+        throw {
+          status: 400,
+          message: `Invalid new_loan_period_type. Must be one of: ${Object.keys(LOAN_PERIODS).join(", ")}`,
+        };
+      }
+
+      // ── Split the rollover payment between what was owed above principal and any excess ──
+      const owedAbovePrincipal = Math.max(0, oldLoan.current_balance - oldLoan.principal_amount);
+      let carriedForwardArrears = 0;
+      let newPrincipal = oldLoan.principal_amount;
+
+      if (paymentAmount >= owedAbovePrincipal) {
+        const excess = paymentAmount - owedAbovePrincipal;
+        newPrincipal = parseFloat((oldLoan.principal_amount - excess).toFixed(2));
+      } else {
+        carriedForwardArrears = parseFloat((owedAbovePrincipal - paymentAmount).toFixed(2));
+      }
+
+      if (newPrincipal <= 0) {
+        throw {
+          status: 400,
+          message:
+            "This payment covers the full amount owed and would leave nothing to roll over. Use Record Payment / redeem the loan instead.",
+        };
+      }
+
+      // ── If the loan was already sent to auction, cancel that auction listing ──
+      // The rollover reverses the auction decision: the customer is paying interest
+      // and continuing the pawn, so the asset must be pulled out of the auction queue.
+      if (oldLoan.status === "auction") {
+        await Auction.findOneAndUpdate(
+          { asset: oldLoan.asset, status: { $in: ["draft", "live"] } },
+          { $set: { status: "cancelled" } },
+          { session },
+        );
+      }
+
+      // ── Record the rollover payment on the OLD loan and close it out ──
+      const paymentRecord = {
+        amount: paymentAmount,
+        payment_date: new Date(),
+        payment_method,
+        status: "paid",
+        reference_no: payment_reference || `ROLLOVER-${Date.now()}`,
+        received_by: userId || oldLoan.processed_by || oldLoan.created_by,
+        notes: payment_notes || "Rollover interest payment",
+      };
+
+      oldLoan.payments.push(paymentRecord);
+      oldLoan.total_paid = parseFloat((oldLoan.total_paid + paymentAmount).toFixed(2));
+      oldLoan.current_balance = 0;
+      oldLoan.status = "rolled_over";
+      await oldLoan.save({ session, validateModifiedOnly: true });
+
+      // ── Build and save the new loan cycle ──
+      const rolloverStart = start_date ? new Date(start_date) : new Date();
+      const dueDate = new Date(rolloverStart);
+      dueDate.setDate(dueDate.getDate() + period.days);
+
+      const newLoanData = {
+        loan_no: this.generateLoanNo(),
+        customer_user: oldLoan.customer_user,
+        application: oldLoan.application,
+        asset: oldLoan.asset,
+        collateral_category: oldLoan.collateral_category,
+        principal_amount: newPrincipal,
+        currency: oldLoan.currency,
+        loan_period_type: loanPeriodType,
+        interest_rate_percent: period.interest_rate_percent,
+        storage_charge_percent: period.storage_charge_percent,
+        interest_period_days: period.days,
+        penalty_percent: period.penalty_percent,
+        grace_days: period.grace_days,
+        repayment_type: "once_off",
+        start_date: rolloverStart,
+        due_date: dueDate,
+        status: "active",
+        disbursement_date: rolloverStart,
+        disbursed_by: userId,
+        disbursement_notes: `Rollover — no new funds disbursed; renewed from loan ${oldLoan.loan_no}`,
+        approval_status: "approved",
+        requires_super_admin_approval: newPrincipal > 500,
+        is_rollover: true,
+        rollover_of: oldLoan._id,
+        root_loan: oldLoan.root_loan || oldLoan._id,
+        rollover_generation: (oldLoan.rollover_generation || 0) + 1,
+        carried_forward_arrears: carriedForwardArrears,
+        rollover_payment_amount: paymentAmount,
+        rollover_notes: notes || "",
+        created_by: userId,
+        processed_by: userId,
+        approved_by: userId,
+      };
+
+      this.calculateRepaymentBreakdown(newLoanData);
+      if (carriedForwardArrears > 0) {
+        newLoanData.expected_total_repayable = parseFloat(
+          (newLoanData.expected_total_repayable + carriedForwardArrears).toFixed(2),
+        );
+        newLoanData.current_balance = newLoanData.expected_total_repayable;
+        if (newLoanData.repayment_breakdown) {
+          newLoanData.repayment_breakdown.carried_forward_arrears = carriedForwardArrears;
+        }
+      }
+
+      const [newLoan] = await Loan.create([newLoanData], { session });
+
+      oldLoan.rolled_over_to = newLoan._id;
+      await oldLoan.save({ session, validateModifiedOnly: true });
+
+      // ── Move the SAME asset onto the new loan; collateral never leaves storage ──
+      await Asset.findByIdAndUpdate(
+        oldLoan.asset,
+        { status: "pawned", active_loan: newLoan._id },
+        { session },
+      );
+
+      // ── Keep the application's loan pointer on the current, open loan ──
+      if (oldLoan.application) {
+        await LoanApplication.findByIdAndUpdate(
+          oldLoan.application,
+          { $set: { loan_id: newLoan._id, loan_created: true, status: "loan_created" } },
+          { session },
+        );
+      }
+
+      await session.commitTransaction();
+
+      const populatedOldLoan = await Loan.findById(oldLoan._id).populate([
+        { path: "customer_user", select: "first_name last_name email phone" },
+        { path: "asset", select: "asset_no title status asset_images" },
+      ]);
+      const populatedNewLoan = await Loan.findById(newLoan._id).populate([
+        { path: "customer_user", select: "first_name last_name email phone" },
+        { path: "asset", select: "asset_no title category status asset_images" },
+        { path: "application", select: "application_no collateral_category collateral_description collateral_images small_loan_details motor_vehicle_details jewellery_details" },
+        { path: "created_by", select: "first_name last_name email roles" },
+      ]);
+
+      // ── Notifications (outside the transaction — non-critical) ──
+      try {
+        const customer = populatedNewLoan.customer_user;
+        if (customer && customer._id) {
+          const customerName = `${customer.first_name || ""} ${customer.last_name || ""}`.trim() || "Customer";
+          const frontendUrl = process.env.FRONTEND_URL || "https://www.rtcapital.co.zw/";
+          await NotificationService.createNotification(
+            {
+              title: "Loan Rolled Over",
+              message: `Your loan ${oldLoan.loan_no} has been rolled over into a new loan ${newLoan.loan_no}. New due date: ${dueDate.toDateString()}.`,
+              type: "loan_disbursed",
+              priority: "high",
+              audience: { scope: "user", user_id: customer._id },
+              channels: ["in_app", "email", "sms"],
+              entity_type: "loan",
+              entity_id: newLoan._id,
+              action_text: "View Loan Details",
+              action_url: `${frontendUrl}/customer/loans/${newLoan._id}`,
+              data: {
+                old_loan_id: oldLoan._id,
+                old_loan_no: oldLoan.loan_no,
+                new_loan_id: newLoan._id,
+                new_loan_no: newLoan.loan_no,
+              },
+            },
+            userId,
+          ).catch((err) => console.error("Rollover customer notification error:", err.message));
+
+          sendLoanRolloverAdminEmail({
+            loanNo: oldLoan.loan_no,
+            newLoanNo: newLoan.loan_no,
+            customerName,
+            principalAmount: newLoan.principal_amount,
+            paymentAmount,
+            carriedForwardArrears,
+            loanPeriodType: newLoan.loan_period_type,
+            dueDate: newLoan.due_date,
+          }).catch((err) => console.error("Rollover admin email error:", err.message));
+        }
+      } catch (notifyErr) {
+        console.error("Rollover notification error (non-fatal):", notifyErr.message);
+      }
+
+      return {
+        success: true,
+        data: { old_loan: populatedOldLoan, new_loan: populatedNewLoan },
+        message: `Loan ${oldLoan.loan_no} rolled over into new loan ${newLoan.loan_no}`,
+      };
+    } catch (error) {
+      await session.abortTransaction();
+      throw this.handleMongoError(error);
+    } finally {
+      session.endSession();
+    }
+  }
+
+  /**
+   * Get the full rollover chain for a loan (root loan through every renewal),
+   * ordered oldest to newest.
+   */
+  async getRolloverChain(loanId) {
+    try {
+      const loan = await Loan.findById(loanId).select("root_loan rollover_of");
+      if (!loan) {
+        throw { status: 404, message: `Loan with ID ${loanId} not found` };
+      }
+
+      let rootId = loan.root_loan || loan._id;
+
+      // Fall back to walking rollover_of for loans that predate the root_loan field
+      if (!loan.root_loan && loan.rollover_of) {
+        let cursor = await Loan.findById(loan.rollover_of).select("root_loan rollover_of");
+        while (cursor) {
+          rootId = cursor._id;
+          if (!cursor.rollover_of) break;
+          cursor = await Loan.findById(cursor.rollover_of).select("root_loan rollover_of");
+        }
+      }
+
+      const chain = await Loan.find({
+        $or: [{ _id: rootId }, { root_loan: rootId }],
+      })
+        .sort({ rollover_generation: 1 })
+        .populate([
+          { path: "customer_user", select: "first_name last_name email" },
+          { path: "asset", select: "asset_no title status" },
+          { path: "processed_by", select: "first_name last_name email" },
+          { path: "created_by", select: "first_name last_name email" },
+        ]);
+
+      return {
+        success: true,
+        data: chain,
+        message: "Rollover chain retrieved successfully",
+      };
+    } catch (error) {
+      throw this.handleMongoError(error);
+    }
+  }
+
+  /**
+   * Per-loan-processor rollover performance stats.
+   */
+  async getRolloverPerformanceStats(filters = {}) {
+    try {
+      const match = { is_rollover: true };
+      if (filters.created_from || filters.created_to) {
+        match.created_at = {};
+        if (filters.created_from) match.created_at.$gte = new Date(filters.created_from);
+        if (filters.created_to) match.created_at.$lte = new Date(filters.created_to);
+      }
+
+      const stats = await Loan.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: "$created_by",
+            count: { $sum: 1 },
+            total_principal: { $sum: "$principal_amount" },
+            total_arrears: { $sum: "$carried_forward_arrears" },
+          },
+        },
+        { $sort: { count: -1 } },
+      ]);
+
+      const processorIds = stats.map((s) => s._id).filter(Boolean);
+      const processors = await User.find({ _id: { $in: processorIds } })
+        .select("first_name last_name email roles")
+        .lean();
+      const processorsById = new Map(processors.map((p) => [String(p._id), p]));
+
+      const data = stats.map((s) => ({
+        processor: s._id ? processorsById.get(String(s._id)) || { _id: s._id } : null,
+        rollover_count: s.count,
+        total_principal_renewed: s.total_principal,
+        total_arrears_carried: s.total_arrears,
+      }));
+
+      return {
+        success: true,
+        data,
+        message: "Rollover performance stats retrieved successfully",
+      };
+    } catch (error) {
+      throw this.handleMongoError(error);
+    }
+  }
+
+  /**
    * Validate loan status transition
    */
   validateStatusTransition(currentStatus, newStatus, loan) {
@@ -1793,7 +2154,7 @@ class LoanService {
       ],
       overdue: ["in_grace", "auction", "redeemed", "closed", "partially_paid"],
       in_grace: ["auction", "redeemed", "closed", "overdue"],
-      auction: ["sold", "closed"],
+      auction: ["sold", "closed", "rolled_over"],
       sold: ["closed"],
       redeemed: ["closed"],
       partially_paid: ["active", "overdue", "redeemed", "closed"],

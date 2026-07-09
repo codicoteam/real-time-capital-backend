@@ -116,14 +116,27 @@ const LoanSchema = new mongoose.Schema(
         "overdue",
         "in_grace",
         "partially_paid",
+        "auction",         // grace period expired → asset listed for auction
         "redeemed",        // fully paid → asset returned to customer
         "defaulted",       // failed to repay → asset moved to auction
         "written_off",
         "cancelled",
+        "rolled_over",     // closed via rollover → balance moved to a new loan on the same asset
       ],
       default: "draft",
       index: true,
     },
+
+    // Rollover chain — set when this loan was closed by rolling it into a new loan,
+    // or when this loan itself was created by rolling over a previous one.
+    is_rollover: { type: Boolean, default: false },
+    rollover_of: { type: mongoose.Schema.Types.ObjectId, ref: "Loan", index: true },
+    rolled_over_to: { type: mongoose.Schema.Types.ObjectId, ref: "Loan" },
+    rollover_generation: { type: Number, default: 0 },
+    root_loan: { type: mongoose.Schema.Types.ObjectId, ref: "Loan", index: true },
+    carried_forward_arrears: { type: Number, default: 0, min: 0 },
+    rollover_payment_amount: { type: Number, min: 0 },
+    rollover_notes: { type: String, trim: true },
 
     // Approval workflow for high‑value loans
     requires_super_admin_approval: { type: Boolean, default: false },

@@ -1181,6 +1181,83 @@ async function sendLoanAuctionAdminEmail({ loanNo, customerName, principalAmount
   }
 }
 
+/**
+ * Notify admins that a loan has been rolled over (closed loan → renewed into a new loan cycle)
+ */
+async function sendLoanRolloverAdminEmail({ loanNo, newLoanNo, customerName, principalAmount, paymentAmount, carriedForwardArrears, loanPeriodType, dueDate }) {
+  const subject = `Loan Rolled Over — Loan #${loanNo} → #${newLoanNo}`;
+  const title = "Loan Rollover Notification";
+  const periodLabel = loanPeriodType
+    ? loanPeriodType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+    : "N/A";
+  const dueDateStr = dueDate
+    ? new Date(dueDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+    : "N/A";
+
+  const message = `
+    <p style="margin: 0 0 15px 0;">Administrative Team,</p>
+    <p style="margin: 0 0 15px 0;">
+      A loan has been <strong style="color: #6366f1;">rolled over</strong>. The client paid down the interest/storage
+      owed and the collateral remains pawned under a new loan cycle instead of proceeding to auction.
+    </p>
+  `;
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0; background-color: #eef2ff; border: 1px solid #6366f1; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #1a1a1a; font-size: 12px; margin: 0 0 15px 0; font-weight: bold; border-bottom: 2px solid #6366f1; padding-bottom: 5px;">
+            ROLLOVER DETAILS
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px; width: 180px;">Closed Loan:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">${loanNo}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">New Loan:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">${newLoanNo}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Client Name:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${customerName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Rollover Payment:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">$${Number(paymentAmount).toLocaleString()}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">New Principal:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">$${Number(principalAmount).toLocaleString()}</td>
+            </tr>
+            ${carriedForwardArrears > 0 ? `
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Arrears Carried Forward:</td>
+              <td style="padding: 5px 0; color: #d97706; font-size: 12px; font-weight: bold;">$${Number(carriedForwardArrears).toLocaleString()}</td>
+            </tr>` : ""}
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">New Loan Period:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${periodLabel}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">New Due Date:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${dueDateStr}</td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  const html = generateDocumentTemplate({ title, message, details: detailsHtml });
+  const adminEmails = getAdminEmails();
+  for (const email of adminEmails) {
+    await sendEmail({ to: email, subject, html }).catch((err) =>
+      console.error(`Rollover admin email failed (${email}):`, err.message)
+    );
+  }
+}
+
 // Helper function to get status color
 function getStatusColor(status) {
   const colors = {
@@ -1216,5 +1293,6 @@ module.exports = {
   sendLoanDisbursedAdminEmail,
   sendLoanRedeemedAdminEmail,
   sendLoanAuctionAdminEmail,
+  sendLoanRolloverAdminEmail,
   generateOTP
 };
