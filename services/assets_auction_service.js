@@ -24,46 +24,43 @@ async function generateAuctionNo() {
 // ─────────────────────────────────────────────
 // Helper – calculate total amount owed at auction
 //
-// Breaks down into:
-//   1. current_balance          – remaining principal (already reflects any payments)
-//   2. accrued interest         – interest_rate_percent applied to current_balance
-//                                 pro-rated by how many interest periods have elapsed
-//                                 since start_date (minimum 1 full period)
-//   3. storage charge           – storage_charge_percent of current_balance
-//                                 (flat, one-off charge for holding the asset)
-//   4. late penalty             – penalty_percent of current_balance
-//                                 (applied once because the loan is now in default)
+// The interest and storage charges are already baked into current_balance
+// when the loan is created. At auction we add a second 10% penalty on top
+// of the balance before the first (grace) penalty was applied.
 //
-// All percentages are stored as plain numbers (e.g. 4 = 4 %).
+// Example – $100 principal, 2-week loan:
+//   Loan created  : $100 + 20% fee   = $120  (current_balance at creation)
+//   Grace penalty : +10% of $120     = +$12  (current_balance → $132)
+//   Auction penalty: +10% of $120    = +$12  (same base as grace penalty)
+//   Auction total :                    $144
+//
+// Both penalties use the same base (balance_before_penalty stored in
+// repayment_breakdown when grace was triggered).
 // ─────────────────────────────────────────────
 function calculateAuctionAmount(loan) {
-  const balance = loan.current_balance;
+  const balance = loan.current_balance; // already includes grace penalty ($132)
+  const bd = loan.repayment_breakdown || {};
 
-  // How many full interest periods have elapsed since the loan started?
-  const now = new Date();
-  const startDate = new Date(loan.start_date);
-  const elapsedDays = Math.max(
-    0,
-    Math.floor((now - startDate) / (1000 * 60 * 60 * 24)),
+  // Base for the second penalty = original balance before any penalties ($120)
+  const balanceBeforePenalty = bd.balance_before_penalty ?? balance;
+  const penaltyPercent = loan.penalty_percent ?? 10;
+
+  // Second penalty — same amount as the grace penalty
+  const auctionPenalty = parseFloat(
+    (balanceBeforePenalty * (penaltyPercent / 100)).toFixed(2),
   );
-  const periodDays = loan.interest_period_days || 30;
-  const periods = Math.max(1, Math.floor(elapsedDays / periodDays));
 
-  const interestCharge = balance * (loan.interest_rate_percent / 100) * periods;
-
-  const storageCharge = balance * (loan.storage_charge_percent / 100);
-
-  const penaltyCharge = balance * (loan.penalty_percent / 100);
-
-  const total = balance + interestCharge + storageCharge + penaltyCharge;
+  const total = parseFloat((balance + auctionPenalty).toFixed(2));
 
   return {
     base_balance: balance,
-    interest_charge: parseFloat(interestCharge.toFixed(2)),
-    storage_charge: parseFloat(storageCharge.toFixed(2)),
-    penalty_charge: parseFloat(penaltyCharge.toFixed(2)),
-    total: parseFloat(total.toFixed(2)),
-    periods_elapsed: periods,
+    grace_penalty: parseFloat((bd.penalty_amount || 0).toFixed(2)),
+    penalty_charge: auctionPenalty,
+    total,
+    // kept for email template compatibility
+    interest_charge: 0,
+    storage_charge: 0,
+    periods_elapsed: 1,
   };
 }
 
@@ -254,27 +251,21 @@ async function sendAuctionNotificationEmail({
               <td style="padding:4px 0;color:#333;font-size:12px;">${loan.loan_no}</td>
             </tr>
             <tr>
-              <td style="padding:4px 0;color:#666;font-size:12px;border-top:1px solid #f5c6c6;padding-top:10px;">Principal Balance:</td>
+              <td style="padding:4px 0;color:#666;font-size:12px;border-top:1px solid #f5c6c6;padding-top:10px;">Balance After Grace Penalty:</td>
               <td style="padding:4px 0;color:#333;font-size:12px;border-top:1px solid #f5c6c6;padding-top:10px;">
                 $${breakdown.base_balance.toLocaleString()}
               </td>
             </tr>
             <tr>
               <td style="padding:4px 0;color:#666;font-size:12px;">
-                Interest (${loan.interest_rate_percent}% × ${breakdown.periods_elapsed} period${breakdown.periods_elapsed !== 1 ? "s" : ""}):
+                Grace Penalty (${loan.penalty_percent}%):
               </td>
               <td style="padding:4px 0;color:#333;font-size:12px;">
-                $${breakdown.interest_charge.toLocaleString()}
+                $${breakdown.grace_penalty.toLocaleString()}
               </td>
             </tr>
             <tr>
-              <td style="padding:4px 0;color:#666;font-size:12px;">Storage Charge (${loan.storage_charge_percent}%):</td>
-              <td style="padding:4px 0;color:#333;font-size:12px;">
-                $${breakdown.storage_charge.toLocaleString()}
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:4px 0;color:#666;font-size:12px;">Late Penalty (${loan.penalty_percent}%):</td>
+              <td style="padding:4px 0;color:#666;font-size:12px;">Auction Penalty (${loan.penalty_percent}%):</td>
               <td style="padding:4px 0;color:#333;font-size:12px;">
                 $${breakdown.penalty_charge.toLocaleString()}
               </td>
@@ -622,11 +613,20 @@ async function sendGracePeriodNotification(loan, customer, penaltyAmount, graceD
 // ─────────────────────────────────────────────
 // Scheduled Job 1: Two-phase grace → auction lifecycle
 //
-// Phase 1 (every run): active/overdue loans past due_date but inside grace
-//   → status = "in_grace", 10% penalty applied once to current_balance
+// Timeline example — 2-week loan applied July 1:
+//   • July 1  : loan given, 14-day count starts July 2 (application day excluded)
+//   • July 15 : due date — last day customer can pay $120 with no penalty
+//   • July 16 : grace starts — 10% penalty added (e.g. $120 → $132)
+//   • July 22 : grace ends — asset listed for auction at $144 ($132 + another $12)
 //
-// Phase 2 (every run): in_grace loans whose grace period has fully expired
-//   → move to auction
+// Same logic applies to monthly loans (due_date + 30 days, grace July 16→ Aug 7).
+//
+// Phase 1 (every run): loans whose due_date has passed AND the day after due has
+//   arrived → status = "in_grace", first 10% penalty applied once.
+//
+// Phase 2 (every run): in_grace loans where grace window has expired →
+//   move to auction. Auction amount = current_balance + second 10% penalty
+//   (equal to the first penalty, both calculated on the original balance).
 //
 // Runs every hour.
 // ─────────────────────────────────────────────
@@ -638,7 +638,8 @@ async function processExpiredLoans() {
   let graced = 0;
   let moved  = 0;
 
-  // ── Phase 1: due_date passed but grace period still active → in_grace ──
+  // ── Phase 1: grace starts the day AFTER the due date ──
+  // e.g. due July 15 → grace starts July 16
   const overdueLoans = await Loan.find({
     status: { $in: ["active", "overdue"] },
     due_date: { $lte: now },
@@ -651,6 +652,11 @@ async function processExpiredLoans() {
 
     // Only handle loans still inside the grace window here
     if (now >= graceEndsAt) continue;
+
+    // Grace starts the day AFTER the due date — do nothing on the due date itself
+    const dayAfterDue = new Date(loan.due_date);
+    dayAfterDue.setDate(dayAfterDue.getDate() + 1);
+    if (now < dayAfterDue) continue;
 
     try {
       const bd = loan.repayment_breakdown || {};
@@ -709,7 +715,9 @@ async function processExpiredLoans() {
     const graceEndsAt = new Date(loan.due_date);
     graceEndsAt.setDate(graceEndsAt.getDate() + graceDays);
 
-    if (now < graceEndsAt) continue; // still inside grace window, skip
+    // graceEndsAt = July 22 = last day customer can still pay.
+    // Auction fires the NEXT day (July 23), so skip if now <= graceEndsAt.
+    if (now <= graceEndsAt) continue;
 
     if (!loan.asset || ["auction", "sold"].includes(loan.asset.status)) continue;
 

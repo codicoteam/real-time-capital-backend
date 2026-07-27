@@ -15,6 +15,7 @@ const {
   sendLoanRolloverAdminEmail,
 } = require("../utils/emails_util");
 const NotificationService = require("../services/notifications_service");
+const investorAllocationService = require("../services/investor_allocation_service");
 
 class LoanService {
   /**
@@ -1018,29 +1019,34 @@ class LoanService {
         if (userId) updateData.approved_by = userId;
       }
 
-      // When entering grace period: apply penalty immediately to current_balance
-      // Penalty is only applied once (guard against double-application)
+      // When entering grace period: apply penalty the day AFTER the due date.
+      // e.g. due July 15 → penalty applied July 16 onward.
+      // Penalty is only applied once (guard against double-application).
       if (status === "in_grace") {
         const existingBreakdown = loan.repayment_breakdown || {};
         if (!existingBreakdown.penalty_applied) {
-          const penaltyPercent = loan.penalty_percent ?? 10;
-          const balanceBeforePenalty = loan.current_balance;
-          const penaltyAmount = parseFloat(
-            (balanceBeforePenalty * (penaltyPercent / 100)).toFixed(2)
-          );
-          const totalWithPenalty = parseFloat(
-            (balanceBeforePenalty + penaltyAmount).toFixed(2)
-          );
-          updateData.current_balance = totalWithPenalty;
-          updateData.repayment_breakdown = {
-            ...existingBreakdown,
-            penalty_applied: true,
-            penalty_percent: penaltyPercent,
-            penalty_amount: penaltyAmount,
-            balance_before_penalty: balanceBeforePenalty,
-            total_with_penalty: totalWithPenalty,
-            penalty_applied_at: new Date().toISOString(),
-          };
+          const dayAfterDue = new Date(loan.due_date);
+          dayAfterDue.setDate(dayAfterDue.getDate() + 1);
+          if (new Date() >= dayAfterDue) {
+            const penaltyPercent = loan.penalty_percent ?? 10;
+            const balanceBeforePenalty = loan.current_balance;
+            const penaltyAmount = parseFloat(
+              (balanceBeforePenalty * (penaltyPercent / 100)).toFixed(2)
+            );
+            const totalWithPenalty = parseFloat(
+              (balanceBeforePenalty + penaltyAmount).toFixed(2)
+            );
+            updateData.current_balance = totalWithPenalty;
+            updateData.repayment_breakdown = {
+              ...existingBreakdown,
+              penalty_applied: true,
+              penalty_percent: penaltyPercent,
+              penalty_amount: penaltyAmount,
+              balance_before_penalty: balanceBeforePenalty,
+              total_with_penalty: totalWithPenalty,
+              penalty_applied_at: new Date().toISOString(),
+            };
+          }
         }
       }
 
@@ -1090,7 +1096,19 @@ class LoanService {
           loanPeriodType: updatedLoan.loan_period_type,
           dueDate: updatedLoan.due_date,
         }).catch((err) => console.error("Disbursement admin email error:", err.message));
-      } else if (status === "redeemed") {
+
+        // Automatically assign the active loan to the next eligible investor (SWRR)
+        investorAllocationService
+          .assignLoan(updatedLoan._id)
+          .catch((err) => console.error("[InvestorAllocation] assign error:", err.message));
+      } else if (["redeemed", "defaulted", "written_off", "cancelled"].includes(status)) {
+        // Sync investor allocation status when loan reaches a terminal state
+        investorAllocationService
+          .syncAllocationStatus(updatedLoan._id, status)
+          .catch((err) => console.error("[InvestorAllocation] sync error:", err.message));
+      }
+
+      if (status === "redeemed") {
         sendLoanRedeemedAdminEmail({
           loanNo: updatedLoan.loan_no,
           customerName,
@@ -1549,7 +1567,10 @@ class LoanService {
 
       const graceDays = loan.grace_days ?? 7;
       const penaltyPercent = loan.penalty_percent ?? 10;
-      const isLate = now > dueDate;
+      // Late starts the day AFTER due date (e.g. due July 15 → late from July 16)
+      const dayAfterDue = new Date(dueDate);
+      dayAfterDue.setDate(dayAfterDue.getDate() + 1);
+      const isLate = now >= dayAfterDue;
       const overdueDays = isLate
         ? Math.ceil((now - dueDate) / (1000 * 60 * 60 * 24))
         : 0;

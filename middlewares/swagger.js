@@ -2810,6 +2810,7 @@ const options = {
     "./routers/notifications_router.js",
     "./routers/loan_dashboard_routers.js",
     "./routers/auction_report_routers.js",
+    "./routers/investor/investor_router.js",
   ],
 };
 const specs = swaggerJsdoc(options);
