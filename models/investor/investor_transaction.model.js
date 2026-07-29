@@ -38,6 +38,20 @@ const InvestorTransactionSchema = new mongoose.Schema(
     // Audit trail — committed_capital snapshot before and after this transaction
     committed_capital_before: { type: Number, required: true },
     committed_capital_after: { type: Number, required: true },
+
+    // Identifies who recorded this transaction — works for both investor admins and pawn super admins
+    actor: {
+      type: new mongoose.Schema(
+        {
+          id: { type: String },
+          name: { type: String },
+          email: { type: String },
+          actor_type: { type: String, enum: ["investor_admin", "pawn_super_admin"] },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
   },
   {
     timestamps: { createdAt: "created_at", updatedAt: "updated_at" },

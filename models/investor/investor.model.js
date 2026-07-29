@@ -89,6 +89,20 @@ const InvestorSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Full actor audit — captures both investor admins and pawn super admins who onboarded this investor
+    onboarded_by_actor: {
+      type: new mongoose.Schema(
+        {
+          id: { type: String },
+          name: { type: String },
+          email: { type: String },
+          actor_type: { type: String, enum: ["investor_admin", "pawn_super_admin"] },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
+
     // Password reset
     reset_password_otp: { type: String, select: false },
     reset_password_expires_at: { type: Date, select: false },

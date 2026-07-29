@@ -8,6 +8,11 @@ const {
   requireInvestorAdmin,
   requireAdminOrSelf,
 } = require("../../middlewares/investor_auth_middleware");
+const {
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  requireAdminOrSelfUnified,
+} = require("../../middlewares/investor_or_pawn_admin_middleware");
 
 /**
  * @swagger
@@ -366,7 +371,7 @@ router.post("/auth/login", investorController.login.bind(investorController));
  */
 router.get(
   "/profit-split",
-  investorAuthMiddleware,
+  investorOrPawnAdminMiddleware,
   investorController.getProfitSplit.bind(investorController),
 );
 
@@ -432,8 +437,8 @@ router.get(
  */
 router.put(
   "/profit-split",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.updateProfitSplit.bind(investorController),
 );
 
@@ -484,8 +489,8 @@ router.put(
  */
 router.post(
   "/",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.createInvestor.bind(investorController),
 );
 
@@ -561,8 +566,8 @@ router.post(
  */
 router.get(
   "/",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.listInvestors.bind(investorController),
 );
 
@@ -571,36 +576,36 @@ router.get(
 
 router.get(
   "/admin/stats",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.getAdminStats.bind(investorController),
 );
 
 router.get(
   "/admin/loan-allocations",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.getAdminAllAllocations.bind(investorController),
 );
 
 router.post(
   "/admin/assign-loan/:loanId",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.triggerLoanAssignment.bind(investorController),
 );
 
 router.get(
   "/admin/rtc-account",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.getRtcAccount.bind(investorController),
 );
 
 router.patch(
   "/admin/rtc-account/capital",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.updateRtcCapital.bind(investorController),
 );
 
@@ -645,8 +650,8 @@ router.patch(
  */
 router.get(
   "/:id",
-  investorAuthMiddleware,
-  requireAdminOrSelf,
+  investorOrPawnAdminMiddleware,
+  requireAdminOrSelfUnified,
   investorController.getInvestor.bind(investorController),
 );
 
@@ -701,8 +706,8 @@ router.get(
  */
 router.put(
   "/:id",
-  investorAuthMiddleware,
-  requireAdminOrSelf,
+  investorOrPawnAdminMiddleware,
+  requireAdminOrSelfUnified,
   investorController.updateInvestor.bind(investorController),
 );
 
@@ -749,8 +754,8 @@ router.put(
  */
 router.delete(
   "/:id",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.deleteInvestor.bind(investorController),
 );
 
@@ -811,8 +816,8 @@ router.delete(
  */
 router.put(
   "/:id/profit-share",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.updateProfitShare.bind(investorController),
 );
 
@@ -870,8 +875,8 @@ router.put(
  */
 router.post(
   "/companies/:companyId/clients",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.addCompanyClient.bind(investorController),
 );
 
@@ -917,8 +922,8 @@ router.post(
  */
 router.get(
   "/companies/:companyId/clients",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.listCompanyClients.bind(investorController),
 );
 
@@ -926,22 +931,22 @@ router.get(
 
 router.get(
   "/:id/transaction-summary",
-  investorAuthMiddleware,
-  requireAdminOrSelf,
+  investorOrPawnAdminMiddleware,
+  requireAdminOrSelfUnified,
   investorController.getTransactionSummary.bind(investorController),
 );
 
 router.get(
   "/:id/transactions",
-  investorAuthMiddleware,
-  requireAdminOrSelf,
+  investorOrPawnAdminMiddleware,
+  requireAdminOrSelfUnified,
   investorController.getTransactions.bind(investorController),
 );
 
 router.post(
   "/:id/transactions",
-  investorAuthMiddleware,
-  requireInvestorAdmin,
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
   investorController.recordTransaction.bind(investorController),
 );
 
@@ -949,22 +954,22 @@ router.post(
 
 router.get(
   "/:id/loan-allocations",
-  investorAuthMiddleware,
-  requireAdminOrSelf,
+  investorOrPawnAdminMiddleware,
+  requireAdminOrSelfUnified,
   investorController.getInvestorAllocations.bind(investorController),
 );
 
 router.get(
   "/:id/portfolio-stats",
-  investorAuthMiddleware,
-  requireAdminOrSelf,
+  investorOrPawnAdminMiddleware,
+  requireAdminOrSelfUnified,
   investorController.getInvestorPortfolioStats.bind(investorController),
 );
 
 router.get(
   "/:id/growth-history",
-  investorAuthMiddleware,
-  requireAdminOrSelf,
+  investorOrPawnAdminMiddleware,
+  requireAdminOrSelfUnified,
   investorController.getInvestorGrowthHistory.bind(investorController),
 );
 

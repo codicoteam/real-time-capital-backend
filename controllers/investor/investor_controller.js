@@ -167,6 +167,7 @@ class InvestorController {
         title: title ? title.trim() : undefined,
         notes: notes ? notes.trim() : undefined,
         added_by: req.investor._id,
+        onboarded_by_actor: req.actorInfo || null,
       });
 
       return res.status(201).json({
@@ -247,6 +248,7 @@ class InvestorController {
         loan_term_preferences: loanTermParsed.value,
         notes: notes ? notes.trim() : undefined,
         added_by: req.investor._id,
+        onboarded_by_actor: req.actorInfo || null,
       });
 
       return res.status(201).json({
@@ -945,6 +947,7 @@ class InvestorController {
         amount: parsedAmount,
         notes,
         recordedById: req.investor._id,
+        actorInfo: req.actorInfo || null,
       });
 
       return res.status(201).json({

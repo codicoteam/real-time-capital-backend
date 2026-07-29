@@ -581,7 +581,7 @@ class InvestorAllocationService {
    * Record a deposit, profit withdrawal, or capital withdrawal.
    * Validates available balance before recording. Updates committed_capital atomically.
    */
-  async recordTransaction(investorId, { type, amount, notes, recordedById }) {
+  async recordTransaction(investorId, { type, amount, notes, recordedById, actorInfo }) {
     const investor = await Investor.findById(investorId);
     if (!investor) throw new Error("Investor not found.");
 
@@ -637,6 +637,7 @@ class InvestorAllocationService {
       recorded_by: recordedById || null,
       committed_capital_before: capitalBefore,
       committed_capital_after: capitalAfter,
+      actor: actorInfo || null,
     });
 
     const populated = await InvestorTransaction.findById(tx._id).populate("recorded_by", "name email");
