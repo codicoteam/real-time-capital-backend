@@ -5,6 +5,7 @@ const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const Investor = require("../../models/investor/investor.model");
 const InvestorProfitSplit = require("../../models/investor/investor_profit_split.model");
+const Expense = require("../../models/expense.model");
 const investorAllocationService = require("../../services/investor_allocation_service");
 
 const AVATAR_COLORS = ["#10b981", "#3b82f6", "#f59e0b", "#ec4899", "#8b5cf6", "#14b8a6"];
@@ -1019,6 +1020,154 @@ class InvestorController {
       return res.status(500).json({ success: false, message: "Failed to update RTC capital." });
     }
   }
+
+  /**
+   * GET /api/v1/investors/admin/rtc-account/transactions
+   * RTC's own deposit / drawing / expense ledger.
+   */
+  async getRtcTransactions(req, res) {
+    try {
+      const account = await investorAllocationService.getRtcAccount();
+      const { page = 1, limit = 100 } = req.query;
+      const { transactions, total } = await investorAllocationService.getTransactions(account._id, {
+        page,
+        limit,
+      });
+      return res.json({
+        success: true,
+        data: { transactions: transactions.map(mapRtcTransaction), total },
+      });
+    } catch (error) {
+      console.error("InvestorController.getRtcTransactions:", error);
+      return res.status(500).json({ success: false, message: "Failed to fetch RTC transactions." });
+    }
+  }
+
+  /**
+   * POST /api/v1/investors/admin/rtc-account/transactions
+   * Record a deposit, drawing, or (linked) expense against RTC capital cash.
+   * Body: { type: "deposit"|"drawing"|"expense", amount?, notes?, source?, expense_id? }
+   *
+   * For type "expense", the amount/category are always taken from the approved Expense
+   * record (never trusted from the client) and the expense is marked as linked so it
+   * can't be recorded — and cash deducted — twice.
+   */
+  async recordRtcTransaction(req, res) {
+    try {
+      const { type, notes, source, expense_id } = req.body;
+      if (!["deposit", "drawing", "expense"].includes(type)) {
+        return res.status(400).json({ success: false, message: "type must be deposit, drawing, or expense." });
+      }
+
+      const account = await investorAllocationService.getRtcAccount();
+      let amount = parseFloat(req.body.amount);
+      let expenseDoc = null;
+      let expenseCategory;
+
+      if (type === "expense") {
+        if (!expense_id || !mongoose.Types.ObjectId.isValid(expense_id)) {
+          return res.status(400).json({ success: false, message: "expense_id is required to record an expense." });
+        }
+        expenseDoc = await Expense.findById(expense_id);
+        if (!expenseDoc) {
+          return res.status(404).json({ success: false, message: "Expense not found." });
+        }
+        if (expenseDoc.status !== "approved") {
+          return res.status(400).json({ success: false, message: "Only approved expenses can be recorded against RTC cash." });
+        }
+        if (expenseDoc.rtc_transaction_id) {
+          return res.status(400).json({ success: false, message: "This expense has already been recorded against RTC cash." });
+        }
+        amount = expenseDoc.amount;
+        expenseCategory = expenseDoc.category;
+      } else if (!amount || amount <= 0) {
+        return res.status(400).json({ success: false, message: "amount must be a positive number." });
+      }
+
+      const { transaction } = await investorAllocationService.recordTransaction(account._id, {
+        type,
+        amount,
+        notes: notes || (expenseDoc ? expenseDoc.description : undefined),
+        recordedById: req.investor._id,
+        actorInfo: req.actorInfo || null,
+        source: type === "deposit" ? source : undefined,
+        expenseId: expenseDoc ? expenseDoc._id : undefined,
+        expenseCategory,
+      });
+
+      if (expenseDoc) {
+        expenseDoc.rtc_transaction_id = transaction._id;
+        await expenseDoc.save();
+      }
+
+      const updatedAccount = await investorAllocationService.getRtcAccount();
+      return res.status(201).json({
+        success: true,
+        message: `Transaction recorded: ${type} of $${amount.toFixed(2)}.`,
+        data: {
+          transaction: mapRtcTransaction(transaction),
+          rtc_account: { committed_capital: updatedAccount.committed_capital },
+        },
+      });
+    } catch (error) {
+      console.error("InvestorController.recordRtcTransaction:", error);
+      if (error.message && !error.message.includes("InvestorController")) {
+        return res.status(400).json({ success: false, message: error.message });
+      }
+      return res.status(500).json({ success: false, message: "Failed to record transaction." });
+    }
+  }
+
+  /**
+   * GET /api/v1/investors/admin/rtc-account/unlinked-expenses
+   * Approved pawn expenses not yet recorded against RTC capital cash — used by the
+   * RTC Portfolio "Record Transaction → Expense" picker.
+   */
+  async getUnlinkedApprovedExpenses(req, res) {
+    try {
+      const expenses = await Expense.find({ status: "approved", rtc_transaction_id: null })
+        .sort({ approved_at: -1 })
+        .populate("created_by", "first_name last_name email")
+        .populate("approved_by", "first_name last_name email");
+      return res.json({
+        success: true,
+        data: {
+          expenses: expenses.map((e) => ({
+            id: e._id,
+            expense_no: e.expense_no,
+            category: e.category,
+            amount: e.amount,
+            description: e.description,
+            expense_date: e.expense_date,
+            approved_at: e.approved_at,
+            approved_by: e.approved_by
+              ? { name: `${e.approved_by.first_name || ""} ${e.approved_by.last_name || ""}`.trim() || e.approved_by.email, email: e.approved_by.email }
+              : null,
+            created_by: e.created_by
+              ? { name: `${e.created_by.first_name || ""} ${e.created_by.last_name || ""}`.trim() || e.created_by.email, email: e.created_by.email }
+              : null,
+          })),
+        },
+      });
+    } catch (error) {
+      console.error("InvestorController.getUnlinkedApprovedExpenses:", error);
+      return res.status(500).json({ success: false, message: "Failed to fetch unlinked expenses." });
+    }
+  }
+}
+
+function mapRtcTransaction(tx) {
+  return {
+    id: tx._id,
+    type: tx.type,
+    amount: tx.amount,
+    source: tx.source || undefined,
+    expense_category: tx.expense_category || undefined,
+    notes: tx.notes || undefined,
+    created_at: tx.created_at,
+    balance_after: tx.committed_capital_after,
+    actor: tx.actor || null,
+  };
 }
 
 module.exports = new InvestorController();

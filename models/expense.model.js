@@ -55,6 +55,14 @@ const ExpenseSchema = new mongoose.Schema(
     approved_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     approved_at: { type: Date },
 
+    // Set once this expense has been recorded against RTC capital cash (on approval).
+    // Prevents double-deduction and lets the RTC Portfolio "Expense" picker skip already-linked expenses.
+    rtc_transaction_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "InvestorTransaction",
+      default: null,
+    },
+
     notes: { type: String, trim: true },
 
     created_by: {

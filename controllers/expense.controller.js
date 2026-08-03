@@ -206,10 +206,24 @@ class ExpenseController {
         });
       }
 
+      const roles = Array.isArray(req.user.roles)
+        ? req.user.roles
+        : [req.user.role].filter(Boolean);
+      const actorInfo = {
+        id: req.user._id.toString(),
+        name:
+          `${req.user.first_name || ""} ${req.user.last_name || ""}`.trim() ||
+          req.user.email,
+        email: req.user.email,
+        actor_type: "pawn_staff",
+        role: roles[0] || null,
+      };
+
       const result = await ExpenseService.updateExpenseStatus(
         id,
         status,
         req.user._id,
+        actorInfo,
       );
 
       if (!result.success) {

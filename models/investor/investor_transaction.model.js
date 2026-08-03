@@ -13,7 +13,7 @@ const InvestorTransactionSchema = new mongoose.Schema(
 
     type: {
       type: String,
-      enum: ["deposit", "profit_withdrawal", "capital_withdrawal"],
+      enum: ["deposit", "profit_withdrawal", "capital_withdrawal", "drawing", "expense"],
       required: true,
     },
 
@@ -29,6 +29,25 @@ const InvestorTransactionSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Deposit-only: where the money came from (e.g. "Owner Contribution", "Business Income")
+    source: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    // Expense-only: links this cash-out entry back to the approved pawn Expense record
+    expense_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Expense",
+      default: null,
+    },
+    expense_category: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
     recorded_by: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Investor",
@@ -39,14 +58,17 @@ const InvestorTransactionSchema = new mongoose.Schema(
     committed_capital_before: { type: Number, required: true },
     committed_capital_after: { type: Number, required: true },
 
-    // Identifies who recorded this transaction — works for both investor admins and pawn super admins
+    // Identifies who recorded this transaction — works for investor admins, pawn super admins,
+    // and pawn staff (e.g. a loan processor approving an expense)
     actor: {
       type: new mongoose.Schema(
         {
           id: { type: String },
           name: { type: String },
           email: { type: String },
-          actor_type: { type: String, enum: ["investor_admin", "pawn_super_admin"] },
+          actor_type: { type: String, enum: ["investor_admin", "pawn_super_admin", "pawn_staff"] },
+          // Human-readable role label, set when actor_type is "pawn_staff" (e.g. "loan_officer_processor")
+          role: { type: String, default: null },
         },
         { _id: false },
       ),

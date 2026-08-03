@@ -581,11 +581,11 @@ class InvestorAllocationService {
    * Record a deposit, profit withdrawal, or capital withdrawal.
    * Validates available balance before recording. Updates committed_capital atomically.
    */
-  async recordTransaction(investorId, { type, amount, notes, recordedById, actorInfo }) {
+  async recordTransaction(investorId, { type, amount, notes, recordedById, actorInfo, source, expenseId, expenseCategory }) {
     const investor = await Investor.findById(investorId);
     if (!investor) throw new Error("Investor not found.");
 
-    const validTypes = ["deposit", "profit_withdrawal", "capital_withdrawal"];
+    const validTypes = ["deposit", "profit_withdrawal", "capital_withdrawal", "drawing", "expense"];
     if (!validTypes.includes(type)) throw new Error("Invalid transaction type.");
     if (!amount || amount <= 0) throw new Error("Amount must be greater than zero.");
 
@@ -596,7 +596,7 @@ class InvestorAllocationService {
       capitalAfter = parseFloat((capitalBefore + amount).toFixed(2));
       investor.committed_capital = capitalAfter;
       await investor.save();
-    } else if (type === "capital_withdrawal") {
+    } else if (type === "capital_withdrawal" || type === "drawing" || type === "expense") {
       const activeAllocs = await InvestorLoanAllocation.find({
         investor_id: investorId,
         status: "active",
@@ -604,8 +604,9 @@ class InvestorAllocationService {
       const deployedCapital = activeAllocs.reduce((s, a) => s + a.principal_amount, 0);
       const availableBalance = capitalBefore - deployedCapital;
       if (amount > availableBalance + 0.01) {
+        const actionLabel = type === "expense" ? "expense" : type === "drawing" ? "drawing" : "capital withdrawal";
         throw new Error(
-          `Only $${availableBalance.toFixed(2)} is available for capital withdrawal ` +
+          `Only $${availableBalance.toFixed(2)} is available for this ${actionLabel} ` +
             `(committed: $${capitalBefore.toFixed(2)}, deployed in active loans: $${deployedCapital.toFixed(2)}).`,
         );
       }
@@ -638,6 +639,9 @@ class InvestorAllocationService {
       committed_capital_before: capitalBefore,
       committed_capital_after: capitalAfter,
       actor: actorInfo || null,
+      source: source || null,
+      expense_id: expenseId || null,
+      expense_category: expenseCategory || null,
     });
 
     const populated = await InvestorTransaction.findById(tx._id).populate("recorded_by", "name email");

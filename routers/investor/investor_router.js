@@ -609,6 +609,27 @@ router.patch(
   investorController.updateRtcCapital.bind(investorController),
 );
 
+router.get(
+  "/admin/rtc-account/transactions",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.getRtcTransactions.bind(investorController),
+);
+
+router.post(
+  "/admin/rtc-account/transactions",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.recordRtcTransaction.bind(investorController),
+);
+
+router.get(
+  "/admin/rtc-account/unlinked-expenses",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.getUnlinkedApprovedExpenses.bind(investorController),
+);
+
 /**
  * @swagger
  * /api/v1/investors/{id}:

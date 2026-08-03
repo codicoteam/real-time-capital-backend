@@ -388,6 +388,7 @@ router.put(
   requireRoles(
     "admin_pawn_limited",
     "loan_officer_approval",
+    "loan_officer_processor",
     "management",
     "super_admin_vendor",
   ),

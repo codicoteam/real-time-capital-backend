@@ -1,6 +1,7 @@
 const Expense = require("../models/expense.model");
 const User = require("../models/user.model");
 const mongoose = require("mongoose");
+const investorAllocationService = require("./investor_allocation_service");
 
 // For generating unique expense number
 let uuidv4;
@@ -227,9 +228,12 @@ class ExpenseService {
   }
 
   /**
-   * Approve or reject expense (status update)
+   * Approve or reject expense (status update).
+   * Approving an expense immediately deducts its amount from RTC capital cash and
+   * links the resulting ledger entry back onto the expense (expense.rtc_transaction_id),
+   * so it can never be double-deducted.
    */
-  static async updateExpenseStatus(id, status, approvedBy) {
+  static async updateExpenseStatus(id, status, approvedBy, actorInfo) {
     try {
       const expense = await Expense.findById(id);
 
@@ -260,6 +264,30 @@ class ExpenseService {
         };
       }
 
+      let rtcTransaction = null;
+      if (status === "approved") {
+        try {
+          const rtcAccount = await investorAllocationService.getRtcAccount();
+          const result = await investorAllocationService.recordTransaction(rtcAccount._id, {
+            type: "expense",
+            amount: expense.amount,
+            notes: expense.description || `${expense.category} — ${expense.expense_no}`,
+            recordedById: approvedBy,
+            actorInfo,
+            expenseId: expense._id,
+            expenseCategory: expense.category,
+          });
+          rtcTransaction = result.transaction;
+        } catch (rtcError) {
+          // Money didn't move — do not approve the expense either.
+          return {
+            success: false,
+            message: `Cannot approve: ${rtcError.message}`,
+            statusCode: 400,
+          };
+        }
+      }
+
       // Update status and approval info
       expense.status = status;
       if (status === "approved" || status === "rejected") {
@@ -270,6 +298,9 @@ class ExpenseService {
         expense.approved_by = null;
         expense.approved_at = null;
       }
+      if (rtcTransaction) {
+        expense.rtc_transaction_id = rtcTransaction._id;
+      }
 
       await expense.save();
 
@@ -278,6 +309,13 @@ class ExpenseService {
       return {
         success: true,
         data: populatedExpense,
+        rtc_transaction: rtcTransaction
+          ? {
+              id: rtcTransaction._id,
+              amount: rtcTransaction.amount,
+              balance_after: rtcTransaction.committed_capital_after,
+            }
+          : null,
         message: `Expense ${status} successfully`,
       };
     } catch (error) {
