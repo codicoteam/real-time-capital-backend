@@ -34,6 +34,8 @@ const TitleDeedSchema = new mongoose.Schema(
     property_name:        { type: String, required: true, trim: true },
     property_address:     { type: String, trim: true },
     property_description: { type: String, trim: true },
+    property_lat:         { type: Number, default: null },
+    property_lng:         { type: Number, default: null },
 
     // Loan financial details
     loan_amount:    { type: Number, required: true, min: 0 },
