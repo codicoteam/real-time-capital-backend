@@ -675,6 +675,11 @@ class LoanService {
    * Get loan by ID with full population including all 7 key fields from application
    */
   async getLoanById(loanId) {
+    if (!mongoose.Types.ObjectId.isValid(loanId)) {
+      const err = new Error("Invalid loan ID.");
+      err.status = 400;
+      throw err;
+    }
     try {
       const loan = await Loan.findById(loanId).populate([
         {
@@ -882,6 +887,9 @@ class LoanService {
    * Update loan
    */
   async updateLoan(loanId, updateData, userId) {
+    if (!mongoose.Types.ObjectId.isValid(loanId)) {
+      throw { status: 400, message: "Invalid loan ID." };
+    }
     try {
       // Check if loan exists
       const existingLoan = await Loan.findById(loanId);
@@ -947,6 +955,9 @@ class LoanService {
    * Update loan status with business logic
    */
   async updateLoanStatus(loanId, status, notes = "", userId, disbursementDetails = null) {
+    if (!mongoose.Types.ObjectId.isValid(loanId)) {
+      throw { status: 400, message: "Invalid loan ID." };
+    }
     try {
       const validStatuses = [
         "draft",
@@ -1360,6 +1371,9 @@ class LoanService {
    * Delete loan (soft delete)
    */
   async deleteLoan(loanId, userId) {
+    if (!mongoose.Types.ObjectId.isValid(loanId)) {
+      throw { status: 400, message: "Invalid loan ID." };
+    }
     try {
       const loan = await Loan.findById(loanId);
 

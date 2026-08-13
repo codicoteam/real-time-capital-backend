@@ -1,4 +1,5 @@
 const loanService = require("../services/loan_service");
+const mongoose = require("mongoose");
 
 class LoanController {
   /**
@@ -57,6 +58,10 @@ class LoanController {
   async getLoan(req, res) {
     try {
       const { id } = req.params;
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: "Invalid loan ID." });
+      }
 
       const result = await loanService.getLoanById(id);
 
