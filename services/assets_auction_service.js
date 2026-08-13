@@ -24,39 +24,27 @@ async function generateAuctionNo() {
 // ─────────────────────────────────────────────
 // Helper – calculate total amount owed at auction
 //
-// The interest and storage charges are already baked into current_balance
-// when the loan is created. At auction we add a second 10% penalty on top
-// of the balance before the first (grace) penalty was applied.
+// The grace period 10% penalty is already baked into current_balance when
+// Phase 1 fires. Auction does NOT add any further penalty — the rate is
+// frozen at the same 10% applied during grace.
 //
 // Example – $100 principal, 2-week loan:
 //   Loan created  : $100 + 20% fee   = $120  (current_balance at creation)
 //   Grace penalty : +10% of $120     = +$12  (current_balance → $132)
-//   Auction penalty: +10% of $120    = +$12  (same base as grace penalty)
-//   Auction total :                    $144
+//   Auction total :                    $132  (no additional charge)
 //
-// Both penalties use the same base (balance_before_penalty stored in
-// repayment_breakdown when grace was triggered).
+// If the winning bid exceeds this settlement total, the excess profit is
+// split 50/50 between the investor and RTC (tracked on the Auction document).
 // ─────────────────────────────────────────────
 function calculateAuctionAmount(loan) {
-  const balance = loan.current_balance; // already includes grace penalty ($132)
+  const balance = loan.current_balance; // already includes grace penalty
   const bd = loan.repayment_breakdown || {};
-
-  // Base for the second penalty = original balance before any penalties ($120)
-  const balanceBeforePenalty = bd.balance_before_penalty ?? balance;
-  const penaltyPercent = loan.penalty_percent ?? 10;
-
-  // Second penalty — same amount as the grace penalty
-  const auctionPenalty = parseFloat(
-    (balanceBeforePenalty * (penaltyPercent / 100)).toFixed(2),
-  );
-
-  const total = parseFloat((balance + auctionPenalty).toFixed(2));
 
   return {
     base_balance: balance,
     grace_penalty: parseFloat((bd.penalty_amount || 0).toFixed(2)),
-    penalty_charge: auctionPenalty,
-    total,
+    penalty_charge: 0, // no additional penalty at auction
+    total: balance,
     // kept for email template compatibility
     interest_charge: 0,
     storage_charge: 0,
@@ -251,9 +239,9 @@ async function sendAuctionNotificationEmail({
               <td style="padding:4px 0;color:#333;font-size:12px;">${loan.loan_no}</td>
             </tr>
             <tr>
-              <td style="padding:4px 0;color:#666;font-size:12px;border-top:1px solid #f5c6c6;padding-top:10px;">Balance After Grace Penalty:</td>
+              <td style="padding:4px 0;color:#666;font-size:12px;border-top:1px solid #f5c6c6;padding-top:10px;">Balance Before Grace Penalty:</td>
               <td style="padding:4px 0;color:#333;font-size:12px;border-top:1px solid #f5c6c6;padding-top:10px;">
-                $${breakdown.base_balance.toLocaleString()}
+                $${(breakdown.base_balance - breakdown.grace_penalty).toLocaleString()}
               </td>
             </tr>
             <tr>
@@ -265,17 +253,18 @@ async function sendAuctionNotificationEmail({
               </td>
             </tr>
             <tr>
-              <td style="padding:4px 0;color:#666;font-size:12px;">Auction Penalty (${loan.penalty_percent}%):</td>
-              <td style="padding:4px 0;color:#333;font-size:12px;">
-                $${breakdown.penalty_charge.toLocaleString()}
-              </td>
-            </tr>
-            <tr>
               <td style="padding:4px 0;color:#c53030;font-size:12px;font-weight:bold;border-top:2px solid #e53e3e;padding-top:8px;">
-                Total Outstanding:
+                Total Outstanding (Settlement Amount):
               </td>
               <td style="padding:4px 0;color:#c53030;font-size:12px;font-weight:bold;border-top:2px solid #e53e3e;padding-top:8px;">
                 $${breakdown.total.toLocaleString()}
+              </td>
+            </tr>
+            <tr>
+              <td colspan="2" style="padding:8px 0 4px 0;color:#666;font-size:11px;font-style:italic;">
+                Note: No additional penalty applies at auction — the 10% grace period rate is final.
+                If the asset sells above the settlement amount, any surplus is shared 50/50 between
+                the investor and Real Time Capital.
               </td>
             </tr>
             <tr>
@@ -522,9 +511,7 @@ async function moveLoanToAuction(loan) {
 
     console.log(
       `[AuctionService] Loan ${loan.loan_no} → auction ${auctionNo} | ` +
-        `balance: $${breakdown.base_balance} + interest: $${breakdown.interest_charge} + ` +
-        `storage: $${breakdown.storage_charge} + penalty: $${breakdown.penalty_charge} = ` +
-        `total: $${breakdown.total} | starting bid: $${startingBid}`,
+        `settlement total (incl. grace penalty): $${breakdown.total} | starting bid: $${startingBid}`,
     );
 
     return auction;
@@ -617,16 +604,19 @@ async function sendGracePeriodNotification(loan, customer, penaltyAmount, graceD
 //   • July 1  : loan given, 14-day count starts July 2 (application day excluded)
 //   • July 15 : due date — last day customer can pay $120 with no penalty
 //   • July 16 : grace starts — 10% penalty added (e.g. $120 → $132)
-//   • July 22 : grace ends — asset listed for auction at $144 ($132 + another $12)
+//   • July 22 : grace ends — asset listed for auction at $132 (NO extra penalty)
+//
+// The 10% grace penalty is the final penalty. Auction does NOT add any further
+// charge. If the asset sells above the settlement amount ($132), the surplus
+// is split 50/50 between the investor and RTC (recorded on the Auction document).
 //
 // Same logic applies to monthly loans (due_date + 30 days, grace July 16→ Aug 7).
 //
 // Phase 1 (every run): loans whose due_date has passed AND the day after due has
-//   arrived → status = "in_grace", first 10% penalty applied once.
+//   arrived → status = "in_grace", 10% penalty applied once.
 //
 // Phase 2 (every run): in_grace loans where grace window has expired →
-//   move to auction. Auction amount = current_balance + second 10% penalty
-//   (equal to the first penalty, both calculated on the original balance).
+//   move to auction. Settlement total = current_balance (already includes grace penalty).
 //
 // Runs every hour.
 // ─────────────────────────────────────────────

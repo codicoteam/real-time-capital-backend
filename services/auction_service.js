@@ -446,6 +446,22 @@ class AuctionService {
           auction.winner_user = highestBid.bidder_user;
           auction.winning_bid_amount = highestBid.amount;
 
+          // Record settlement total and 50/50 excess profit split
+          // (reserve_price = settlement total = principal + interest + 10% grace penalty)
+          const settlementTotal = auction.reserve_price || 0;
+          auction.settlement_total = settlementTotal;
+          const excessProfit = Math.max(highestBid.amount - settlementTotal, 0);
+          auction.excess_profit = parseFloat(excessProfit.toFixed(2));
+          auction.investor_excess_share = parseFloat((excessProfit * 0.5).toFixed(2));
+          auction.rtc_excess_share = parseFloat((excessProfit * 0.5).toFixed(2));
+
+          if (excessProfit > 0) {
+            console.log(
+              `[AuctionService] Auction ${auction.auction_no} excess profit: $${excessProfit.toFixed(2)} ` +
+              `— investor share: $${auction.investor_excess_share}, RTC share: $${auction.rtc_excess_share}`,
+            );
+          }
+
           // Update asset status to sold
           await Asset.findByIdAndUpdate(auction.asset, {
             status: "sold",

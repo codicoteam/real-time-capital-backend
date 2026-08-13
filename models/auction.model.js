@@ -17,6 +17,12 @@ const AuctionSchema = new mongoose.Schema(
     winner_user: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     winning_bid_amount: { type: Number, min: 0 },
 
+    // Excess profit split (50/50 investor / RTC) when winning bid > reserve_price
+    settlement_total: { type: Number, min: 0 },
+    excess_profit: { type: Number, min: 0, default: 0 },
+    investor_excess_share: { type: Number, min: 0, default: 0 },
+    rtc_excess_share: { type: Number, min: 0, default: 0 },
+
     created_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
