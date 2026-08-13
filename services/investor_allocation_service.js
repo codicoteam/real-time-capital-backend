@@ -519,6 +519,61 @@ class InvestorAllocationService {
     return { allocations, total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / Number(limit)) };
   }
 
+  // ─── MANUAL ALLOCATIONS ──────────────────────────────────────────────────────
+
+  /**
+   * Create one or more manually-entered loan allocations (CSV seeding / admin
+   * back-fill). Unlike the SWRR auto-assign path these records may:
+   *   - have no corresponding pawn-system Loan (loan_id is optional)
+   *   - share the same loan_no across two investors (primary + co-investor)
+   *   - carry an explicit loan_status_override instead of reading Loan.status
+   *
+   * @param {Array} items  — array of allocation descriptor objects
+   * @returns {Array}      — per-item { success, allocation?, error?, loan_no }
+   */
+  async createManualAllocations(items) {
+    const results = [];
+    for (const item of items) {
+      try {
+        // Try to find the loan in pawn system by loan_no
+        let loanDoc = null;
+        if (item.loan_no) {
+          loanDoc = await Loan.findOne({ loan_no: item.loan_no });
+        }
+
+        const allocData = {
+          investor_id: item.investor_id,
+          loan_id: loanDoc ? loanDoc._id : undefined,
+          loan_no: item.loan_no,
+          collateral_category: item.collateral_category || "motor_vehicle",
+          loan_period_key: item.loan_period_key || "one_month",
+          principal_amount: item.principal_amount || 0,
+          total_loan_profit: item.total_interest_receivable || 0,
+          investor_share_pct: item.investor_share_pct,
+          investor_profit: item.investor_profit,
+          rtc_revenue: item.rtc_revenue,
+          status: item.alloc_status || "active",
+          is_co_investor: item.is_co_investor || false,
+          borrower_name: item.borrower_name,
+          collateral_description: item.collateral_description,
+          loan_date: item.loan_date ? new Date(item.loan_date) : undefined,
+          maturity_date: item.maturity_date ? new Date(item.maturity_date) : undefined,
+          loan_term_months: item.loan_term_months,
+          monthly_interest_rate: item.monthly_interest_rate,
+          total_interest_receivable: item.total_interest_receivable || 0,
+          loan_status_override: item.loan_status_override || null,
+          notes: item.notes,
+        };
+
+        const alloc = await InvestorLoanAllocation.create(allocData);
+        results.push({ success: true, allocation: alloc, loan_no: item.loan_no });
+      } catch (err) {
+        results.push({ success: false, error: err.message, loan_no: item.loan_no });
+      }
+    }
+    return results;
+  }
+
   // ─── TRANSACTIONS ─────────────────────────────────────────────────────────────
 
   /**

@@ -651,16 +651,24 @@ class InvestorController {
         const asset = loan?.asset;
 
         // Map loan period type to term key
-        const rawPeriod = loan?.loan_period_type || "";
-        const termKey = rawPeriod === "two_weeks" ? "two_week" : "one_month";
+        const rawPeriod = loan?.loan_period_type || alloc.loan_period_key || "";
+        const termKey = rawPeriod === "two_weeks" ? "two_week" : (rawPeriod || "one_month");
 
-        // Derive display status for the frontend
-        const loanStatus = loan?.status || "active";
+        // Derive display status — loan_status_override takes precedence over Loan.status
         let deploymentStatus = "active";
-        if (["redeemed", "defaulted", "written_off", "rolled_over"].includes(loanStatus)) {
-          deploymentStatus = "completed";
-        } else if (["draft", "pending_approval", "approved"].includes(loanStatus)) {
-          deploymentStatus = "expected";
+        const loanStatus = loan?.status || "active";
+        if (alloc.loan_status_override) {
+          if (alloc.loan_status_override === "Outstanding") deploymentStatus = "active";
+          else if (alloc.loan_status_override === "Paid") deploymentStatus = "completed";
+          else if (alloc.loan_status_override === "Defaulted") deploymentStatus = "defaulted";
+          else if (alloc.loan_status_override === "Auctioned") deploymentStatus = "completed";
+          else if (alloc.loan_status_override === "Court Order") deploymentStatus = "defaulted";
+        } else {
+          if (["redeemed", "defaulted", "written_off", "rolled_over"].includes(loanStatus)) {
+            deploymentStatus = "completed";
+          } else if (["draft", "pending_approval", "approved"].includes(loanStatus)) {
+            deploymentStatus = "expected";
+          }
         }
 
         return {
@@ -668,22 +676,31 @@ class InvestorController {
           loanRef: alloc.loan_no || loan?.loan_no || "—",
           termKey,
           principal: alloc.principal_amount,
+          isCoInvestor: alloc.is_co_investor || false,
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
-            : "Unknown",
+            : (alloc.borrower_name || "Unknown"),
           borrowerPhone: borrower?.phone || null,
           borrowerNationalId: borrower?.national_id_number || null,
           borrowerAddress: borrower?.address || null,
           nationalIdImageUrl: borrower?.national_id_image_url || null,
-          collateralTitle: asset?.title || null,
+          collateralTitle: asset?.title || alloc.collateral_description || null,
           collateralImages: asset?.asset_images || [],
           collateralCategory: alloc.collateral_category || loan?.collateral_category || null,
           startDate: loan?.start_date
             ? new Date(loan.start_date).toISOString().slice(0, 10)
-            : new Date(alloc.allocated_at).toISOString().slice(0, 10),
+            : alloc.loan_date
+              ? new Date(alloc.loan_date).toISOString().slice(0, 10)
+              : new Date(alloc.allocated_at).toISOString().slice(0, 10),
           endDate: loan?.due_date
             ? new Date(loan.due_date).toISOString().slice(0, 10)
-            : null,
+            : alloc.maturity_date
+              ? new Date(alloc.maturity_date).toISOString().slice(0, 10)
+              : null,
+          loanTermMonths: alloc.loan_term_months || null,
+          monthlyInterestRate: alloc.monthly_interest_rate || null,
+          totalInterestReceivable: alloc.total_interest_receivable || alloc.total_loan_profit || 0,
+          loanStatusOverride: alloc.loan_status_override || null,
           status: deploymentStatus,
           loanStatus,
           investorSharePct: alloc.investor_share_pct,
@@ -777,15 +794,23 @@ class InvestorController {
         const borrower = loan?.customer_user;
         const asset = loan?.asset;
         const investor = alloc.investor_id;
-        const rawPeriod = loan?.loan_period_type || "";
-        const termKey = rawPeriod === "two_weeks" ? "two_week" : "one_month";
+        const rawPeriod = loan?.loan_period_type || alloc.loan_period_key || "";
+        const termKey = rawPeriod === "two_weeks" ? "two_week" : (rawPeriod || "one_month");
 
         let deploymentStatus = "active";
         const loanStatus = loan?.status || "active";
-        if (["redeemed", "defaulted", "written_off", "rolled_over"].includes(loanStatus)) {
-          deploymentStatus = "completed";
-        } else if (["draft", "pending_approval", "approved"].includes(loanStatus)) {
-          deploymentStatus = "expected";
+        if (alloc.loan_status_override) {
+          if (alloc.loan_status_override === "Outstanding") deploymentStatus = "active";
+          else if (alloc.loan_status_override === "Paid") deploymentStatus = "completed";
+          else if (alloc.loan_status_override === "Defaulted") deploymentStatus = "defaulted";
+          else if (alloc.loan_status_override === "Auctioned") deploymentStatus = "completed";
+          else if (alloc.loan_status_override === "Court Order") deploymentStatus = "defaulted";
+        } else {
+          if (["redeemed", "defaulted", "written_off", "rolled_over"].includes(loanStatus)) {
+            deploymentStatus = "completed";
+          } else if (["draft", "pending_approval", "approved"].includes(loanStatus)) {
+            deploymentStatus = "expected";
+          }
         }
 
         return {
@@ -793,19 +818,28 @@ class InvestorController {
           loanRef: alloc.loan_no || loan?.loan_no || "—",
           termKey,
           principal: alloc.principal_amount,
+          isCoInvestor: alloc.is_co_investor || false,
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
-            : "Unknown",
+            : (alloc.borrower_name || "Unknown"),
           borrowerNationalId: borrower?.national_id_number || null,
           borrowerPhone: borrower?.phone || null,
-          collateralTitle: asset?.title || null,
+          collateralTitle: asset?.title || alloc.collateral_description || null,
           collateralImages: asset?.asset_images || [],
           startDate: loan?.start_date
             ? new Date(loan.start_date).toISOString().slice(0, 10)
-            : new Date(alloc.allocated_at).toISOString().slice(0, 10),
+            : alloc.loan_date
+              ? new Date(alloc.loan_date).toISOString().slice(0, 10)
+              : new Date(alloc.allocated_at).toISOString().slice(0, 10),
           endDate: loan?.due_date
             ? new Date(loan.due_date).toISOString().slice(0, 10)
-            : null,
+            : alloc.maturity_date
+              ? new Date(alloc.maturity_date).toISOString().slice(0, 10)
+              : null,
+          loanTermMonths: alloc.loan_term_months || null,
+          monthlyInterestRate: alloc.monthly_interest_rate || null,
+          totalInterestReceivable: alloc.total_interest_receivable || alloc.total_loan_profit || 0,
+          loanStatusOverride: alloc.loan_status_override || null,
           status: deploymentStatus,
           loanStatus,
           investorSharePct: alloc.investor_share_pct,
@@ -828,6 +862,30 @@ class InvestorController {
     } catch (error) {
       console.error("InvestorController.getAdminAllAllocations:", error);
       return res.status(500).json({ success: false, message: "Failed to fetch loan allocations." });
+    }
+  }
+
+  /**
+   * POST /api/v1/investors/admin/manual-allocations
+   * Admin creates one or more manual loan allocation records (CSV back-fill, co-investor entries, etc.).
+   * Body: { allocations: Array<AllocationDescriptor> }
+   */
+  async createManualAllocations(req, res) {
+    try {
+      const { allocations } = req.body;
+      if (!Array.isArray(allocations) || allocations.length === 0) {
+        return res.status(400).json({ success: false, message: "allocations array is required." });
+      }
+      const results = await investorAllocationService.createManualAllocations(allocations);
+      const failed = results.filter((r) => !r.success);
+      return res.status(201).json({
+        success: true,
+        message: `${results.length - failed.length} of ${results.length} allocations created.`,
+        data: { results, failed_count: failed.length },
+      });
+    } catch (error) {
+      console.error("InvestorController.createManualAllocations:", error);
+      return res.status(500).json({ success: false, message: "Failed to create allocations." });
     }
   }
 

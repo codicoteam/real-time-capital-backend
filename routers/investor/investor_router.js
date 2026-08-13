@@ -589,6 +589,13 @@ router.get(
 );
 
 router.post(
+  "/admin/manual-allocations",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.createManualAllocations.bind(investorController),
+);
+
+router.post(
   "/admin/assign-loan/:loanId",
   investorOrPawnAdminMiddleware,
   requireInvestorAdminOrPawnSuperAdmin,
