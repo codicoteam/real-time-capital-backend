@@ -49,7 +49,6 @@ const InvestorSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Investor",
       default: null,
-      index: true,
     },
 
     // Negotiated profit-share override agreed at onboarding (or later)
@@ -110,7 +109,6 @@ const InvestorSchema = new mongoose.Schema(
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } },
 );
 
-InvestorSchema.index({ email: 1 }, { unique: true });
 InvestorSchema.index({ kind: 1 });
 InvestorSchema.index({ status: 1 });
 InvestorSchema.index({ parent_company_id: 1 });
