@@ -64,8 +64,11 @@ const investorOrPawnAdminMiddleware = async (req, res, next) => {
     }
 
     const pawnUser = await User.findById(userId);
-    if (!pawnUser || pawnUser.status !== "active") {
-      return res.status(401).json({ success: false, message: "Pawn user not found or inactive." });
+    if (!pawnUser) {
+      return res.status(401).json({ success: false, message: "Pawn user not found." });
+    }
+    if (pawnUser.status === "suspended" || pawnUser.status === "deleted") {
+      return res.status(403).json({ success: false, message: "Account is suspended or deleted." });
     }
 
     const userRoles = Array.isArray(pawnUser.roles) ? pawnUser.roles : [pawnUser.role].filter(Boolean);
