@@ -1212,6 +1212,56 @@ class InvestorController {
       return res.status(500).json({ success: false, message: "Failed to fetch unlinked expenses." });
     }
   }
+
+  // ─── MONTHLY INTEREST ────────────────────────────────────────────────────────
+
+  /**
+   * POST /api/v1/investors/allocations/:allocationId/monthly-interest
+   * Admin records a monthly interest payment received from a borrower on an active loan.
+   */
+  async recordMonthlyInterest(req, res) {
+    try {
+      const { allocationId } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(allocationId)) {
+        return res.status(400).json({ success: false, message: "Invalid allocation ID." });
+      }
+      const { borrower_interest_paid, period_month, payment_date, payment_method, notes } = req.body;
+      const record = await investorAllocationService.recordMonthlyInterest(allocationId, {
+        borrower_interest_paid: Number(borrower_interest_paid),
+        period_month,
+        payment_date,
+        payment_method,
+        notes,
+        recorded_by: req.investor?._id || null,
+        actorInfo: req.actorInfo || null,
+      });
+      return res.status(201).json({ success: true, data: { record } });
+    } catch (error) {
+      console.error("InvestorController.recordMonthlyInterest:", error);
+      const status = error.message.includes("not found") ? 404
+        : error.message.includes("duplicate") || error.message.includes("E11000") ? 409
+        : 400;
+      return res.status(status).json({ success: false, message: error.message });
+    }
+  }
+
+  /**
+   * GET /api/v1/investors/allocations/:allocationId/monthly-interest
+   * Returns all monthly interest records for a single allocation (newest first).
+   */
+  async getMonthlyInterest(req, res) {
+    try {
+      const { allocationId } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(allocationId)) {
+        return res.status(400).json({ success: false, message: "Invalid allocation ID." });
+      }
+      const records = await investorAllocationService.getMonthlyInterestForAllocation(allocationId);
+      return res.json({ success: true, data: { records } });
+    } catch (error) {
+      console.error("InvestorController.getMonthlyInterest:", error);
+      return res.status(500).json({ success: false, message: "Failed to fetch monthly interest records." });
+    }
+  }
 }
 
 function mapRtcTransaction(tx) {

@@ -595,6 +595,20 @@ router.post(
   investorController.createManualAllocations.bind(investorController),
 );
 
+// Monthly interest payments on active loans
+router.get(
+  "/allocations/:allocationId/monthly-interest",
+  investorOrPawnAdminMiddleware,
+  investorController.getMonthlyInterest.bind(investorController),
+);
+
+router.post(
+  "/allocations/:allocationId/monthly-interest",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.recordMonthlyInterest.bind(investorController),
+);
+
 router.post(
   "/admin/assign-loan/:loanId",
   investorOrPawnAdminMiddleware,

@@ -5,6 +5,7 @@ const InvestorProfitSplit = require("../models/investor/investor_profit_split.mo
 const InvestorLoanAllocation = require("../models/investor/investor_loan_allocation.model");
 const InvestorRRState = require("../models/investor/investor_rr_state.model");
 const InvestorTransaction = require("../models/investor/investor_transaction.model");
+const InvestorMonthlyInterest = require("../models/investor/investor_monthly_interest.model");
 const Loan = require("../models/loan.model");
 const investorEmailService = require("./investor_email_service");
 
@@ -592,9 +593,10 @@ class InvestorAllocationService {
     const investor = await Investor.findById(investorId);
     if (!investor) return null;
 
-    const [transactions, allocations] = await Promise.all([
+    const [transactions, allocations, monthlyInterestRecords] = await Promise.all([
       InvestorTransaction.find({ investor_id: investorId }),
       InvestorLoanAllocation.find({ investor_id: investorId }),
+      InvestorMonthlyInterest.find({ investor_id: investorId }),
     ]);
 
     const activeAllocs = allocations.filter((a) => a.status === "active");
@@ -612,11 +614,26 @@ class InvestorAllocationService {
 
     const deployedCapital = activeAllocs.reduce((s, a) => s + a.principal_amount, 0);
     const totalRealizedProfit = completedAllocs.reduce((s, a) => s + a.investor_profit, 0);
-    const pendingProfit = activeAllocs.reduce((s, a) => s + a.investor_profit, 0);
+    const totalMonthlyInterestEarned = monthlyInterestRecords.reduce((s, r) => s + r.investor_amount, 0);
+
+    // For active allocations, pending profit = projected investor_profit minus monthly interest already received
+    const monthlyPaidByAlloc = new Map();
+    for (const r of monthlyInterestRecords) {
+      const key = r.allocation_id.toString();
+      monthlyPaidByAlloc.set(key, (monthlyPaidByAlloc.get(key) || 0) + r.investor_amount);
+    }
+    const pendingProfit = activeAllocs.reduce((s, a) => {
+      const alreadyPaid = monthlyPaidByAlloc.get(a._id.toString()) || 0;
+      return s + Math.max(a.investor_profit - alreadyPaid, 0);
+    }, 0);
 
     const committedCapital = investor.committed_capital;
     const availableBalance = Math.max(committedCapital - deployedCapital, 0);
-    const availableProfitToWithdraw = Math.max(totalRealizedProfit - totalProfitWithdrawn, 0);
+    // Available profit to withdraw includes both completed-loan profits and monthly interest received
+    const availableProfitToWithdraw = Math.max(
+      totalRealizedProfit + totalMonthlyInterestEarned - totalProfitWithdrawn,
+      0,
+    );
 
     return {
       committed_capital: committedCapital,
@@ -626,6 +643,7 @@ class InvestorAllocationService {
       total_capital_withdrawn: totalCapitalWithdrawn,
       total_profit_withdrawn: totalProfitWithdrawn,
       total_realized_profit: totalRealizedProfit,
+      total_monthly_interest_earned: totalMonthlyInterestEarned,
       available_profit_to_withdraw: availableProfitToWithdraw,
       available_capital_to_withdraw: availableBalance,
       pending_profit: pendingProfit,
@@ -669,17 +687,19 @@ class InvestorAllocationService {
       investor.committed_capital = capitalAfter;
       await investor.save();
     } else if (type === "profit_withdrawal") {
-      const [existingWithdrawals, completedAllocs] = await Promise.all([
+      const [existingWithdrawals, completedAllocs, monthlyRecords] = await Promise.all([
         InvestorTransaction.find({ investor_id: investorId, type: "profit_withdrawal" }),
         InvestorLoanAllocation.find({ investor_id: investorId, status: "completed" }),
+        InvestorMonthlyInterest.find({ investor_id: investorId }),
       ]);
       const totalProfitWithdrawn = existingWithdrawals.reduce((s, t) => s + t.amount, 0);
       const totalRealizedProfit = completedAllocs.reduce((s, a) => s + a.investor_profit, 0);
-      const availableProfit = totalRealizedProfit - totalProfitWithdrawn;
+      const totalMonthlyInterestEarned = monthlyRecords.reduce((s, r) => s + r.investor_amount, 0);
+      const availableProfit = totalRealizedProfit + totalMonthlyInterestEarned - totalProfitWithdrawn;
       if (amount > availableProfit + 0.01) {
         throw new Error(
           `Only $${availableProfit.toFixed(2)} in realized profit is available ` +
-            `(earned: $${totalRealizedProfit.toFixed(2)}, already paid out: $${totalProfitWithdrawn.toFixed(2)}).`,
+            `(earned: $${(totalRealizedProfit + totalMonthlyInterestEarned).toFixed(2)}, already paid out: $${totalProfitWithdrawn.toFixed(2)}).`,
         );
       }
       capitalAfter = capitalBefore; // profit withdrawal never reduces committed_capital
@@ -708,6 +728,65 @@ class InvestorAllocationService {
     }).catch((err) => console.error("[recordTransaction] Email error:", err));
 
     return { transaction: populated, investor };
+  }
+
+  // ─── MONTHLY INTEREST ─────────────────────────────────────────────────────────
+
+  /**
+   * Record a monthly interest payment received from a borrower on an active loan.
+   * The investor earns their share_pct of the interest immediately — the loan
+   * principal remains outstanding and the allocation stays "active".
+   */
+  async recordMonthlyInterest(allocationId, { borrower_interest_paid, period_month, payment_date, payment_method, notes, recorded_by, actorInfo }) {
+    const allocation = await InvestorLoanAllocation.findById(allocationId);
+    if (!allocation) throw new Error("Allocation not found.");
+    if (allocation.status !== "active") throw new Error("Can only record monthly interest on active allocations.");
+    if (!period_month || !/^\d{4}-\d{2}$/.test(period_month)) {
+      throw new Error("period_month must be in YYYY-MM format (e.g. 2026-03).");
+    }
+    if (!borrower_interest_paid || borrower_interest_paid <= 0) {
+      throw new Error("borrower_interest_paid must be greater than zero.");
+    }
+
+    const investor_amount = parseFloat((borrower_interest_paid * (allocation.investor_share_pct / 100)).toFixed(2));
+    const rtc_amount = parseFloat((borrower_interest_paid - investor_amount).toFixed(2));
+
+    const record = await InvestorMonthlyInterest.create({
+      investor_id: allocation.investor_id,
+      allocation_id: allocation._id,
+      loan_id: allocation.loan_id || null,
+      loan_no: allocation.loan_no || null,
+      period_month,
+      borrower_interest_paid: parseFloat(borrower_interest_paid.toFixed(2)),
+      investor_share_pct: allocation.investor_share_pct,
+      investor_amount,
+      rtc_amount,
+      payment_date: payment_date ? new Date(payment_date) : new Date(),
+      payment_method: payment_method || "cash",
+      notes: notes || null,
+      recorded_by: recorded_by || null,
+      actor: actorInfo || null,
+    });
+
+    return record;
+  }
+
+  /**
+   * Get all monthly interest records for a single allocation (newest month first).
+   */
+  async getMonthlyInterestForAllocation(allocationId) {
+    return InvestorMonthlyInterest.find({ allocation_id: allocationId })
+      .sort({ period_month: -1 })
+      .populate("recorded_by", "name email");
+  }
+
+  /**
+   * Get all monthly interest records for an investor across all their allocations.
+   */
+  async getMonthlyInterestForInvestor(investorId) {
+    return InvestorMonthlyInterest.find({ investor_id: investorId })
+      .sort({ created_at: -1 })
+      .populate("recorded_by", "name email");
   }
 
   /**
