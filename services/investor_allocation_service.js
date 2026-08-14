@@ -590,11 +590,17 @@ class InvestorAllocationService {
    * Accounting rules:
    *   committed_capital         = investor.committed_capital (updated on deposit/capital_withdrawal)
    *   deployed_capital          = sum(principal) of ACTIVE allocations
-   *   available_balance         = committed_capital − deployed_capital  (idle, can be withdrawn)
+   *   available_balance         = committed_capital − deployed_capital  (idle capital: never deployed,
+   *                                or principal that has already returned from a completed loan —
+   *                                sits uninvested until redeployed or withdrawn)
    *   total_realized_profit     = sum(investor_profit) of COMPLETED allocations
    *   total_profit_withdrawn    = sum(amount) of profit_withdrawal transactions
    *   available_profit          = total_realized_profit − total_profit_withdrawn
-   *   pending_profit            = sum(investor_profit) of ACTIVE allocations (in-flight)
+   *   pending_profit            = sum(investor_profit) of ACTIVE allocations (in-flight, not cash yet)
+   *   liquid_cash                = available_balance + available_profit
+   *                                the actual cash RTC is holding for this investor right now —
+   *                                idle capital plus earned-but-unpaid profit. This is the number
+   *                                that answers "how much could I withdraw today?"
    */
   async getTransactionSummary(investorId) {
     const investor = await Investor.findById(investorId);
@@ -645,6 +651,8 @@ class InvestorAllocationService {
       totalRealizedProfit + totalMonthlyInterestEarned - totalProfitWithdrawn,
       0,
     );
+    // Real cash on hand for this investor: idle capital + earned profit not yet paid out.
+    const liquidCash = availableBalance + availableProfitToWithdraw;
 
     return {
       committed_capital: committedCapital,
@@ -658,6 +666,7 @@ class InvestorAllocationService {
       available_profit_to_withdraw: availableProfitToWithdraw,
       available_capital_to_withdraw: availableBalance,
       pending_profit: pendingProfit,
+      liquid_cash: liquidCash,
     };
   }
 
