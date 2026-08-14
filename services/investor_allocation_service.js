@@ -6,6 +6,7 @@ const InvestorLoanAllocation = require("../models/investor/investor_loan_allocat
 const InvestorRRState = require("../models/investor/investor_rr_state.model");
 const InvestorTransaction = require("../models/investor/investor_transaction.model");
 const InvestorMonthlyInterest = require("../models/investor/investor_monthly_interest.model");
+const TitleDeed = require("../models/investor/title_deed.model");
 const Loan = require("../models/loan.model");
 const investorEmailService = require("./investor_email_service");
 
@@ -295,13 +296,19 @@ class InvestorAllocationService {
     const investor = await Investor.findById(investorId);
     if (!investor) return null;
 
-    const allocations = await InvestorLoanAllocation.find({ investor_id: investorId });
+    const [allocations, activeDeeds] = await Promise.all([
+      InvestorLoanAllocation.find({ investor_id: investorId }),
+      TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] } }).select("loan_amount"),
+    ]);
 
     const active = allocations.filter((a) => a.status === "active");
     const completed = allocations.filter((a) => a.status === "completed");
     const defaulted = allocations.filter((a) => a.status === "defaulted");
 
-    const deployedCapital = active.reduce((s, a) => s + a.principal_amount, 0);
+    const pawnDeployedCapital = active.reduce((s, a) => s + a.principal_amount, 0);
+    const titleDeedDeployedCapital = activeDeeds.reduce((s, d) => s + d.loan_amount, 0);
+    const deployedCapital = pawnDeployedCapital + titleDeedDeployedCapital;
+
     const totalProfit = completed.reduce((s, a) => s + a.investor_profit, 0);
     const expectedReturns = active.reduce((s, a) => s + a.investor_profit, 0);
     const availableBalance = Math.max(investor.committed_capital - deployedCapital, 0);
@@ -593,10 +600,11 @@ class InvestorAllocationService {
     const investor = await Investor.findById(investorId);
     if (!investor) return null;
 
-    const [transactions, allocations, monthlyInterestRecords] = await Promise.all([
+    const [transactions, allocations, monthlyInterestRecords, activeDeeds] = await Promise.all([
       InvestorTransaction.find({ investor_id: investorId }),
       InvestorLoanAllocation.find({ investor_id: investorId }),
       InvestorMonthlyInterest.find({ investor_id: investorId }),
+      TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] } }).select("loan_amount"),
     ]);
 
     const activeAllocs = allocations.filter((a) => a.status === "active");
@@ -612,7 +620,10 @@ class InvestorAllocationService {
       .filter((t) => t.type === "profit_withdrawal")
       .reduce((s, t) => s + t.amount, 0);
 
-    const deployedCapital = activeAllocs.reduce((s, a) => s + a.principal_amount, 0);
+    const pawnDeployedCapital = activeAllocs.reduce((s, a) => s + a.principal_amount, 0);
+    const titleDeedDeployedCapital = activeDeeds.reduce((s, d) => s + d.loan_amount, 0);
+    const deployedCapital = pawnDeployedCapital + titleDeedDeployedCapital;
+
     const totalRealizedProfit = completedAllocs.reduce((s, a) => s + a.investor_profit, 0);
     const totalMonthlyInterestEarned = monthlyInterestRecords.reduce((s, r) => s + r.investor_amount, 0);
 
@@ -670,11 +681,13 @@ class InvestorAllocationService {
       investor.committed_capital = capitalAfter;
       await investor.save();
     } else if (type === "capital_withdrawal" || type === "drawing" || type === "expense") {
-      const activeAllocs = await InvestorLoanAllocation.find({
-        investor_id: investorId,
-        status: "active",
-      });
-      const deployedCapital = activeAllocs.reduce((s, a) => s + a.principal_amount, 0);
+      const [activeAllocs, activeDeeds] = await Promise.all([
+        InvestorLoanAllocation.find({ investor_id: investorId, status: "active" }),
+        TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] } }).select("loan_amount"),
+      ]);
+      const pawnDeployed = activeAllocs.reduce((s, a) => s + a.principal_amount, 0);
+      const deedDeployed = activeDeeds.reduce((s, d) => s + d.loan_amount, 0);
+      const deployedCapital = pawnDeployed + deedDeployed;
       const availableBalance = capitalBefore - deployedCapital;
       if (amount > availableBalance + 0.01) {
         const actionLabel = type === "expense" ? "expense" : type === "drawing" ? "drawing" : "capital withdrawal";
