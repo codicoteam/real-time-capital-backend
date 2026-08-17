@@ -1286,6 +1286,27 @@ class InvestorController {
       return res.status(500).json({ success: false, message: "Failed to fetch monthly interest records." });
     }
   }
+
+  /**
+   * GET /api/v1/investors/:id/monthly-interest
+   * All monthly interest records across every allocation for a single investor
+   * (newest first) — used to plot interest-only payments received on loans that
+   * are still active (principal outstanding, interest paid month by month).
+   * Admin or self.
+   */
+  async getInvestorMonthlyInterest(req, res) {
+    try {
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: "Invalid investor ID." });
+      }
+      const records = await investorAllocationService.getMonthlyInterestForInvestor(id);
+      return res.json({ success: true, data: { records } });
+    } catch (error) {
+      console.error("InvestorController.getInvestorMonthlyInterest:", error);
+      return res.status(500).json({ success: false, message: "Failed to fetch monthly interest records." });
+    }
+  }
 }
 
 function mapRtcTransaction(tx) {

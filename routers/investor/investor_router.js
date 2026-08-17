@@ -1001,6 +1001,13 @@ router.get(
   investorController.getReferralPartnerships.bind(investorController),
 );
 
+router.get(
+  "/:id/monthly-interest",
+  investorOrPawnAdminMiddleware,
+  requireAdminOrSelfUnified,
+  investorController.getInvestorMonthlyInterest.bind(investorController),
+);
+
 // ─── PER-INVESTOR PORTFOLIO DATA ─────────────────────────────────────────────
 
 router.get(
