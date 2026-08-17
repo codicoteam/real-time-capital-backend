@@ -34,14 +34,23 @@ class InvestorAllocationService {
   /**
    * Find all active investors eligible for a given loan based on their
    * loan_type_preferences and loan_term_preferences.
+   *
+   * small_loans is a special case: RTC funds every small loan directly and
+   * keeps the profit, so it's never opened up to external investors here —
+   * regardless of what any external investor has set in their own
+   * loan_type_preferences.
    */
   async getEligibleInvestors(loan) {
     const termKey = mapPeriodToTermKey(loan.loan_period_type);
     const loanPrincipal = loan.principal_amount || 0;
 
+    const eligibleKinds = loan.collateral_category === "small_loans"
+      ? ["rtc"]
+      : ["individual", "company", "company_client", "rtc"];
+
     // Fetch all preference-matched active investors
     const candidates = await Investor.find({
-      kind: { $in: ["individual", "company", "company_client", "rtc"] },
+      kind: { $in: eligibleKinds },
       status: "active",
       loan_type_preferences: loan.collateral_category,
       loan_term_preferences: termKey,
