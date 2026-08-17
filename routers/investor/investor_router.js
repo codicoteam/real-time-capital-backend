@@ -704,7 +704,9 @@ router.get(
  *     summary: Update investor profile (admin or self)
  *     description: >
  *       Investors can update their own name, phone, location, password, and avatar_color.
- *       Admins can additionally update committed_capital, status, and notes.
+ *       Admins can additionally update status, and notes. committed_capital cannot be edited
+ *       here — use the deposit / capital-withdrawal transaction endpoint instead, so the
+ *       investor's capital ledger stays reconciled with the stored balance.
  *     tags: [Investors]
  *     security:
  *       - InvestorBearerAuth: []

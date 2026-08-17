@@ -356,7 +356,7 @@ class InvestorController {
       const isAdmin = req.investor.kind === "admin";
       const isSelf = req.investor._id.toString() === id;
 
-      const { name, phone, location, password, avatar_color, committed_capital, status, notes, loan_type_preferences, loan_term_preferences } = req.body;
+      const { name, phone, location, password, avatar_color, status, notes, loan_type_preferences, loan_term_preferences } = req.body;
 
       if (name !== undefined) investor.name = name.trim();
       if (phone !== undefined) investor.phone = phone.trim();
@@ -372,12 +372,11 @@ class InvestorController {
 
       // Admin-only fields
       if (isAdmin) {
-        if (committed_capital !== undefined) {
-          if (Number(committed_capital) < 0) {
-            return res.status(400).json({ success: false, message: "committed_capital cannot be negative." });
-          }
-          investor.committed_capital = Number(committed_capital);
-        }
+        // committed_capital is intentionally NOT editable here — it must only ever change via
+        // investorAllocationService.recordTransaction() (deposit / capital_withdrawal), so the
+        // Investor.committed_capital field always stays reconciled with the InvestorTransaction
+        // ledger. A silent direct edit here previously caused a $20,076 unbacked drift on one
+        // investor's account with no audit trail of when or why it changed.
         if (status && ["active", "pending", "suspended"].includes(status)) {
           investor.status = status;
         }
