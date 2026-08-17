@@ -980,6 +980,31 @@ class InvestorController {
   }
 
   /**
+   * GET /api/v1/investors/:id/referral-partnerships
+   * For a company investor: the investors they introduced to the platform, and the
+   * co-investor profit share earned on those investors' loans (e.g. Cranbrook earns
+   * 12% on every loan primarily funded by Roi Kanner). Admin or self.
+   *
+   * RTC's own revenue on these loans is only included when the caller is an admin —
+   * a company investor must never see RTC's cut of a loan, only their own share and
+   * (for context) the primary investor's share.
+   */
+  async getReferralPartnerships(req, res) {
+    try {
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: "Invalid investor ID." });
+      }
+      const includeRtc = req.investor.kind === "admin";
+      const partnerships = await investorAllocationService.getReferralPartnerships(id, includeRtc);
+      return res.json({ success: true, data: { partnerships } });
+    } catch (error) {
+      console.error("InvestorController.getReferralPartnerships:", error);
+      return res.status(500).json({ success: false, message: "Failed to fetch referral partnerships." });
+    }
+  }
+
+  /**
    * POST /api/v1/investors/:id/transactions
    * Admin records a deposit, profit withdrawal, or capital withdrawal.
    * Body: { type, amount, notes? }

@@ -527,6 +527,94 @@ class InvestorAllocationService {
     return { allocations, total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / Number(limit)) };
   }
 
+  // ─── REFERRAL PARTNERSHIPS ────────────────────────────────────────────────────
+
+  /**
+   * A company investor (e.g. Cranbrook) can co-invest on loans whose primary funder
+   * is a different investor they introduced to the platform (e.g. Roi Kanner, at a
+   * 12% co-investor share vs Roi's 48%, with RTC keeping the remaining 40%). Both
+   * sides are already stored as separate InvestorLoanAllocation rows sharing the
+   * same loan_no (companyId row has is_co_investor=true) — this just pairs them up
+   * and aggregates by primary investor.
+   *
+   * @param {string} companyInvestorId
+   * @param {boolean} includeRtc  — true only for admin callers. RTC's revenue must
+   *   never be included in a response served to the company investor themselves.
+   */
+  async getReferralPartnerships(companyInvestorId, includeRtc = false) {
+    const coInvestorAllocs = await InvestorLoanAllocation.find({
+      investor_id: companyInvestorId,
+      is_co_investor: true,
+    }).sort({ allocated_at: -1 });
+
+    if (coInvestorAllocs.length === 0) return [];
+
+    const loanNos = coInvestorAllocs.map((a) => a.loan_no).filter(Boolean);
+    const primaryAllocs = await InvestorLoanAllocation.find({
+      loan_no: { $in: loanNos },
+      investor_id: { $ne: companyInvestorId },
+      is_co_investor: false,
+    }).populate("investor_id", "name avatar_color kind");
+
+    const primaryByLoanNo = new Map(primaryAllocs.map((a) => [a.loan_no, a]));
+
+    const groups = new Map(); // primaryInvestorId -> { investor, loans: [] }
+    for (const coAlloc of coInvestorAllocs) {
+      const primary = primaryByLoanNo.get(coAlloc.loan_no);
+      if (!primary || !primary.investor_id) continue; // orphaned co-investor row — skip
+
+      const primaryId = primary.investor_id._id.toString();
+      if (!groups.has(primaryId)) {
+        groups.set(primaryId, { investor: primary.investor_id, loans: [] });
+      }
+
+      groups.get(primaryId).loans.push({
+        loan_no: coAlloc.loan_no,
+        borrower_name: primary.borrower_name || coAlloc.borrower_name || null,
+        collateral_description: primary.collateral_description || null,
+        principal_amount: primary.principal_amount,
+        total_loan_profit: primary.total_loan_profit,
+        status: primary.loan_status_override || primary.status,
+        company_share_pct: coAlloc.investor_share_pct,
+        company_profit: coAlloc.investor_profit,
+        primary_investor_share_pct: primary.investor_share_pct,
+        primary_investor_profit: primary.investor_profit,
+        ...(includeRtc && {
+          rtc_share_pct: Math.max(100 - coAlloc.investor_share_pct - primary.investor_share_pct, 0),
+          rtc_profit: (primary.rtc_revenue || 0) + (coAlloc.rtc_revenue || 0),
+        }),
+      });
+    }
+
+    return Array.from(groups.values()).map(({ investor, loans }) => {
+      const loanCount = loans.length;
+      const totalPrincipal = loans.reduce((s, l) => s + l.principal_amount, 0);
+      const totalLoanProfit = loans.reduce((s, l) => s + l.total_loan_profit, 0);
+      const companyProfit = loans.reduce((s, l) => s + l.company_profit, 0);
+      const primaryInvestorProfit = loans.reduce((s, l) => s + l.primary_investor_profit, 0);
+      const companySharePct = loans[0]?.company_share_pct ?? 0;
+      const primaryInvestorSharePct = loans[0]?.primary_investor_share_pct ?? 0;
+
+      return {
+        primary_investor_id: investor._id,
+        primary_investor_name: investor.name,
+        primary_investor_avatar_color: investor.avatar_color,
+        company_share_pct: companySharePct,
+        primary_investor_share_pct: primaryInvestorSharePct,
+        loan_count: loanCount,
+        total_principal: totalPrincipal,
+        total_loan_profit: totalLoanProfit,
+        company_profit: companyProfit,
+        primary_investor_profit: primaryInvestorProfit,
+        ...(includeRtc && {
+          rtc_share_pct: Math.max(100 - companySharePct - primaryInvestorSharePct, 0),
+          rtc_profit: loans.reduce((s, l) => s + (l.rtc_profit || 0), 0),
+        }),
+        loans,
+      };
+    });
+  }
+
   // ─── MANUAL ALLOCATIONS ──────────────────────────────────────────────────────
 
   /**

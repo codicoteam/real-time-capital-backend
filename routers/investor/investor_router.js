@@ -994,6 +994,13 @@ router.post(
   investorController.recordTransaction.bind(investorController),
 );
 
+router.get(
+  "/:id/referral-partnerships",
+  investorOrPawnAdminMiddleware,
+  requireAdminOrSelfUnified,
+  investorController.getReferralPartnerships.bind(investorController),
+);
+
 // ─── PER-INVESTOR PORTFOLIO DATA ─────────────────────────────────────────────
 
 router.get(
