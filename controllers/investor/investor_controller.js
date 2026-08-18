@@ -676,6 +676,7 @@ class InvestorController {
           termKey,
           principal: alloc.principal_amount,
           isCoInvestor: alloc.is_co_investor || false,
+          repaymentSchedule: mapRepaymentSchedule(alloc),
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
             : (alloc.borrower_name || "Unknown"),
@@ -818,6 +819,7 @@ class InvestorController {
           termKey,
           principal: alloc.principal_amount,
           isCoInvestor: alloc.is_co_investor || false,
+          repaymentSchedule: mapRepaymentSchedule(alloc),
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
             : (alloc.borrower_name || "Unknown"),
@@ -1324,6 +1326,73 @@ class InvestorController {
       return res.status(500).json({ success: false, message: "Failed to fetch monthly interest records." });
     }
   }
+
+  // ─── REPAYMENT SCHEDULE ───────────────────────────────────────────────────────
+
+  /**
+   * PUT /api/v1/investors/allocations/:allocationId/repayment-schedule
+   * Admin sets/replaces the installment plan on a restructured loan.
+   * Body: { installments: [{ label, due_date, amount, status?, paid_date?, paid_amount? }] }
+   */
+  async setRepaymentSchedule(req, res) {
+    try {
+      const { allocationId } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(allocationId)) {
+        return res.status(400).json({ success: false, message: "Invalid allocation ID." });
+      }
+      const allocation = await investorAllocationService.setRepaymentSchedule(allocationId, req.body.installments);
+      return res.json({ success: true, data: { allocation } });
+    } catch (error) {
+      console.error("InvestorController.setRepaymentSchedule:", error);
+      const status = error.message.includes("not found") ? 404 : 400;
+      return res.status(status).json({ success: false, message: error.message });
+    }
+  }
+
+  /**
+   * POST /api/v1/investors/allocations/:allocationId/repayment-schedule/:index/pay
+   * Admin marks one installment paid and records the matching monthly-interest payment.
+   */
+  async markRepaymentInstallmentPaid(req, res) {
+    try {
+      const { allocationId, index } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(allocationId)) {
+        return res.status(400).json({ success: false, message: "Invalid allocation ID." });
+      }
+      const { paid_date, paid_amount, payment_method, notes } = req.body;
+      const result = await investorAllocationService.markRepaymentInstallmentPaid(
+        allocationId,
+        Number(index),
+        {
+          paid_date,
+          paid_amount: paid_amount != null ? Number(paid_amount) : undefined,
+          payment_method,
+          notes,
+          recorded_by: req.investor?._id || null,
+          actorInfo: req.actorInfo || null,
+        },
+      );
+      return res.status(201).json({ success: true, data: result });
+    } catch (error) {
+      console.error("InvestorController.markRepaymentInstallmentPaid:", error);
+      const status = error.message.includes("not found") ? 404
+        : error.message.includes("already marked paid") ? 409
+        : 400;
+      return res.status(status).json({ success: false, message: error.message });
+    }
+  }
+}
+
+function mapRepaymentSchedule(alloc) {
+  if (!Array.isArray(alloc.repayment_schedule) || alloc.repayment_schedule.length === 0) return [];
+  return alloc.repayment_schedule.map((i) => ({
+    label: i.label || null,
+    dueDate: i.due_date ? new Date(i.due_date).toISOString().slice(0, 10) : null,
+    amount: i.amount,
+    status: i.status,
+    paidDate: i.paid_date ? new Date(i.paid_date).toISOString().slice(0, 10) : null,
+    paidAmount: i.paid_amount,
+  }));
 }
 
 function mapRtcTransaction(tx) {

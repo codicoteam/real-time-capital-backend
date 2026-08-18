@@ -115,6 +115,25 @@ const InvestorLoanAllocationSchema = new mongoose.Schema(
       enum: ["Outstanding", "Paid", "Defaulted", "Auctioned", "Court Order", null],
       default: null,
     },
+
+    // Fixed installment plan for a restructured/court-ordered recovery (e.g. a
+    // defaulted loan where the borrower is now repaying a settled amount on a
+    // schedule). Each installment's actual receipt is recorded separately as an
+    // InvestorMonthlyInterest record (via the normal "Record Payment" flow) —
+    // this array is the plan itself, so admin/investor views can show what's
+    // due, what's paid, and what's still upcoming.
+    repayment_schedule: [
+      {
+        _id: false,
+        label: { type: String, trim: true },
+        due_date: { type: Date, required: true },
+        amount: { type: Number, required: true, min: 0 },
+        status: { type: String, enum: ["pending", "paid", "overdue"], default: "pending" },
+        paid_date: { type: Date, default: null },
+        paid_amount: { type: Number, default: null },
+        monthly_interest_id: { type: mongoose.Schema.Types.ObjectId, ref: "InvestorMonthlyInterest", default: null },
+      },
+    ],
   },
   { timestamps: { createdAt: "allocated_at", updatedAt: "updated_at" } },
 );

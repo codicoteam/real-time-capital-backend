@@ -905,6 +905,68 @@ class InvestorAllocationService {
       .populate("recorded_by", "name email");
   }
 
+  // ─── REPAYMENT SCHEDULE (restructured / court-ordered recoveries) ────────────
+
+  /**
+   * Replace the full installment plan on an allocation — e.g. a court-ordered
+   * settlement paid over several months. Admin sets this up once; individual
+   * installments are marked paid via markRepaymentInstallmentPaid as money
+   * actually comes in.
+   */
+  async setRepaymentSchedule(allocationId, installments) {
+    const allocation = await InvestorLoanAllocation.findById(allocationId);
+    if (!allocation) throw new Error("Allocation not found.");
+    if (!Array.isArray(installments) || installments.length === 0) {
+      throw new Error("installments must be a non-empty array.");
+    }
+    allocation.repayment_schedule = installments.map((i) => ({
+      label: i.label || null,
+      due_date: new Date(i.due_date),
+      amount: Number(i.amount),
+      status: i.status || "pending",
+      paid_date: i.paid_date ? new Date(i.paid_date) : null,
+      paid_amount: i.paid_amount != null ? Number(i.paid_amount) : null,
+      monthly_interest_id: i.monthly_interest_id || null,
+    }));
+    await allocation.save();
+    return allocation;
+  }
+
+  /**
+   * Mark one installment in the schedule as paid, and record the matching
+   * InvestorMonthlyInterest payment (using the allocation's CURRENT
+   * investor_share_pct — fix the split first if it needs correcting) so the
+   * payment flows into every existing profit/chart calculation automatically.
+   */
+  async markRepaymentInstallmentPaid(allocationId, installmentIndex, { paid_date, paid_amount, payment_method, notes, recorded_by, actorInfo }) {
+    const allocation = await InvestorLoanAllocation.findById(allocationId);
+    if (!allocation) throw new Error("Allocation not found.");
+    const installment = allocation.repayment_schedule?.[installmentIndex];
+    if (!installment) throw new Error("Installment not found.");
+    if (installment.status === "paid") throw new Error("Installment is already marked paid.");
+
+    const amount = paid_amount != null ? Number(paid_amount) : installment.amount;
+    const periodMonth = new Date(paid_date || Date.now()).toISOString().slice(0, 7);
+
+    const record = await this.recordMonthlyInterest(allocationId, {
+      borrower_interest_paid: amount,
+      period_month: periodMonth,
+      payment_date: paid_date,
+      payment_method,
+      notes: notes || `Installment: ${installment.label || `#${installmentIndex + 1}`}`,
+      recorded_by,
+      actorInfo,
+    });
+
+    installment.status = "paid";
+    installment.paid_date = paid_date ? new Date(paid_date) : new Date();
+    installment.paid_amount = amount;
+    installment.monthly_interest_id = record._id;
+    await allocation.save();
+
+    return { allocation, record };
+  }
+
   /**
    * Get all monthly interest records for an investor across all their allocations.
    */

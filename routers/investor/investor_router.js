@@ -617,6 +617,21 @@ router.post(
   investorController.recordMonthlyInterest.bind(investorController),
 );
 
+// Fixed installment plan for a restructured / court-ordered recovery.
+router.put(
+  "/allocations/:allocationId/repayment-schedule",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.setRepaymentSchedule.bind(investorController),
+);
+
+router.post(
+  "/allocations/:allocationId/repayment-schedule/:index/pay",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.markRepaymentInstallmentPaid.bind(investorController),
+);
+
 router.post(
   "/admin/assign-loan/:loanId",
   investorOrPawnAdminMiddleware,
