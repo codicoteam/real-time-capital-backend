@@ -596,6 +596,13 @@ router.post(
   investorController.createManualAllocations.bind(investorController),
 );
 
+router.delete(
+  "/admin/manual-allocations/:id",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.deleteManualAllocation.bind(investorController),
+);
+
 // Monthly interest payments on active loans
 router.get(
   "/allocations/:allocationId/monthly-interest",

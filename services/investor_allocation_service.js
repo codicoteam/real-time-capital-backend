@@ -679,6 +679,12 @@ class InvestorAllocationService {
     return results;
   }
 
+  async deleteManualAllocation(allocationId) {
+    const allocation = await InvestorLoanAllocation.findByIdAndDelete(allocationId);
+    if (!allocation) throw new Error("Allocation not found.");
+    return allocation;
+  }
+
   // ─── TRANSACTIONS ─────────────────────────────────────────────────────────────
 
   /**

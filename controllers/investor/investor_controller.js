@@ -888,6 +888,23 @@ class InvestorController {
     }
   }
 
+  async deleteManualAllocation(req, res) {
+    try {
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: "Invalid allocation ID." });
+      }
+      await investorAllocationService.deleteManualAllocation(id);
+      return res.status(200).json({ success: true, message: "Allocation deleted successfully." });
+    } catch (error) {
+      if (error.message === "Allocation not found.") {
+        return res.status(404).json({ success: false, message: "Allocation not found." });
+      }
+      console.error("InvestorController.deleteManualAllocation:", error);
+      return res.status(500).json({ success: false, message: "Failed to delete allocation." });
+    }
+  }
+
   /**
    * POST /api/v1/investors/admin/assign-loan/:loanId
    * Manually trigger SWRR assignment for a loan (admin only).
