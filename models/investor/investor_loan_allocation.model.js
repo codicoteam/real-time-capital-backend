@@ -116,6 +116,16 @@ const InvestorLoanAllocationSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Set on a "continuation" allocation that replaces an original defaulted loan
+    // with a restructured/court-ordered recovery — points back at the original
+    // allocation it supersedes, so the two rows can be shown as one connected
+    // story in the UI instead of two disconnected loan-history lines.
+    restructures_allocation_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "InvestorLoanAllocation",
+      default: null,
+    },
+
     // Fixed installment plan for a restructured/court-ordered recovery (e.g. a
     // defaulted loan where the borrower is now repaying a settled amount on a
     // schedule). Each installment's actual receipt is recorded separately as an

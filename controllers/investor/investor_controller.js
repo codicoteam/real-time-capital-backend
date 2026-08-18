@@ -677,6 +677,7 @@ class InvestorController {
           principal: alloc.principal_amount,
           isCoInvestor: alloc.is_co_investor || false,
           repaymentSchedule: mapRepaymentSchedule(alloc),
+          restructuresAllocationId: alloc.restructures_allocation_id ? alloc.restructures_allocation_id.toString() : null,
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
             : (alloc.borrower_name || "Unknown"),
@@ -820,6 +821,7 @@ class InvestorController {
           principal: alloc.principal_amount,
           isCoInvestor: alloc.is_co_investor || false,
           repaymentSchedule: mapRepaymentSchedule(alloc),
+          restructuresAllocationId: alloc.restructures_allocation_id ? alloc.restructures_allocation_id.toString() : null,
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
             : (alloc.borrower_name || "Unknown"),
