@@ -811,6 +811,16 @@ router.post(
  *       401:
  *         description: Unauthorized
  */
+/**
+ * POST /api/v1/loans/:id/admin-override
+ * Super-admin-only: force payment + status update on any loan, no transition guards.
+ */
+router.post(
+  "/:id/admin-override",
+  requireRoles("super_admin_vendor"),
+  loanController.adminOverride,
+);
+
 router.post(
   "/:id/rollover",
   requireRoles(

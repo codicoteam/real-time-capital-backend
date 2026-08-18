@@ -435,6 +435,27 @@ class LoanController {
   }
 
   /**
+   * Admin override — super_admin_vendor only.
+   * Bypasses all status-transition guards, optionally records a payment,
+   * cancels any live auction, and force-sets the loan to any status.
+   */
+  async adminOverride(req, res) {
+    try {
+      const { id } = req.params;
+      const adminUserId = req.user?.id;
+      const result = await loanService.adminOverrideLoan(id, req.body, adminUserId);
+      res.status(200).json(result);
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Admin override failed",
+        detail:  error.detail,
+      });
+    }
+  }
+
+  /**
    * Delete loan (soft delete)
    */
   async deleteLoan(req, res) {

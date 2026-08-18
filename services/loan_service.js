@@ -2329,6 +2329,137 @@ class LoanService {
   }
 
   /**
+   * Admin override: bypass all status-transition guards, optionally record a
+   * payment, cancel any live auction, and force-set the loan to any status.
+   * Restricted to super_admin_vendor at the route layer.
+   */
+  async adminOverrideLoan(loanId, overrideData, adminUserId) {
+    if (!mongoose.Types.ObjectId.isValid(loanId)) {
+      throw { status: 400, message: "Invalid loan ID." };
+    }
+
+    const {
+      new_status,
+      payment_amount,
+      payment_method,
+      payment_reference,
+      payment_notes,
+      admin_notes,
+    } = overrideData || {};
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const loan = await Loan.findById(loanId).session(session);
+      if (!loan) throw { status: 404, message: `Loan ${loanId} not found` };
+
+      const updateData = { updated_at: new Date() };
+
+      // ── Optional payment ──────────────────────────────────────────────────
+      const payAmt = Number(payment_amount);
+      if (payAmt > 0) {
+        const validMethods = ["cash", "bank_transfer", "mobile_money", "cheque"];
+        if (!validMethods.includes(payment_method)) {
+          throw { status: 400, message: `payment_method must be one of: ${validMethods.join(", ")}` };
+        }
+
+        const paymentRecord = {
+          amount:         payAmt,
+          payment_date:   new Date(),
+          payment_method,
+          status:         "paid",
+          reference_no:   payment_reference || `ADMIN-OVR-${Date.now()}`,
+          received_by:    adminUserId,
+          notes:          payment_notes || `Admin override payment — ${admin_notes || ""}`,
+        };
+
+        updateData.$push       = { payments: paymentRecord };
+        updateData.total_paid  = parseFloat((loan.total_paid + payAmt).toFixed(2));
+
+        const newBalance = Math.max(0, parseFloat((loan.current_balance - payAmt).toFixed(2)));
+        updateData.current_balance = newBalance;
+      }
+
+      // ── Force status ──────────────────────────────────────────────────────
+      if (new_status) {
+        updateData.status = new_status;
+
+        // When forcing "redeemed" or "closed" — zero the balance if a payment
+        // fully covered it (guard: don't zero if balance remains)
+        if (["redeemed", "closed"].includes(new_status)) {
+          const balanceAfterPay = updateData.current_balance ?? loan.current_balance;
+          if (balanceAfterPay <= 0) updateData.current_balance = 0;
+        }
+
+        // Stamp audit trail
+        updateData.$push = updateData.$push || {};
+        if (!updateData.$push.status_history) {
+          updateData.$push.status_history = {
+            from:       loan.status,
+            to:         new_status,
+            changed_by: adminUserId,
+            changed_at: new Date(),
+            notes:      `Admin override: ${admin_notes || "no notes"}`,
+          };
+        }
+      }
+
+      // ── Cancel any live auction when loan is being resolved ───────────────
+      const resolvedStatuses = ["redeemed", "closed", "active", "in_grace", "overdue"];
+      if (new_status && resolvedStatuses.includes(new_status)) {
+        await Auction.findOneAndUpdate(
+          { asset: loan.asset, status: { $in: ["draft", "live"] } },
+          { $set: { status: "cancelled" } },
+          { session },
+        );
+      }
+
+      await Loan.findByIdAndUpdate(loan._id, updateData, { session });
+
+      // ── Sync asset status ─────────────────────────────────────────────────
+      const assetStatusMap = {
+        active:       "pawned",
+        overdue:      "overdue",
+        in_grace:     "overdue",
+        auction:      "auction",
+        sold:         "sold",
+        redeemed:     "redeemed",
+        closed:       "closed",
+        cancelled:    "closed",
+        partially_paid: "pawned",
+      };
+      const newAssetStatus = assetStatusMap[new_status];
+      if (newAssetStatus && loan.asset) {
+        const assetUpdate = { status: newAssetStatus };
+        if (["redeemed", "closed", "cancelled", "sold"].includes(new_status)) {
+          assetUpdate.$unset = { active_loan: "" };
+        }
+        await Asset.findByIdAndUpdate(loan.asset, assetUpdate, { session });
+      }
+
+      await session.commitTransaction();
+
+      const updated = await Loan.findById(loan._id).populate([
+        { path: "customer_user", select: "first_name last_name email phone" },
+        { path: "asset",         select: "asset_no title status" },
+        { path: "payments.received_by", select: "first_name last_name email" },
+      ]);
+
+      return {
+        success: true,
+        data:    updated,
+        message: `Loan ${loan.loan_no} updated via admin override${new_status ? ` → ${new_status}` : ""}`,
+      };
+    } catch (err) {
+      await session.abortTransaction();
+      throw this.handleMongoError(err);
+    } finally {
+      session.endSession();
+    }
+  }
+
+  /**
    * Handle MongoDB errors
    */
   handleMongoError(error) {
