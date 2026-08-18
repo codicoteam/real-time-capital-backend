@@ -12,6 +12,7 @@ const {
   investorOrPawnAdminMiddleware,
   requireInvestorAdminOrPawnSuperAdmin,
   requireAdminOrSelfUnified,
+  requireAdminOrSelfCompany,
 } = require("../../middlewares/investor_or_pawn_admin_middleware");
 
 /**
@@ -967,7 +968,7 @@ router.post(
 router.get(
   "/companies/:companyId/clients",
   investorOrPawnAdminMiddleware,
-  requireInvestorAdminOrPawnSuperAdmin,
+  requireAdminOrSelfCompany,
   investorController.listCompanyClients.bind(investorController),
 );
 

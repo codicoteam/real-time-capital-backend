@@ -125,8 +125,43 @@ const requireAdminOrSelfUnified = (req, res, next) => {
   next();
 };
 
+/**
+ * Allows admin OR the company investor themselves (matched by :companyId param).
+ * A company must be able to list its own clients to render its own dashboard —
+ * only *adding* a new client stays admin-only (see requireInvestorAdminOrPawnSuperAdmin).
+ */
+const requireAdminOrSelfCompany = (req, res, next) => {
+  if (!req.investor) {
+    return res.status(401).json({ success: false, message: "Authentication required." });
+  }
+  const isAdmin = req.investor.kind === "admin";
+  const isSelf = req.investor._id.toString() === req.params.companyId;
+  if (!isAdmin && !isSelf) {
+    return res.status(403).json({ success: false, message: "Access denied." });
+  }
+  next();
+};
+
+/**
+ * For list-style GET routes filtered by a query param rather than a URL param.
+ * Admins may query freely; non-admins are silently pinned to their own investor_id
+ * (overriding whatever they passed) so they can list their own records without being
+ * able to enumerate anyone else's.
+ */
+const requireAdminOrSelfViaInvestorIdQuery = (req, res, next) => {
+  if (!req.investor) {
+    return res.status(401).json({ success: false, message: "Authentication required." });
+  }
+  if (req.investor.kind !== "admin") {
+    req.query.investor_id = req.investor._id.toString();
+  }
+  next();
+};
+
 module.exports = {
   investorOrPawnAdminMiddleware,
   requireInvestorAdminOrPawnSuperAdmin,
   requireAdminOrSelfUnified,
+  requireAdminOrSelfCompany,
+  requireAdminOrSelfViaInvestorIdQuery,
 };
