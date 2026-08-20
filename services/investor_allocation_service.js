@@ -722,8 +722,11 @@ class InvestorAllocationService {
     const totalDeposits = transactions
       .filter((t) => t.type === "deposit")
       .reduce((s, t) => s + t.amount, 0);
+    // capital_withdrawal, drawing, and expense all reduce committed_capital the same way
+    // (see recordTransaction below) — count all three as "withdrawn", not just
+    // capital_withdrawal, or this figure silently diverges from the actual committed_capital.
     const totalCapitalWithdrawn = transactions
-      .filter((t) => t.type === "capital_withdrawal")
+      .filter((t) => t.type === "capital_withdrawal" || t.type === "drawing" || t.type === "expense")
       .reduce((s, t) => s + t.amount, 0);
     const totalProfitWithdrawn = transactions
       .filter((t) => t.type === "profit_withdrawal")
