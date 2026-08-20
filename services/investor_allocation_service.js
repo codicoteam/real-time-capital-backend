@@ -1031,7 +1031,17 @@ class InvestorAllocationService {
 
     for (const a of allocations) {
       const loanLabel = a.borrower_name ? `${a.loan_no || "Loan"} — ${a.borrower_name}` : (a.loan_no || "Loan");
-      if (a.principal_amount > 0) {
+      // completed_at is sometimes missing on manually-seeded/imported allocations even
+      // though status is already "completed" — fall back through other loan dates rather
+      // than silently dropping the entry (and the real profit it represents) from the ledger.
+      const completionDate = a.completed_at || a.maturity_date || a.loan_date || a.allocated_at;
+
+      // Co-investor rows (e.g. Cranbrook's 12% referral cut on a Roi Kanner loan) carry
+      // the FULL loan principal for allocation/eligibility purposes, but that principal was
+      // never this investor's own money — the primary funder (Roi) put it up and gets it
+      // back. Only the primary funder's row should show loan_funded/loan_repaid; the
+      // co-investor only ever sees their profit share, never the principal.
+      if (!a.is_co_investor && a.principal_amount > 0) {
         entries.push({
           date: a.loan_date || a.allocated_at,
           type: "loan_funded",
@@ -1040,9 +1050,9 @@ class InvestorAllocationService {
           direction: "out",
           loan_no: a.loan_no || null,
         });
-        if (a.status === "completed" && a.completed_at) {
+        if (a.status === "completed") {
           entries.push({
-            date: a.completed_at,
+            date: completionDate,
             type: "loan_repaid",
             label: loanLabel,
             amount: a.principal_amount,
@@ -1051,11 +1061,11 @@ class InvestorAllocationService {
           });
         }
       }
-      if (a.status === "completed" && a.completed_at && a.investor_profit > 0) {
+      if (a.status === "completed" && a.investor_profit > 0) {
         entries.push({
-          date: a.completed_at,
+          date: completionDate,
           type: "loan_profit",
-          label: loanLabel,
+          label: a.is_co_investor ? `${loanLabel} — referral interest (${a.investor_share_pct}% co-investor share)` : loanLabel,
           amount: a.investor_profit,
           direction: "in",
           loan_no: a.loan_no || null,
@@ -1063,11 +1073,16 @@ class InvestorAllocationService {
       }
     }
 
+    const coInvestorAllocationIds = new Set(
+      allocations.filter((a) => a.is_co_investor).map((a) => a._id.toString()),
+    );
     for (const r of monthlyInterestRecords) {
+      const isReferral = coInvestorAllocationIds.has(r.allocation_id.toString());
+      const base = r.loan_no ? `${r.loan_no} (${r.period_month})` : `${r.period_month}`;
       entries.push({
         date: r.payment_date,
         type: "interest_earned",
-        label: r.loan_no ? `Monthly interest — ${r.loan_no} (${r.period_month})` : `Monthly interest — ${r.period_month}`,
+        label: isReferral ? `${base} — referral interest (${r.investor_share_pct}% co-investor share)` : `Monthly interest — ${base}`,
         amount: r.investor_amount,
         direction: "in",
         loan_no: r.loan_no || null,
