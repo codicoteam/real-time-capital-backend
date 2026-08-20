@@ -1329,6 +1329,45 @@ class InvestorController {
     }
   }
 
+  // ─── UNIFIED LEDGER ───────────────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/investors/:id/ledger
+   * One chronological table: deposits, withdrawals, loans funded, loans repaid,
+   * profit realized, and monthly interest received. Admin or self.
+   */
+  async getInvestorLedger(req, res) {
+    try {
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: "Invalid investor ID." });
+      }
+      const entries = await investorAllocationService.getInvestorLedger(id);
+      return res.json({ success: true, data: { entries } });
+    } catch (error) {
+      console.error("InvestorController.getInvestorLedger:", error);
+      return res.status(500).json({ success: false, message: "Failed to fetch ledger." });
+    }
+  }
+
+  /**
+   * GET /api/v1/investors/:id/expected-monthly-income
+   * Best-effort projection of profit expected this calendar month. Admin or self.
+   */
+  async getExpectedMonthlyIncome(req, res) {
+    try {
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: "Invalid investor ID." });
+      }
+      const expected_this_month = await investorAllocationService.getExpectedMonthlyIncome(id);
+      return res.json({ success: true, data: { expected_this_month } });
+    } catch (error) {
+      console.error("InvestorController.getExpectedMonthlyIncome:", error);
+      return res.status(500).json({ success: false, message: "Failed to compute expected monthly income." });
+    }
+  }
+
   // ─── REPAYMENT SCHEDULE ───────────────────────────────────────────────────────
 
   /**

@@ -1031,6 +1031,20 @@ router.get(
   investorController.getInvestorMonthlyInterest.bind(investorController),
 );
 
+router.get(
+  "/:id/ledger",
+  investorOrPawnAdminMiddleware,
+  requireAdminOrSelfUnified,
+  investorController.getInvestorLedger.bind(investorController),
+);
+
+router.get(
+  "/:id/expected-monthly-income",
+  investorOrPawnAdminMiddleware,
+  requireAdminOrSelfUnified,
+  investorController.getExpectedMonthlyIncome.bind(investorController),
+);
+
 // ─── PER-INVESTOR PORTFOLIO DATA ─────────────────────────────────────────────
 
 router.get(

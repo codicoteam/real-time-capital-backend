@@ -994,6 +994,125 @@ class InvestorAllocationService {
     ]);
     return { transactions, total };
   }
+
+  // ─── UNIFIED LEDGER ────────────────────────────────────────────────────────────
+
+  /**
+   * One chronological ledger merging every kind of money movement for this investor:
+   *   - capital transactions (deposit, capital_withdrawal, profit_withdrawal, drawing, expense)
+   *   - loan fundings (capital going OUT into a loan)
+   *   - loan repayments (principal coming back IN when a loan completes)
+   *   - loan profit realized at completion (lump sum, IN)
+   *   - monthly interest received on a loan that's still active (IN)
+   *
+   * This is the source for the investor-facing "Account Ledger" table — a single
+   * bank-statement-style view instead of three separately-fetched, differently-shaped lists.
+   */
+  async getInvestorLedger(investorId) {
+    const [transactions, allocations, monthlyInterestRecords] = await Promise.all([
+      InvestorTransaction.find({ investor_id: investorId }).populate("recorded_by", "name email"),
+      InvestorLoanAllocation.find({ investor_id: investorId }),
+      InvestorMonthlyInterest.find({ investor_id: investorId }),
+    ]);
+
+    const entries = [];
+
+    for (const t of transactions) {
+      const direction = t.type === "deposit" ? "in" : "out";
+      entries.push({
+        date: t.created_at,
+        type: t.type,
+        label: t.notes || null,
+        amount: t.amount,
+        direction,
+        recorded_by: t.recorded_by ? { name: t.recorded_by.name, email: t.recorded_by.email } : null,
+      });
+    }
+
+    for (const a of allocations) {
+      const loanLabel = a.borrower_name ? `${a.loan_no || "Loan"} — ${a.borrower_name}` : (a.loan_no || "Loan");
+      if (a.principal_amount > 0) {
+        entries.push({
+          date: a.loan_date || a.allocated_at,
+          type: "loan_funded",
+          label: loanLabel,
+          amount: a.principal_amount,
+          direction: "out",
+          loan_no: a.loan_no || null,
+        });
+        if (a.status === "completed" && a.completed_at) {
+          entries.push({
+            date: a.completed_at,
+            type: "loan_repaid",
+            label: loanLabel,
+            amount: a.principal_amount,
+            direction: "in",
+            loan_no: a.loan_no || null,
+          });
+        }
+      }
+      if (a.status === "completed" && a.completed_at && a.investor_profit > 0) {
+        entries.push({
+          date: a.completed_at,
+          type: "loan_profit",
+          label: loanLabel,
+          amount: a.investor_profit,
+          direction: "in",
+          loan_no: a.loan_no || null,
+        });
+      }
+    }
+
+    for (const r of monthlyInterestRecords) {
+      entries.push({
+        date: r.payment_date,
+        type: "interest_earned",
+        label: r.loan_no ? `Monthly interest — ${r.loan_no} (${r.period_month})` : `Monthly interest — ${r.period_month}`,
+        amount: r.investor_amount,
+        direction: "in",
+        loan_no: r.loan_no || null,
+      });
+    }
+
+    entries.sort((a, b) => new Date(b.date) - new Date(a.date));
+    return entries;
+  }
+
+  /**
+   * Best-effort projection of profit expected THIS calendar month:
+   *   - loans with a multi-month term (loan_term_months > 1) contribute their monthly
+   *     installment rate (investor_profit / loan_term_months) — a recurring cash flow,
+   *     regardless of exactly which day it lands
+   *   - single-term loans maturing this calendar month contribute their full remaining
+   *     (not-yet-received) profit
+   */
+  async getExpectedMonthlyIncome(investorId) {
+    const [allocations, monthlyInterestRecords] = await Promise.all([
+      InvestorLoanAllocation.find({ investor_id: investorId, status: "active" }),
+      InvestorMonthlyInterest.find({ investor_id: investorId }),
+    ]);
+
+    const alreadyPaidByAlloc = new Map();
+    for (const r of monthlyInterestRecords) {
+      const key = r.allocation_id.toString();
+      alreadyPaidByAlloc.set(key, (alreadyPaidByAlloc.get(key) || 0) + r.investor_amount);
+    }
+
+    const now = new Date();
+    let expected = 0;
+    for (const a of allocations) {
+      if (a.loan_term_months && a.loan_term_months > 1) {
+        expected += (a.investor_profit || 0) / a.loan_term_months;
+      } else if (a.maturity_date) {
+        const m = new Date(a.maturity_date);
+        if (m.getFullYear() === now.getFullYear() && m.getMonth() === now.getMonth()) {
+          const alreadyPaid = alreadyPaidByAlloc.get(a._id.toString()) || 0;
+          expected += Math.max((a.investor_profit || 0) - alreadyPaid, 0);
+        }
+      }
+    }
+    return parseFloat(expected.toFixed(2));
+  }
 }
 
 module.exports = new InvestorAllocationService();
