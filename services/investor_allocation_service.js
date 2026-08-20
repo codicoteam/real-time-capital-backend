@@ -314,7 +314,12 @@ class InvestorAllocationService {
     const completed = allocations.filter((a) => a.status === "completed");
     const defaulted = allocations.filter((a) => a.status === "defaulted");
 
-    const pawnDeployedCapital = active.reduce((s, a) => s + a.principal_amount, 0);
+    // Co-investor rows (e.g. Cranbrook's 12% referral cut on a Roi Kanner loan) carry the
+    // FULL loan principal for allocation/eligibility purposes, but that principal was never
+    // this investor's own money — the primary funder put it up and gets it back. Only their
+    // own directly-funded principal counts as "deployed capital" here; investor_profit
+    // (their real cut) is unaffected and correctly included below regardless of co-investor status.
+    const pawnDeployedCapital = active.filter((a) => !a.is_co_investor).reduce((s, a) => s + a.principal_amount, 0);
     const titleDeedDeployedCapital = activeDeeds.reduce((s, d) => s + d.loan_amount, 0);
     const deployedCapital = pawnDeployedCapital + titleDeedDeployedCapital;
 
@@ -429,7 +434,9 @@ class InvestorAllocationService {
     const active = allAllocations.filter((a) => a.status === "active");
     const completed = allAllocations.filter((a) => a.status === "completed");
 
-    const totalDeployed = active.reduce((s, a) => s + a.principal_amount, 0);
+    // Exclude co-investor rows — that principal is already counted once under the primary
+    // funder's own row; including it again here would double-count the same capital.
+    const totalDeployed = active.filter((a) => !a.is_co_investor).reduce((s, a) => s + a.principal_amount, 0);
     const totalInvestorProfit = completed.reduce((s, a) => s + a.investor_profit, 0);
     const totalRtcRevenue = completed.reduce((s, a) => s + a.rtc_revenue, 0);
     const totalExpectedReturns = active.reduce((s, a) => s + a.investor_profit, 0);
@@ -442,7 +449,7 @@ class InvestorAllocationService {
       ? completed.filter((a) => a.investor_id.toString() === rtcInvestorId)
       : [];
     const rtcProfit = rtcCompleted.reduce((s, a) => s + a.investor_profit, 0);
-    const rtcDeployed = rtcActive.reduce((s, a) => s + a.principal_amount, 0);
+    const rtcDeployed = rtcActive.filter((a) => !a.is_co_investor).reduce((s, a) => s + a.principal_amount, 0);
 
     return {
       total_committed_capital: totalCommitted,
@@ -732,7 +739,12 @@ class InvestorAllocationService {
       .filter((t) => t.type === "profit_withdrawal")
       .reduce((s, t) => s + t.amount, 0);
 
-    const pawnDeployedCapital = activeAllocs.reduce((s, a) => s + a.principal_amount, 0);
+    // Co-investor rows (e.g. Cranbrook's 12% referral cut on a Roi Kanner loan) carry the
+    // FULL loan principal for allocation/eligibility purposes, but that principal was never
+    // this investor's own money — the primary funder put it up and gets it back. Only their
+    // own directly-funded principal counts as "deployed capital"; investor_profit (their
+    // real cut) is unaffected and correctly included below regardless of co-investor status.
+    const pawnDeployedCapital = activeAllocs.filter((a) => !a.is_co_investor).reduce((s, a) => s + a.principal_amount, 0);
     const titleDeedDeployedCapital = activeDeeds.reduce((s, d) => s + d.loan_amount, 0);
     const deployedCapital = pawnDeployedCapital + titleDeedDeployedCapital;
 
@@ -800,7 +812,11 @@ class InvestorAllocationService {
         InvestorLoanAllocation.find({ investor_id: investorId, status: "active" }),
         TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] } }).select("loan_amount"),
       ]);
-      const pawnDeployed = activeAllocs.reduce((s, a) => s + a.principal_amount, 0);
+      // Co-investor rows carry the full loan principal but aren't this investor's own
+      // money — excluding them here matters a lot: without this, an investor holding a
+      // referral/co-investor stake could be wrongly blocked from a legitimate withdrawal
+      // because their "available balance" looked artificially (even negative-ly) low.
+      const pawnDeployed = activeAllocs.filter((a) => !a.is_co_investor).reduce((s, a) => s + a.principal_amount, 0);
       const deedDeployed = activeDeeds.reduce((s, d) => s + d.loan_amount, 0);
       const deployedCapital = pawnDeployed + deedDeployed;
       const availableBalance = capitalBefore - deployedCapital;
@@ -1009,10 +1025,11 @@ class InvestorAllocationService {
    * bank-statement-style view instead of three separately-fetched, differently-shaped lists.
    */
   async getInvestorLedger(investorId) {
-    const [transactions, allocations, monthlyInterestRecords] = await Promise.all([
+    const [transactions, allocations, monthlyInterestRecords, titleDeeds] = await Promise.all([
       InvestorTransaction.find({ investor_id: investorId }).populate("recorded_by", "name email"),
       InvestorLoanAllocation.find({ investor_id: investorId }),
       InvestorMonthlyInterest.find({ investor_id: investorId }),
+      TitleDeed.find({ investor_id: investorId }),
     ]);
 
     const entries = [];
@@ -1073,6 +1090,46 @@ class InvestorAllocationService {
       }
     }
 
+    // Title deed loans — a completely separate model from InvestorLoanAllocation, so
+    // they were previously invisible in the ledger entirely. The investor receives the
+    // full interest on a title deed (no RTC split), realized as a lump sum on completion,
+    // same as any other loan's loan_profit event.
+    for (const d of titleDeeds) {
+      if (d.status === "cancelled") continue;
+      const label = d.borrower_name ? `${d.deed_number} — ${d.borrower_name} (title deed)` : `${d.deed_number} (title deed)`;
+      if (d.loan_amount > 0) {
+        entries.push({
+          date: d.start_date,
+          type: "loan_funded",
+          label,
+          amount: d.loan_amount,
+          direction: "out",
+          loan_no: d.deed_number || null,
+        });
+        if (d.status === "completed") {
+          entries.push({
+            date: d.end_date || d.start_date,
+            type: "loan_repaid",
+            label,
+            amount: d.loan_amount,
+            direction: "in",
+            loan_no: d.deed_number || null,
+          });
+        }
+      }
+      const interestProfit = (d.loan_amount || 0) * ((d.interest_rate || 0) / 100);
+      if (d.status === "completed" && interestProfit > 0) {
+        entries.push({
+          date: d.end_date || d.start_date,
+          type: "loan_profit",
+          label,
+          amount: parseFloat(interestProfit.toFixed(2)),
+          direction: "in",
+          loan_no: d.deed_number || null,
+        });
+      }
+    }
+
     const coInvestorAllocationIds = new Set(
       allocations.filter((a) => a.is_co_investor).map((a) => a._id.toString()),
     );
@@ -1102,9 +1159,10 @@ class InvestorAllocationService {
    *     (not-yet-received) profit
    */
   async getExpectedMonthlyIncome(investorId) {
-    const [allocations, monthlyInterestRecords] = await Promise.all([
+    const [allocations, monthlyInterestRecords, titleDeeds] = await Promise.all([
       InvestorLoanAllocation.find({ investor_id: investorId, status: "active" }),
       InvestorMonthlyInterest.find({ investor_id: investorId }),
+      TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] } }),
     ]);
 
     const alreadyPaidByAlloc = new Map();
@@ -1123,6 +1181,20 @@ class InvestorAllocationService {
         if (m.getFullYear() === now.getFullYear() && m.getMonth() === now.getMonth()) {
           const alreadyPaid = alreadyPaidByAlloc.get(a._id.toString()) || 0;
           expected += Math.max((a.investor_profit || 0) - alreadyPaid, 0);
+        }
+      }
+    }
+    // Title deeds follow the same projection logic as loan allocations — a multi-month
+    // deed contributes its monthly installment rate, a single-month one contributes its
+    // full profit only if it matures this calendar month.
+    for (const d of titleDeeds) {
+      const interestProfit = (d.loan_amount || 0) * ((d.interest_rate || 0) / 100);
+      if (d.loan_term_months && d.loan_term_months > 1) {
+        expected += interestProfit / d.loan_term_months;
+      } else if (d.end_date) {
+        const m = new Date(d.end_date);
+        if (m.getFullYear() === now.getFullYear() && m.getMonth() === now.getMonth()) {
+          expected += interestProfit;
         }
       }
     }
