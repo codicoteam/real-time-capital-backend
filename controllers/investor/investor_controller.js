@@ -858,9 +858,53 @@ class InvestorController {
         };
       });
 
+      // Title deeds are a separate model with no split-by-status/split-by-loan populate
+      // chain — most are 100% investor profit, but a deed can carry its own negotiated
+      // investor_share_pct (see TitleDeed model), which flows through here just like it
+      // does on the investor-facing side (see titleDeedToDeployment on the frontend).
+      const DEED_STATUS_MAP = { pending: "expected", active: "active", completed: "completed", defaulted: "defaulted" };
+      const deedRows = (result.titleDeeds || []).map((deed) => {
+        const investor = deed.investor_id;
+        const sharePct = deed.investor_share_pct ?? 100;
+        const totalInterest = (deed.loan_amount || 0) * ((deed.interest_rate || 0) / 100);
+        const investorProfit = totalInterest * (sharePct / 100);
+        return {
+          id: `deed-${deed._id.toString()}`,
+          loanRef: deed.deed_number,
+          termKey: "one_month",
+          principal: deed.loan_amount,
+          isCoInvestor: false,
+          repaymentSchedule: [],
+          restructuresAllocationId: null,
+          borrowerName: deed.borrower_name || "Unknown",
+          borrowerNationalId: deed.borrower_id_number || null,
+          borrowerPhone: deed.borrower_phone || null,
+          collateralTitle: deed.property_name || null,
+          collateralImages: [],
+          startDate: deed.start_date ? new Date(deed.start_date).toISOString().slice(0, 10) : new Date(deed.created_at).toISOString().slice(0, 10),
+          endDate: deed.end_date ? new Date(deed.end_date).toISOString().slice(0, 10) : null,
+          loanTermMonths: deed.loan_term_months || null,
+          monthlyInterestRate: deed.interest_rate || null,
+          totalInterestReceivable: totalInterest,
+          loanStatusOverride: null,
+          status: DEED_STATUS_MAP[deed.status] || "active",
+          loanStatus: deed.status,
+          investorSharePct: sharePct,
+          investorProfit,
+          totalLoanProfit: totalInterest,
+          rtcRevenue: totalInterest - investorProfit,
+          allocationId: deed._id.toString(),
+          allocationStatus: deed.status,
+          investorId: investor?._id?.toString(),
+          investorName: investor?.name,
+          investorKind: investor?.kind,
+          investorAvatarColor: investor?.avatar_color,
+        };
+      });
+
       return res.json({
         success: true,
-        data: { deployments: rows, pagination: { total: result.total, page: result.page, limit: result.limit, pages: result.pages } },
+        data: { deployments: [...rows, ...deedRows], pagination: { total: result.total, page: result.page, limit: result.limit, pages: result.pages } },
       });
     } catch (error) {
       console.error("InvestorController.getAdminAllAllocations:", error);

@@ -513,20 +513,25 @@ class InvestorAllocationService {
   }
 
   /**
-   * All allocations across the platform (admin loans ledger).
+   * All allocations across the platform (admin loans ledger). Title deeds are a separate
+   * model from InvestorLoanAllocation, so they're fetched in parallel and merged in here —
+   * same "fetch both, tag, sort together" pattern as getInvestorLedger — otherwise a title
+   * deed loan (e.g. Edgar Mucheke's Southerton Property) never shows up on this page at all.
+   * Mongo can't paginate a union of two collections directly, so both sets are fetched in
+   * full (matching filters), merged and sorted in JS, then sliced once for skip/limit.
    */
   async getAllAllocations({ page = 1, limit = 50, status, investorId } = {}) {
     const filter = {};
     if (status) filter.status = status;
     if (investorId) filter.investor_id = investorId;
 
-    const skip = (Number(page) - 1) * Number(limit);
+    const deedFilter = { status: { $ne: "cancelled" } };
+    if (status) deedFilter.status = status;
+    if (investorId) deedFilter.investor_id = investorId;
 
-    const [allocations, total] = await Promise.all([
+    const [allocations, titleDeeds] = await Promise.all([
       InvestorLoanAllocation.find(filter)
         .sort({ allocated_at: -1 })
-        .skip(skip)
-        .limit(Number(limit))
         .populate("investor_id", "name email kind avatar_color")
         .populate({
           path: "loan_id",
@@ -537,10 +542,28 @@ class InvestorAllocationService {
             { path: "asset", select: "title asset_images" },
           ],
         }),
-      InvestorLoanAllocation.countDocuments(filter),
+      TitleDeed.find(deedFilter)
+        .sort({ created_at: -1 })
+        .populate("investor_id", "name email kind avatar_color"),
     ]);
 
-    return { allocations, total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / Number(limit)) };
+    const merged = [
+      ...allocations.map((doc) => ({ kind: "allocation", doc, sortDate: doc.allocated_at })),
+      ...titleDeeds.map((doc) => ({ kind: "title_deed", doc, sortDate: doc.created_at })),
+    ].sort((a, b) => new Date(b.sortDate) - new Date(a.sortDate));
+
+    const total = merged.length;
+    const skip = (Number(page) - 1) * Number(limit);
+    const page_ = merged.slice(skip, skip + Number(limit));
+
+    return {
+      allocations: page_.filter((r) => r.kind === "allocation").map((r) => r.doc),
+      titleDeeds: page_.filter((r) => r.kind === "title_deed").map((r) => r.doc),
+      total,
+      page: Number(page),
+      limit: Number(limit),
+      pages: Math.ceil(total / Number(limit)),
+    };
   }
 
   // ─── REFERRAL PARTNERSHIPS ────────────────────────────────────────────────────
