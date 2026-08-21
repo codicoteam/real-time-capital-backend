@@ -41,6 +41,10 @@ const TitleDeedSchema = new mongoose.Schema(
     loan_amount:    { type: Number, required: true, min: 0 },
     interest_rate:  { type: Number, default: 0, min: 0 },  // % per annum
     loan_term_months: { type: Number, default: 0, min: 0 },
+    // Investor's cut of the deed's interest — defaults to 100% (the standard title-deed
+    // arrangement: the investor holds the deed directly and RTC takes no split). Set lower
+    // when a specific deed has a negotiated split with RTC, e.g. 60/40.
+    investor_share_pct: { type: Number, default: 100, min: 0, max: 100 },
 
     // Dates
     start_date: { type: Date },

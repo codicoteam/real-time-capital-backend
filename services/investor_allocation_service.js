@@ -1091,8 +1091,10 @@ class InvestorAllocationService {
     }
 
     // Title deed loans — a completely separate model from InvestorLoanAllocation, so
-    // they were previously invisible in the ledger entirely. The investor receives the
-    // full interest on a title deed (no RTC split), realized as a lump sum on completion,
+    // they were previously invisible in the ledger entirely. By default the investor
+    // receives the full interest on a title deed (no RTC split) — but a deed can carry
+    // its own negotiated investor_share_pct (e.g. 60/40) when one applies, same idea as
+    // InvestorLoanAllocation's investor_share_pct. Realized as a lump sum on completion,
     // same as any other loan's loan_profit event.
     for (const d of titleDeeds) {
       if (d.status === "cancelled") continue;
@@ -1117,13 +1119,15 @@ class InvestorAllocationService {
           });
         }
       }
-      const interestProfit = (d.loan_amount || 0) * ((d.interest_rate || 0) / 100);
-      if (d.status === "completed" && interestProfit > 0) {
+      const deedSharePct = d.investor_share_pct ?? 100;
+      const totalInterest = (d.loan_amount || 0) * ((d.interest_rate || 0) / 100);
+      const investorInterest = totalInterest * (deedSharePct / 100);
+      if (d.status === "completed" && investorInterest > 0) {
         entries.push({
           date: d.end_date || d.start_date,
           type: "loan_profit",
-          label,
-          amount: parseFloat(interestProfit.toFixed(2)),
+          label: deedSharePct < 100 ? `${label} — ${deedSharePct}% investor share` : label,
+          amount: parseFloat(investorInterest.toFixed(2)),
           direction: "in",
           loan_no: d.deed_number || null,
         });
@@ -1186,15 +1190,17 @@ class InvestorAllocationService {
     }
     // Title deeds follow the same projection logic as loan allocations — a multi-month
     // deed contributes its monthly installment rate, a single-month one contributes its
-    // full profit only if it matures this calendar month.
+    // full profit only if it matures this calendar month. Applies the deed's own
+    // investor_share_pct (defaults to 100 — most deeds are the investor's full return).
     for (const d of titleDeeds) {
-      const interestProfit = (d.loan_amount || 0) * ((d.interest_rate || 0) / 100);
+      const totalInterest = (d.loan_amount || 0) * ((d.interest_rate || 0) / 100);
+      const investorInterest = totalInterest * ((d.investor_share_pct ?? 100) / 100);
       if (d.loan_term_months && d.loan_term_months > 1) {
-        expected += interestProfit / d.loan_term_months;
+        expected += investorInterest / d.loan_term_months;
       } else if (d.end_date) {
         const m = new Date(d.end_date);
         if (m.getFullYear() === now.getFullYear() && m.getMonth() === now.getMonth()) {
-          expected += interestProfit;
+          expected += investorInterest;
         }
       }
     }
