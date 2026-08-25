@@ -1131,7 +1131,14 @@ class InvestorAllocationService {
   async getInvestorLedger(investorId) {
     const [transactions, allocations, monthlyInterestRecords, titleDeeds] = await Promise.all([
       InvestorTransaction.find({ investor_id: investorId }).populate("recorded_by", "name email"),
-      InvestorLoanAllocation.find({ investor_id: investorId }),
+      // Real system loans (loan_id populated) don't carry loan_date/maturity_date on the
+      // allocation itself — only manually-seeded CSV rows do. Without this populate, the
+      // date fallbacks below silently land on allocated_at (when the SWRR assignment ran,
+      // e.g. days after real disbursement) instead of the loan's actual start/due date.
+      InvestorLoanAllocation.find({ investor_id: investorId }).populate({
+        path: "loan_id",
+        select: "start_date due_date",
+      }),
       InvestorMonthlyInterest.find({ investor_id: investorId }),
       TitleDeed.find({ investor_id: investorId }),
     ]);
@@ -1152,10 +1159,12 @@ class InvestorAllocationService {
 
     for (const a of allocations) {
       const loanLabel = a.borrower_name ? `${a.loan_no || "Loan"} — ${a.borrower_name}` : (a.loan_no || "Loan");
+      const realLoanStart = a.loan_id?.start_date;
+      const realLoanDue = a.loan_id?.due_date;
       // completed_at is sometimes missing on manually-seeded/imported allocations even
       // though status is already "completed" — fall back through other loan dates rather
       // than silently dropping the entry (and the real profit it represents) from the ledger.
-      const completionDate = a.completed_at || a.maturity_date || a.loan_date || a.allocated_at;
+      const completionDate = a.completed_at || a.maturity_date || a.loan_date || realLoanDue || a.allocated_at;
 
       // Co-investor rows (e.g. Cranbrook's 12% referral cut on a Roi Kanner loan) carry
       // the FULL loan principal for allocation/eligibility purposes, but that principal was
@@ -1164,7 +1173,7 @@ class InvestorAllocationService {
       // co-investor only ever sees their profit share, never the principal.
       if (!a.is_co_investor && a.principal_amount > 0) {
         entries.push({
-          date: a.loan_date || a.allocated_at,
+          date: a.loan_date || realLoanStart || a.allocated_at,
           type: "loan_funded",
           label: loanLabel,
           amount: a.principal_amount,

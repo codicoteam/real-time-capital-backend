@@ -121,8 +121,9 @@ function scenarioCards({ principal, investorProfit, investorSharePct, penaltyPct
   // Scenario 1: Normal completion
   const normalTotal = principal + investorProfit;
 
-  // Scenario 2: Penalty (if borrower falls into grace/overdue)
-  const penaltyAmount = principal * ((penaltyPct || 10) / 100);
+  // Scenario 2: Penalty (if borrower falls into grace/overdue) — 10% of the whole
+  // amount owed (principal + interest/storage, i.e. totalLoanProfit), not principal alone.
+  const penaltyAmount = (principal + (totalLoanProfit || 0)) * ((penaltyPct || 10) / 100);
   const penaltyInvestorExtra = parseFloat((penaltyAmount * (investorSharePct / 100)).toFixed(2));
   const penaltyTotal = normalTotal + penaltyInvestorExtra;
 
