@@ -158,10 +158,72 @@ const requireAdminOrSelfViaInvestorIdQuery = (req, res, next) => {
   next();
 };
 
+// Same role list allowed to create a loan in the first place (routers/loan_router.js,
+// POST /) — whoever can create a loan should be able to see which investors are eligible
+// to fund it. Deliberately broader than requireInvestorAdminOrPawnSuperAdmin, which is
+// reserved for real admin/financial-oversight routes (RTC revenue, admin fee visibility,
+// deleting investors, etc.) that a Loan Processor has no business touching.
+const LOAN_CREATION_ROLES = new Set([
+  "loan_officer_processor",
+  "loan_officer_approval",
+  "admin_pawn_limited",
+  "super_admin_vendor",
+  "super_admin",
+]);
+
+/**
+ * Auth for the loan-creation "Assign Investor" lookup — pawn staff only (no real investor
+ * ever creates a loan), any role permitted to create a loan in the first place.
+ */
+const requireLoanCreationStaff = async (req, res, next) => {
+  try {
+    const authHeader = req.header("Authorization");
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ success: false, message: "Access denied. No token provided." });
+    }
+    const token = authHeader.replace("Bearer ", "").trim();
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch {
+      return res.status(401).json({ success: false, message: "Invalid or expired token." });
+    }
+
+    const userId = decoded.userId || decoded.sub || decoded.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Invalid token payload." });
+    }
+
+    const pawnUser = await User.findById(userId);
+    if (!pawnUser) {
+      return res.status(401).json({ success: false, message: "Pawn user not found." });
+    }
+    if (pawnUser.status === "suspended" || pawnUser.status === "deleted") {
+      return res.status(403).json({ success: false, message: "Account is suspended or deleted." });
+    }
+
+    const userRoles = Array.isArray(pawnUser.roles) ? pawnUser.roles : [pawnUser.role].filter(Boolean);
+    const allowed = userRoles.some((r) => LOAN_CREATION_ROLES.has(r));
+    if (!allowed) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. Requires one of roles: ${Array.from(LOAN_CREATION_ROLES).join(", ")}.`,
+      });
+    }
+
+    next();
+  } catch (error) {
+    console.error("requireLoanCreationStaff error:", error);
+    return res.status(401).json({ success: false, message: "Authentication failed." });
+  }
+};
+
 module.exports = {
   investorOrPawnAdminMiddleware,
   requireInvestorAdminOrPawnSuperAdmin,
   requireAdminOrSelfUnified,
   requireAdminOrSelfCompany,
   requireAdminOrSelfViaInvestorIdQuery,
+  requireLoanCreationStaff,
 };

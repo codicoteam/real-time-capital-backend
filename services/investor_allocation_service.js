@@ -87,6 +87,47 @@ class InvestorAllocationService {
   }
 
   /**
+   * Eligible-investor list for the loan CREATION form, before the Loan document exists —
+   * lets a Loan Processor/Super Admin manually pick who funds a motor_vehicle/jewellery
+   * loan instead of relying on the automatic round-robin. Mirrors getEligibleInvestors'
+   * query exactly (same preferences + available-cash filter) but returns a lean,
+   * display-ready shape instead of raw Investor docs, since callers here never proceed to
+   * create an allocation directly from this list.
+   */
+  async getEligibleInvestorsForDisplay({ collateral_category, loan_period_type, principal_amount }) {
+    const eligible = await this.getEligibleInvestors({
+      collateral_category,
+      loan_period_type,
+      principal_amount: principal_amount || 0,
+    });
+
+    if (eligible.length === 0) return [];
+
+    const investorIds = eligible.map((i) => i._id);
+    const activeAllocations = await InvestorLoanAllocation.find({
+      investor_id: { $in: investorIds },
+      status: "active",
+    }).select("investor_id principal_amount");
+    const deployedMap = new Map();
+    for (const alloc of activeAllocations) {
+      const id = alloc.investor_id.toString();
+      deployedMap.set(id, (deployedMap.get(id) || 0) + alloc.principal_amount);
+    }
+
+    return eligible
+      .map((investor) => {
+        const deployed = deployedMap.get(investor._id.toString()) || 0;
+        return {
+          id: investor._id.toString(),
+          name: investor.name,
+          kind: investor.kind,
+          available_cash: parseFloat((investor.committed_capital - deployed).toFixed(2)),
+        };
+      })
+      .sort((a, b) => b.available_cash - a.available_cash);
+  }
+
+  /**
    * Smooth Weighted Round-Robin selection.
    *
    * Algorithm (per cycle):
@@ -178,7 +219,29 @@ class InvestorAllocationService {
       };
     }
 
-    const selectedInvestor = await this.selectInvestorSWRR(eligibleInvestors);
+    // Staff can pick the investor at loan creation time (motor_vehicle/jewellery only —
+    // see loan_service.createLoan validation). Honor that choice if they're still
+    // eligible at disbursement time; otherwise fall back to normal auto-assignment rather
+    // than blocking disbursement over a preference that's gone stale.
+    let selectedInvestor = null;
+    if (loan.preferred_investor_id) {
+      selectedInvestor = eligibleInvestors.find(
+        (inv) => inv._id.toString() === loan.preferred_investor_id.toString(),
+      );
+      if (selectedInvestor) {
+        console.log(
+          `[InvestorAllocation] Loan ${loan.loan_no} → staff-selected investor ${selectedInvestor.name}`,
+        );
+      } else {
+        console.warn(
+          `[InvestorAllocation] Preferred investor for loan ${loan.loan_no} is no longer ` +
+            `eligible (inactive, preference mismatch, or insufficient cash) — falling back to auto-assignment.`,
+        );
+      }
+    }
+    if (!selectedInvestor) {
+      selectedInvestor = await this.selectInvestorSWRR(eligibleInvestors);
+    }
     if (!selectedInvestor) return { success: false, message: "Could not select investor." };
 
     const profitConfig = await this.getProfitSplitConfig();
@@ -189,8 +252,18 @@ class InvestorAllocationService {
     const investorSharePct =
       selectedInvestor.profit_share_override?.[termKey] ?? termConfig.investor_share;
 
+    // A deferred admin fee is baked into expected_total_repayable (principal + fee +
+    // interest + storage) so interest gets charged on the blended base — but the raw fee
+    // itself is RTC's own revenue, never the investor's, and never appears in this split.
+    // Subtracting it back out here leaves totalLoanProfit as interest + storage only, which
+    // is what actually splits between investor and RTC. The fee amount is tracked
+    // separately on the Loan and surfaces only in RTC's own reporting (never an investor's).
+    const adminFeeAmount = loan.admin_fee_amount || 0;
+    const feeIsDeferred = loan.admin_fee_type === "deferred";
+    const principalForProfit = loan.principal_amount + (feeIsDeferred ? adminFeeAmount : 0);
+
     const totalLoanProfit = Math.max(
-      (loan.expected_total_repayable || loan.principal_amount) - loan.principal_amount,
+      (loan.expected_total_repayable || loan.principal_amount) - principalForProfit,
       0,
     );
     const investorProfit = parseFloat((totalLoanProfit * (investorSharePct / 100)).toFixed(2));
@@ -352,11 +425,19 @@ class InvestorAllocationService {
     const investor = await Investor.findById(investorId);
     if (!investor) return [];
 
-    const completedAllocations = await InvestorLoanAllocation.find({
+    // completed_at is sometimes missing on manually-seeded/imported allocations even
+    // though status is already "completed" (same gap documented in getInvestorLedger) —
+    // fall back through other loan dates rather than excluding the allocation (and its
+    // real profit) from the query entirely, which previously made the whole growth curve
+    // silently flatline for any investor whose completed loans lacked completed_at.
+    const completedAllocationsRaw = await InvestorLoanAllocation.find({
       investor_id: investorId,
       status: "completed",
-      completed_at: { $ne: null },
-    }).sort({ completed_at: 1 });
+    });
+    const completedAllocations = completedAllocationsRaw
+      .map((a) => ({ alloc: a, date: a.completed_at || a.maturity_date || a.loan_date || a.allocated_at }))
+      .filter((x) => x.date != null)
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
 
     const now = new Date();
     const points = [];
@@ -364,8 +445,8 @@ class InvestorAllocationService {
     // Compute average monthly return rate from completed history
     let monthlyRate = 0;
     if (completedAllocations.length > 0 && investor.committed_capital > 0) {
-      const totalProfit = completedAllocations.reduce((s, a) => s + a.investor_profit, 0);
-      const firstAt = new Date(completedAllocations[0].completed_at);
+      const totalProfit = completedAllocations.reduce((s, { alloc }) => s + alloc.investor_profit, 0);
+      const firstAt = new Date(completedAllocations[0].date);
       const monthsDiff = Math.max(
         1,
         (now.getTime() - firstAt.getTime()) / (1000 * 60 * 60 * 24 * 30),
@@ -386,8 +467,8 @@ class InvestorAllocationService {
       endOfMonth.setHours(23, 59, 59, 999);
 
       let cumulativeProfit = 0;
-      for (const alloc of completedAllocations) {
-        if (new Date(alloc.completed_at) <= endOfMonth) {
+      for (const { alloc, date: completionDate } of completedAllocations) {
+        if (new Date(completionDate) <= endOfMonth) {
           cumulativeProfit += alloc.investor_profit;
         }
       }
@@ -1228,6 +1309,34 @@ class InvestorAllocationService {
       }
     }
     return parseFloat(expected.toFixed(2));
+  }
+
+  /**
+   * Admin-fee detail for one loan — deliberately a SEPARATE, admin-only lookup rather than
+   * a field added to the shared allocation→Deployment mapping used by getInvestorAllocations
+   * / getAdminAllAllocations. Those endpoints are reachable by a real investor viewing their
+   * own account (requireAdminOrSelfUnified), and the admin fee must never appear in that
+   * payload at all — not just be hidden in the UI. This method is only ever wired to an
+   * admin-only route (requireInvestorAdminOrPawnSuperAdmin), e.g. for the RTC Portfolio and
+   * pawn-management loan detail views.
+   *
+   * Looked up by loan_no (not the Loan's ObjectId) because that's the only loan reference
+   * the shared Deployment shape exposes — the real Loan _id is deliberately never included
+   * in that shared, investor-reachable payload.
+   */
+  async getLoanAdminFee(loanNo) {
+    const loan = await Loan.findOne({ loan_no: loanNo }).select(
+      "loan_no admin_fee_pct admin_fee_amount admin_fee_type admin_fee_collected admin_fee_collected_at",
+    );
+    if (!loan) return null;
+    return {
+      loan_no: loan.loan_no,
+      admin_fee_pct: loan.admin_fee_pct || 0,
+      admin_fee_amount: loan.admin_fee_amount || 0,
+      admin_fee_type: loan.admin_fee_type || null,
+      admin_fee_collected: loan.admin_fee_collected || false,
+      admin_fee_collected_at: loan.admin_fee_collected_at || null,
+    };
   }
 }
 

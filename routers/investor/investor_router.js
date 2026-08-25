@@ -13,6 +13,7 @@ const {
   requireInvestorAdminOrPawnSuperAdmin,
   requireAdminOrSelfUnified,
   requireAdminOrSelfCompany,
+  requireLoanCreationStaff,
 } = require("../../middlewares/investor_or_pawn_admin_middleware");
 
 /**
@@ -1066,6 +1067,35 @@ router.get(
   investorOrPawnAdminMiddleware,
   requireAdminOrSelfUnified,
   investorController.getInvestorGrowthHistory.bind(investorController),
+);
+
+router.get(
+  "/:id/statement/export",
+  investorOrPawnAdminMiddleware,
+  requireAdminOrSelfUnified,
+  investorController.exportInvestorStatement.bind(investorController),
+);
+
+// ─── RTC PLATFORM REVENUE REPORT ─────────────────────────────────────────────
+
+router.get(
+  "/admin/rtc-revenue-report/export",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.exportRtcRevenueReport.bind(investorController),
+);
+
+router.get(
+  "/admin/loans/admin-fee",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.getLoanAdminFee.bind(investorController),
+);
+
+router.get(
+  "/admin/eligible-investors",
+  requireLoanCreationStaff,
+  investorController.getEligibleInvestorsForLoan.bind(investorController),
 );
 
 module.exports = router;

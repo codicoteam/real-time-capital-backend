@@ -56,7 +56,27 @@ class LoanService {
         throw { status: 400, message: "loan_period_type is required. Must be one of: " + Object.keys(LOAN_PERIODS).join(", ") };
       }
 
-      // Calculate total repayable (principal + interest + storage) and set current_balance
+      // Admin fee (0-10% of principal, negotiated by the Loan Processor/Super Admin at
+      // creation time) — validate before it feeds into the repayment calculation below.
+      this.validateAdminFee(loanData);
+
+      // Staff-selected investor — only meaningful for motor_vehicle/jewellery. small_loans
+      // are always RTC's own book, so manually picking an outside investor for one would
+      // contradict that rule; reject rather than silently ignore the field.
+      if (loanData.preferred_investor_id) {
+        if (!["motor_vehicle", "jewellery"].includes(loanData.collateral_category)) {
+          throw {
+            status: 400,
+            message: "preferred_investor_id can only be set for motor_vehicle or jewellery loans.",
+          };
+        }
+        if (!mongoose.Types.ObjectId.isValid(loanData.preferred_investor_id)) {
+          throw { status: 400, message: "preferred_investor_id is not a valid investor ID." };
+        }
+      }
+
+      // Calculate total repayable (principal + interest + storage, + admin fee if deferred)
+      // and set current_balance
       this.calculateRepaymentBreakdown(loanData);
 
       // Determine if super admin approval is needed (amount > 500)
@@ -2257,16 +2277,59 @@ class LoanService {
    * Sets interest_amount, storage_charge_amount, expected_total_repayable,
    * repayment_breakdown, and current_balance on loanData in-place.
    */
+  /**
+   * Validates the admin fee (0-10% of principal) and computes admin_fee_amount from
+   * admin_fee_pct + principal_amount. Negotiated by the Loan Processor/Super Admin at
+   * loan CREATION time — not at application. Pure RTC revenue; kept entirely separate
+   * from interest/storage so it never bleeds into an investor's profit split (see
+   * investor_allocation_service.assignLoan).
+   */
+  validateAdminFee(loanData) {
+    const pct = loanData.admin_fee_pct;
+    if (pct == null || pct === 0) {
+      // No fee on this loan — reset any stray fields to a clean, consistent "no fee" state.
+      loanData.admin_fee_pct = 0;
+      loanData.admin_fee_amount = 0;
+      loanData.admin_fee_type = null;
+      loanData.admin_fee_collected = false;
+      loanData.admin_fee_collected_at = null;
+      return;
+    }
+
+    if (typeof pct !== "number" || pct < 0 || pct > 10) {
+      throw { status: 400, message: "admin_fee_pct must be a number between 0 and 10." };
+    }
+    if (!["upfront", "deferred"].includes(loanData.admin_fee_type)) {
+      throw {
+        status: 400,
+        message: 'admin_fee_type must be "upfront" or "deferred" when admin_fee_pct is set.',
+      };
+    }
+
+    loanData.admin_fee_amount = parseFloat(
+      ((loanData.principal_amount || 0) * (pct / 100)).toFixed(2)
+    );
+
+    if (loanData.admin_fee_type === "upfront" && loanData.admin_fee_collected) {
+      loanData.admin_fee_collected_at = new Date();
+    } else {
+      loanData.admin_fee_collected = false;
+      loanData.admin_fee_collected_at = null;
+    }
+  }
+
   calculateRepaymentBreakdown(loanData) {
     const principal = loanData.principal_amount;
     const interestRate = loanData.interest_rate_percent;
     const storageRate = loanData.storage_charge_percent;
     const interestPeriodDays = loanData.interest_period_days || 30;
+    const adminFeeAmount = loanData.admin_fee_amount || 0;
+    const feeIsDeferred = loanData.admin_fee_type === "deferred";
 
     if (!principal || interestRate == null || storageRate == null) {
-      // Not enough data to calculate — fall back to principal as balance
+      // Not enough data to calculate — fall back to principal (+ deferred fee) as balance
       if (!loanData.current_balance && principal) {
-        loanData.current_balance = principal;
+        loanData.current_balance = principal + (feeIsDeferred ? adminFeeAmount : 0);
       }
       return;
     }
@@ -2281,14 +2344,19 @@ class LoanService {
       numberOfPeriods = loanPeriodDays / interestPeriodDays;
     }
 
+    // Deferred admin fee is added to the customer's owed balance, so interest is charged
+    // on principal + fee together. An upfront fee is collected as separate cash at signing
+    // and never touches what the customer owes back — interest stays on principal alone.
+    const interestBase = feeIsDeferred ? principal + adminFeeAmount : principal;
+
     const interestAmount = parseFloat(
-      (principal * (interestRate / 100) * numberOfPeriods).toFixed(2)
+      (interestBase * (interestRate / 100) * numberOfPeriods).toFixed(2)
     );
     const storageChargeAmount = parseFloat(
-      (principal * (storageRate / 100) * numberOfPeriods).toFixed(2)
+      (interestBase * (storageRate / 100) * numberOfPeriods).toFixed(2)
     );
     const totalRepayable = parseFloat(
-      (principal + interestAmount + storageChargeAmount).toFixed(2)
+      (interestBase + interestAmount + storageChargeAmount).toFixed(2)
     );
 
     loanData.interest_amount = interestAmount;
@@ -2298,6 +2366,10 @@ class LoanService {
 
     loanData.repayment_breakdown = {
       principal_amount: principal,
+      admin_fee_pct: loanData.admin_fee_pct || 0,
+      admin_fee_amount: adminFeeAmount,
+      admin_fee_type: loanData.admin_fee_type || null,
+      interest_base: interestBase,
       loan_period_days: loanPeriodDays,
       interest_period_days: interestPeriodDays,
       number_of_periods: parseFloat(numberOfPeriods.toFixed(4)),
@@ -2306,8 +2378,11 @@ class LoanService {
       storage_charge_percent: storageRate,
       storage_charge_amount: storageChargeAmount,
       expected_total_repayable: totalRepayable,
-      calculation_note:
-        "Total = Principal + (Principal × Interest% × Periods) + (Principal × Storage% × Periods)",
+      calculation_note: feeIsDeferred
+        ? "Total = (Principal + Admin Fee) + ((Principal + Admin Fee) × Interest% × Periods) + ((Principal + Admin Fee) × Storage% × Periods). Admin fee is added to what the customer owes."
+        : adminFeeAmount > 0
+          ? "Total = Principal + (Principal × Interest% × Periods) + (Principal × Storage% × Periods). Admin fee is collected separately upfront and does not affect the amount owed."
+          : "Total = Principal + (Principal × Interest% × Periods) + (Principal × Storage% × Periods).",
     };
   }
 

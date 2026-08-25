@@ -154,7 +154,13 @@ class AuctionService {
    */
   static async getAuctionWithDetails(auctionId) {
     return await Auction.findById(auctionId)
-      .populate("asset")
+      .populate({
+        path: "asset",
+        populate: {
+          path: "active_loan",
+          select: "loan_no principal_amount status due_date",
+        },
+      })
       .populate("winner_user", "name email phone")
       .populate("created_by", "name email");
   }

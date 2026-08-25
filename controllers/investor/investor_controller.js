@@ -7,6 +7,7 @@ const Investor = require("../../models/investor/investor.model");
 const InvestorProfitSplit = require("../../models/investor/investor_profit_split.model");
 const Expense = require("../../models/expense.model");
 const investorAllocationService = require("../../services/investor_allocation_service");
+const investorStatementService = require("../../services/investor_statement_service");
 
 const AVATAR_COLORS = ["#10b981", "#3b82f6", "#f59e0b", "#ec4899", "#8b5cf6", "#14b8a6"];
 const VALID_LOAN_TYPES = ["small_loans", "motor_vehicle", "jewellery"];
@@ -762,6 +763,107 @@ class InvestorController {
     } catch (error) {
       console.error("InvestorController.getInvestorGrowthHistory:", error);
       return res.status(500).json({ success: false, message: "Failed to fetch growth history." });
+    }
+  }
+
+  /**
+   * GET /api/v1/investors/:id/statement/export
+   * Downloadable Excel statement (Summary / Transactions / Loans) for one investor.
+   * Admin or self — same access rule as every other per-investor read endpoint.
+   */
+  async exportInvestorStatement(req, res) {
+    try {
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: "Invalid investor ID." });
+      }
+
+      const wb = await investorStatementService.buildInvestorStatementWorkbook(id);
+      const investor = await Investor.findById(id).select("name");
+      const safeName = (investor?.name || "Investor").replace(/[^a-z0-9]+/gi, "_");
+      const filename = `RealTimeCapital_Statement_${safeName}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+
+      await wb.xlsx.write(res);
+      res.end();
+    } catch (error) {
+      console.error("InvestorController.exportInvestorStatement:", error);
+      return res.status(500).json({ success: false, message: error.message || "Failed to export statement." });
+    }
+  }
+
+  /**
+   * GET /api/v1/investors/admin/rtc-revenue-report/export
+   * Downloadable Excel report of RTC's platform-wide revenue — its cut of external
+   * investors' loans plus its own direct loan book. Admin/pawn-super-admin only.
+   */
+  async exportRtcRevenueReport(req, res) {
+    try {
+      const wb = await investorStatementService.buildRtcRevenueReportWorkbook();
+      const filename = `RealTimeCapital_RTC_Revenue_Report_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+
+      await wb.xlsx.write(res);
+      res.end();
+    } catch (error) {
+      console.error("InvestorController.exportRtcRevenueReport:", error);
+      return res.status(500).json({ success: false, message: error.message || "Failed to export RTC revenue report." });
+    }
+  }
+
+  /**
+   * GET /api/v1/investors/admin/loans/admin-fee?loan_no=...
+   * Admin-fee detail for one loan — admin/pawn-super-admin only. Used by the RTC Portfolio
+   * loan detail view; never exposed through any investor-facing allocation endpoint.
+   * Keyed by loan_no (query param, not a path segment — loan_no values like "MV1/070826/T"
+   * contain slashes) since that's the only loan reference the shared Deployment shape
+   * exposes to the frontend.
+   */
+  async getLoanAdminFee(req, res) {
+    try {
+      const { loan_no: loanNo } = req.query;
+      if (!loanNo) {
+        return res.status(400).json({ success: false, message: "loan_no query param is required." });
+      }
+      const fee = await investorAllocationService.getLoanAdminFee(loanNo);
+      if (!fee) return res.status(404).json({ success: false, message: "Loan not found." });
+      return res.json({ success: true, data: { admin_fee: fee } });
+    } catch (error) {
+      console.error("InvestorController.getLoanAdminFee:", error);
+      return res.status(500).json({ success: false, message: "Failed to fetch admin fee." });
+    }
+  }
+
+  /**
+   * GET /api/v1/investors/admin/eligible-investors?collateral_category=&loan_period_type=&principal_amount=
+   * Populates the "Assign Investor" dropdown on the loan creation form — motor_vehicle and
+   * jewellery only (small_loans are always RTC's own book, so this never returns anything
+   * meaningful for that category — the backend loan-creation validation blocks it outright).
+   */
+  async getEligibleInvestorsForLoan(req, res) {
+    try {
+      const { collateral_category, loan_period_type, principal_amount } = req.query;
+      if (!collateral_category || !loan_period_type) {
+        return res.status(400).json({
+          success: false,
+          message: "collateral_category and loan_period_type are required.",
+        });
+      }
+      const investors = await investorAllocationService.getEligibleInvestorsForDisplay({
+        collateral_category,
+        loan_period_type,
+        principal_amount: principal_amount ? Number(principal_amount) : 0,
+      });
+      return res.json({ success: true, data: { investors } });
+    } catch (error) {
+      console.error("InvestorController.getEligibleInvestorsForLoan:", error);
+      return res.status(500).json({ success: false, message: "Failed to fetch eligible investors." });
     }
   }
 

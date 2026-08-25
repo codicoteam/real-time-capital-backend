@@ -54,6 +54,18 @@ const LoanSchema = new mongoose.Schema(
       index: true,
     },
 
+    // Staff-selected investor, set at loan CREATION time — Loan Processor/Super Admin
+    // choosing who funds this loan instead of the default automatic round-robin
+    // assignment. Only meaningful for motor_vehicle/jewellery (small_loans are always
+    // RTC's own book — see investor_allocation_service.assignLoan/getEligibleInvestors).
+    // Re-validated for eligibility at disbursement time; falls back to normal
+    // auto-assignment if the chosen investor is no longer eligible by then.
+    preferred_investor_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Investor",
+      default: null,
+    },
+
     // Financials
     principal_amount: { type: Number, required: true, min: 0 },
     current_balance: { type: Number, required: true, min: 0 }, // reduces with payments; starts at expected_total_repayable
@@ -76,8 +88,29 @@ const LoanSchema = new mongoose.Schema(
     // Calculated financial breakdown (set at loan creation)
     interest_amount: { type: Number, min: 0, default: 0 },        // interest charged
     storage_charge_amount: { type: Number, min: 0, default: 0 },  // storage fee charged
-    expected_total_repayable: { type: Number, min: 0 },           // principal + interest + storage
+    expected_total_repayable: { type: Number, min: 0 },           // principal + interest + storage (+ admin fee if deferred)
     repayment_breakdown: { type: mongoose.Schema.Types.Mixed, default: null }, // full calculation detail
+
+    // Admin fee (0-10% of principal_amount) — negotiated by the Loan Processor/Super Admin
+    // at loan CREATION time, not at application. This is pure RTC revenue: it never touches
+    // an investor's principal_amount or profit split (see investor_allocation_service.assignLoan).
+    //   - "upfront":  collected as a separate cash payment at signing. Customer still owes
+    //                 back only principal_amount; interest is charged on principal_amount alone.
+    //   - "deferred": added on top of what the customer owes. Customer owes back
+    //                 principal_amount + admin_fee_amount; interest is charged on that total.
+    admin_fee_pct: { type: Number, min: 0, max: 10, default: 0 },
+    admin_fee_amount: { type: Number, min: 0, default: 0 },
+    admin_fee_type: { type: String, enum: ["upfront", "deferred", null], default: null },
+    // Only meaningful when admin_fee_type is "upfront" — has the staff member collecting
+    // the loan actually taken the separate cash fee at signing?
+    admin_fee_collected: { type: Boolean, default: false },
+    admin_fee_collected_at: { type: Date, default: null },
+    admin_fee_payment_method: {
+      type: String,
+      enum: ["cash", "bank_transfer", "mobile_money", "cheque", null],
+      default: null,
+    },
+    admin_fee_notes: { type: String, trim: true },
 
     // All loans are once-off payments
     repayment_type: {
