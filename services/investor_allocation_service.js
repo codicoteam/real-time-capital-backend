@@ -252,18 +252,22 @@ class InvestorAllocationService {
     const investorSharePct =
       selectedInvestor.profit_share_override?.[termKey] ?? termConfig.investor_share;
 
-    // A deferred admin fee is baked into expected_total_repayable (principal + fee +
-    // interest + storage) so interest gets charged on the blended base — but the raw fee
-    // itself is RTC's own revenue, never the investor's, and never appears in this split.
-    // Subtracting it back out here leaves totalLoanProfit as interest + storage only, which
-    // is what actually splits between investor and RTC. The fee amount is tracked
-    // separately on the Loan and surfaces only in RTC's own reporting (never an investor's).
+    // Deferred admin fee: the investor funds the WHOLE amount the customer ends up owing
+    // (principal + fee), not just the principal — that's what actually gets disbursed out
+    // of their capital, so it's what "deployed capital" must reflect. Interest is charged
+    // on this same blended base (see calculateRepaymentBreakdown), and totalLoanProfit
+    // (interest + storage only) splits between investor/RTC exactly as any other loan —
+    // the raw fee amount itself is never part of that split.
+    //
+    // Upfront admin fee: collected as separate cash from the customer at signing, so it
+    // never touches the investor's capital or the loan's balance at all — principal stays
+    // untouched, matching a fee-free loan of the same size.
     const adminFeeAmount = loan.admin_fee_amount || 0;
     const feeIsDeferred = loan.admin_fee_type === "deferred";
-    const principalForProfit = loan.principal_amount + (feeIsDeferred ? adminFeeAmount : 0);
+    const principalForInvestor = loan.principal_amount + (feeIsDeferred ? adminFeeAmount : 0);
 
     const totalLoanProfit = Math.max(
-      (loan.expected_total_repayable || loan.principal_amount) - principalForProfit,
+      (loan.expected_total_repayable || loan.principal_amount) - principalForInvestor,
       0,
     );
     const investorProfit = parseFloat((totalLoanProfit * (investorSharePct / 100)).toFixed(2));
@@ -275,7 +279,7 @@ class InvestorAllocationService {
       loan_no: loan.loan_no,
       collateral_category: loan.collateral_category,
       loan_period_key: termKey,
-      principal_amount: loan.principal_amount,
+      principal_amount: principalForInvestor,
       total_loan_profit: totalLoanProfit,
       investor_share_pct: investorSharePct,
       investor_profit: investorProfit,
@@ -285,8 +289,33 @@ class InvestorAllocationService {
 
     console.log(
       `[InvestorAllocation] Loan ${loan.loan_no} → ${selectedInvestor.name} ` +
-        `(share=${investorSharePct}%, profit=$${investorProfit})`,
+        `(share=${investorSharePct}%, profit=$${investorProfit})` +
+        (feeIsDeferred && adminFeeAmount > 0 ? ` — includes $${adminFeeAmount.toFixed(2)} deferred admin fee` : ""),
     );
+
+    // Deferred fee: skim it out of the investor's disbursed capital right now, as RTC's
+    // own cash — the customer only ever receives loan.principal_amount, the investor
+    // funded principal_amount + fee, and the difference is RTC's immediate fee income
+    // (not something RTC waits to collect when the loan is eventually repaid).
+    if (feeIsDeferred && adminFeeAmount > 0 && !loan.admin_fee_collected) {
+      try {
+        const rtcAccount = await this.getRtcAccount();
+        await this.recordTransaction(rtcAccount._id, {
+          type: "deposit",
+          amount: adminFeeAmount,
+          notes: `Admin fee (deferred, ${loan.admin_fee_pct}%) — Loan ${loan.loan_no}`,
+          source: "admin_fee",
+        });
+        loan.admin_fee_collected = true;
+        loan.admin_fee_collected_at = new Date();
+        await loan.save();
+        console.log(
+          `[InvestorAllocation] Credited RTC with $${adminFeeAmount.toFixed(2)} deferred admin fee for loan ${loan.loan_no}`,
+        );
+      } catch (err) {
+        console.error(`[InvestorAllocation] Failed to credit RTC's deferred admin fee for loan ${loan.loan_no}:`, err.message);
+      }
+    }
 
     // Fire-and-forget: populate loan with asset + borrower for email, then send
     Loan.findById(loanId)
