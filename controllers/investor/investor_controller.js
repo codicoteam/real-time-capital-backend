@@ -117,8 +117,11 @@ class InvestorController {
    */
   async createInvestor(req, res) {
     try {
-      const { kind, name, email, password, phone, location, committed_capital, profit_share_override, loan_type_preferences, loan_term_preferences, title, notes } =
-        req.body;
+      const {
+        kind, name, email, password, phone, location, committed_capital, profit_share_override,
+        loan_type_preferences, loan_term_preferences, title, notes,
+        referred_by_investor_id, referral_share_override,
+      } = req.body;
 
       if (!kind || !["individual", "company"].includes(kind)) {
         return res.status(400).json({ success: false, message: "kind must be 'individual' or 'company'." });
@@ -151,6 +154,41 @@ class InvestorController {
         return res.status(409).json({ success: false, message: "An investor with this email already exists." });
       }
 
+      let referredByInvestorId = null;
+      let referralShareOverride = null;
+      if (referred_by_investor_id) {
+        if (!mongoose.Types.ObjectId.isValid(referred_by_investor_id)) {
+          return res.status(400).json({ success: false, message: "Invalid referred_by_investor_id." });
+        }
+        const referrer = await Investor.findOne({ _id: referred_by_investor_id, status: { $ne: "deleted" } });
+        if (!referrer) {
+          return res.status(404).json({ success: false, message: "Referrer investor not found." });
+        }
+        const { two_week, one_month } = referral_share_override || {};
+        if (two_week === undefined && one_month === undefined) {
+          return res.status(400).json({ success: false, message: "referral_share_override must set at least one of two_week/one_month." });
+        }
+        for (const [key, val] of Object.entries({ two_week, one_month })) {
+          if (val !== undefined && (val < 0 || val > 100)) {
+            return res.status(400).json({ success: false, message: `${key} must be between 0 and 100.` });
+          }
+        }
+        const profitSplit = await investorAllocationService.getProfitSplitConfig();
+        for (const key of ["two_week", "one_month"]) {
+          const referralPct = key === "two_week" ? two_week : one_month;
+          if (referralPct === undefined) continue;
+          const ownPct = profit_share_override?.[key] ?? profitSplit[key]?.investor_share ?? 0;
+          if (referralPct + ownPct > 100) {
+            return res.status(400).json({
+              success: false,
+              message: `${key}: referrer's ${referralPct}% + this investor's ${ownPct}% exceeds 100%.`,
+            });
+          }
+        }
+        referredByInvestorId = referred_by_investor_id;
+        referralShareOverride = { two_week, one_month };
+      }
+
       const password_hash = await hashPassword(password.trim());
 
       const investor = await Investor.create({
@@ -164,6 +202,8 @@ class InvestorController {
         location: location ? location.trim() : undefined,
         committed_capital: Number(committed_capital),
         profit_share_override: profit_share_override || null,
+        referred_by_investor_id: referredByInvestorId,
+        referral_share_override: referralShareOverride,
         loan_type_preferences: loanTypeParsed.value,
         loan_term_preferences: loanTermParsed.value,
         title: title ? title.trim() : undefined,
@@ -453,6 +493,83 @@ class InvestorController {
     } catch (error) {
       console.error("InvestorController.updateProfitShare:", error);
       return res.status(500).json({ success: false, message: "Failed to update profit share." });
+    }
+  }
+
+  /**
+   * PUT /api/v1/investors/:id/referral
+   * Set, change, or clear which existing investor referred this one onto the platform,
+   * and the referrer's negotiated cut (by term key) on every loan this investor funds
+   * going forward. Does not retroactively touch loans already assigned.
+   */
+  async updateReferralPartnership(req, res) {
+    try {
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: "Invalid investor ID." });
+      }
+
+      const investor = await Investor.findOne({ _id: id, status: { $ne: "deleted" } });
+      if (!investor) {
+        return res.status(404).json({ success: false, message: "Investor not found." });
+      }
+
+      const { referred_by_investor_id, referral_share_override } = req.body;
+
+      if (referred_by_investor_id === null || referred_by_investor_id === undefined) {
+        investor.referred_by_investor_id = null;
+        investor.referral_share_override = null;
+      } else {
+        if (!mongoose.Types.ObjectId.isValid(referred_by_investor_id)) {
+          return res.status(400).json({ success: false, message: "Invalid referred_by_investor_id." });
+        }
+        if (referred_by_investor_id === id) {
+          return res.status(400).json({ success: false, message: "An investor cannot refer themselves." });
+        }
+        const referrer = await Investor.findOne({ _id: referred_by_investor_id, status: { $ne: "deleted" } });
+        if (!referrer) {
+          return res.status(404).json({ success: false, message: "Referrer investor not found." });
+        }
+
+        const { two_week, one_month } = referral_share_override || {};
+        if (two_week === undefined && one_month === undefined) {
+          return res.status(400).json({ success: false, message: "referral_share_override must set at least one of two_week/one_month." });
+        }
+        for (const [key, val] of Object.entries({ two_week, one_month })) {
+          if (val !== undefined && (val < 0 || val > 100)) {
+            return res.status(400).json({ success: false, message: `${key} must be between 0 and 100.` });
+          }
+        }
+        // Referrer's cut + this investor's own share (or the platform default if no
+        // override) must leave RTC with a non-negative share.
+        const ownShare = investor.profit_share_override || {};
+        const profitSplit = await investorAllocationService.getProfitSplitConfig();
+        for (const key of ["two_week", "one_month"]) {
+          const referralPct = key === "two_week" ? two_week : one_month;
+          if (referralPct === undefined) continue;
+          const ownPct = ownShare[key] ?? profitSplit[key]?.investor_share ?? 0;
+          if (referralPct + ownPct > 100) {
+            return res.status(400).json({
+              success: false,
+              message: `${key}: referrer's ${referralPct}% + this investor's ${ownPct}% exceeds 100%.`,
+            });
+          }
+        }
+
+        investor.referred_by_investor_id = referred_by_investor_id;
+        investor.referral_share_override = { two_week, one_month };
+      }
+
+      await investor.save();
+
+      return res.json({
+        success: true,
+        message: "Referral partnership updated.",
+        data: { investor: safeInvestor(investor) },
+      });
+    } catch (error) {
+      console.error("InvestorController.updateReferralPartnership:", error);
+      return res.status(500).json({ success: false, message: "Failed to update referral partnership." });
     }
   }
 

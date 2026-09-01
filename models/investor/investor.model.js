@@ -57,6 +57,23 @@ const InvestorSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Set when this investor was brought onto the platform by another existing investor
+    // (e.g. Cranbrook referred Roi Kanner in). When set, every loan assigned to THIS
+    // investor also generates a co-investor allocation for the referrer, cut from RTC's
+    // share — see assignLoan in investor_allocation_service.js. referral_share_override
+    // is the REFERRER's negotiated %, by term key (same shape as profit_share_override).
+    // RTC's resulting share is whatever's left after this investor's + the referrer's %
+    // are subtracted from 100 — there is no separate stored RTC field.
+    referred_by_investor_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Investor",
+      default: null,
+    },
+    referral_share_override: {
+      type: ProfitShareOverrideSchema,
+      default: null,
+    },
+
     // Collateral categories this investor's capital may be deployed into.
     loan_type_preferences: {
       type: [{ type: String, enum: ["small_loans", "motor_vehicle", "jewellery"] }],

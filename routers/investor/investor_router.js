@@ -889,6 +889,13 @@ router.put(
   investorController.updateProfitShare.bind(investorController),
 );
 
+router.put(
+  "/:id/referral",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.updateReferralPartnership.bind(investorController),
+);
+
 // ─── COMPANY CLIENTS ──────────────────────────────────────────────────────────
 
 /**

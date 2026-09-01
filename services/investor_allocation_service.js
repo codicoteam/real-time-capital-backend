@@ -271,7 +271,27 @@ class InvestorAllocationService {
       0,
     );
     const investorProfit = parseFloat((totalLoanProfit * (investorSharePct / 100)).toFixed(2));
-    const rtcRevenue = parseFloat((totalLoanProfit - investorProfit).toFixed(2));
+
+    // Referral partnership: this investor was brought onto the platform by another
+    // investor (e.g. Cranbrook referred Roi in) — the referrer earns a cut on every loan
+    // this investor funds, cut from RTC's share, not the funding investor's own %.
+    let referrerInvestor = null;
+    let referrerSharePct = 0;
+    let referrerProfit = 0;
+    if (selectedInvestor.referred_by_investor_id) {
+      referrerInvestor = await Investor.findById(selectedInvestor.referred_by_investor_id);
+      if (referrerInvestor && referrerInvestor.status === "active") {
+        referrerSharePct = selectedInvestor.referral_share_override?.[termKey] ?? 0;
+        referrerProfit = parseFloat((totalLoanProfit * (referrerSharePct / 100)).toFixed(2));
+      } else {
+        console.warn(
+          `[InvestorAllocation] Loan ${loan.loan_no}: referrer investor for ${selectedInvestor.name} ` +
+            `is missing or inactive — skipping referral cut.`,
+        );
+        referrerInvestor = null;
+      }
+    }
+    const rtcRevenue = parseFloat((totalLoanProfit - investorProfit - referrerProfit).toFixed(2));
 
     const allocation = await InvestorLoanAllocation.create({
       investor_id: selectedInvestor._id,
@@ -292,6 +312,30 @@ class InvestorAllocationService {
         `(share=${investorSharePct}%, profit=$${investorProfit})` +
         (feeIsDeferred && adminFeeAmount > 0 ? ` — includes $${adminFeeAmount.toFixed(2)} deferred admin fee` : ""),
     );
+
+    if (referrerInvestor && referrerSharePct > 0) {
+      // Co-investor row: carries the FULL principal for eligibility/display purposes
+      // (same convention as the existing Roi/Cranbrook rows), but that capital was never
+      // the referrer's own money — only investor_profit is real to them. rtc_revenue is 0
+      // here since RTC's cut is already fully accounted for on the primary allocation above.
+      await InvestorLoanAllocation.create({
+        investor_id: referrerInvestor._id,
+        loan_id: loan._id,
+        loan_no: loan.loan_no,
+        collateral_category: loan.collateral_category,
+        loan_period_key: termKey,
+        principal_amount: loan.principal_amount,
+        total_loan_profit: totalLoanProfit,
+        investor_share_pct: referrerSharePct,
+        investor_profit: referrerProfit,
+        rtc_revenue: 0,
+        is_co_investor: true,
+        status: "active",
+      });
+      console.log(
+        `[InvestorAllocation] Loan ${loan.loan_no} → referral cut of $${referrerProfit} (${referrerSharePct}%) to ${referrerInvestor.name}`,
+      );
+    }
 
     // Deferred fee: skim it out of the investor's disbursed capital right now, as RTC's
     // own cash — the customer only ever receives loan.principal_amount, the investor
