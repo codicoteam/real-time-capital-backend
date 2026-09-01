@@ -173,15 +173,20 @@ class InvestorController {
             return res.status(400).json({ success: false, message: `${key} must be between 0 and 100.` });
           }
         }
+        // The referrer's cut comes OUT of this investor's own baseline share (e.g. 60%
+        // platform standard → 48% investor / 12% referrer) — RTC's cut is always 100%
+        // minus the investor's baseline share, untouched by the referral. So the only
+        // real constraint is that the referrer can't take more than the investor's own
+        // full baseline share.
         const profitSplit = await investorAllocationService.getProfitSplitConfig();
         for (const key of ["two_week", "one_month"]) {
           const referralPct = key === "two_week" ? two_week : one_month;
           if (referralPct === undefined) continue;
           const ownPct = profit_share_override?.[key] ?? profitSplit[key]?.investor_share ?? 0;
-          if (referralPct + ownPct > 100) {
+          if (referralPct > ownPct) {
             return res.status(400).json({
               success: false,
-              message: `${key}: referrer's ${referralPct}% + this investor's ${ownPct}% exceeds 100%.`,
+              message: `${key}: referrer's ${referralPct}% can't exceed this investor's own ${ownPct}% share.`,
             });
           }
         }
@@ -540,18 +545,21 @@ class InvestorController {
             return res.status(400).json({ success: false, message: `${key} must be between 0 and 100.` });
           }
         }
-        // Referrer's cut + this investor's own share (or the platform default if no
-        // override) must leave RTC with a non-negative share.
+        // The referrer's cut comes OUT of this investor's own baseline share (e.g. 60%
+        // platform standard → 48% investor / 12% referrer) — RTC's cut is always 100%
+        // minus the investor's baseline share, untouched by the referral. So the only
+        // real constraint is that the referrer can't take more than the investor's own
+        // full baseline share.
         const ownShare = investor.profit_share_override || {};
         const profitSplit = await investorAllocationService.getProfitSplitConfig();
         for (const key of ["two_week", "one_month"]) {
           const referralPct = key === "two_week" ? two_week : one_month;
           if (referralPct === undefined) continue;
           const ownPct = ownShare[key] ?? profitSplit[key]?.investor_share ?? 0;
-          if (referralPct + ownPct > 100) {
+          if (referralPct > ownPct) {
             return res.status(400).json({
               success: false,
-              message: `${key}: referrer's ${referralPct}% + this investor's ${ownPct}% exceeds 100%.`,
+              message: `${key}: referrer's ${referralPct}% can't exceed this investor's own ${ownPct}% share.`,
             });
           }
         }
@@ -761,6 +769,12 @@ class InvestorController {
       const { page = 1, limit = 50, status } = req.query;
       const result = await investorAllocationService.getInvestorAllocations(id, { page, limit, status });
 
+      // This route is self-or-admin (an investor viewing their own loans, or staff viewing
+      // any investor's) — borrower PII (national ID, phone, address, ID photo) must never
+      // reach an investor's own session, only staff. Strip it at the API layer, not just in
+      // the UI, since a network response is visible regardless of what the page renders.
+      const isAdmin = req.investor.kind === "admin";
+
       // Shape each allocation for the frontend
       const deployments = result.allocations.map((alloc) => {
         const loan = alloc.loan_id;
@@ -799,10 +813,10 @@ class InvestorController {
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
             : (alloc.borrower_name || "Unknown"),
-          borrowerPhone: borrower?.phone || null,
-          borrowerNationalId: borrower?.national_id_number || null,
-          borrowerAddress: borrower?.address || null,
-          nationalIdImageUrl: borrower?.national_id_image_url || null,
+          borrowerPhone: isAdmin ? (borrower?.phone || null) : null,
+          borrowerNationalId: isAdmin ? (borrower?.national_id_number || null) : null,
+          borrowerAddress: isAdmin ? (borrower?.address || null) : null,
+          nationalIdImageUrl: isAdmin ? (borrower?.national_id_image_url || null) : null,
           collateralTitle: asset?.title || alloc.collateral_description || null,
           collateralImages: asset?.asset_images || [],
           collateralCategory: alloc.collateral_category || loan?.collateral_category || null,

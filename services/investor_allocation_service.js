@@ -248,8 +248,10 @@ class InvestorAllocationService {
     const termKey = mapPeriodToTermKey(loan.loan_period_type);
     const termConfig = profitConfig[termKey] || DEFAULT_PROFIT_SPLIT[termKey];
 
-    // Per-investor negotiated share takes precedence over the platform default
-    const investorSharePct =
+    // Per-investor negotiated share takes precedence over the platform default. This is
+    // the investor's OWN baseline share, before any referral carve-out — RTC's cut is
+    // always 100% minus THIS number, completely unaffected by a referral arrangement.
+    const investorBaseSharePct =
       selectedInvestor.profit_share_override?.[termKey] ?? termConfig.investor_share;
 
     // Deferred admin fee: the investor funds the WHOLE amount the customer ends up owing
@@ -270,18 +272,20 @@ class InvestorAllocationService {
       (loan.expected_total_repayable || loan.principal_amount) - principalForInvestor,
       0,
     );
-    const investorProfit = parseFloat((totalLoanProfit * (investorSharePct / 100)).toFixed(2));
 
     // Referral partnership: this investor was brought onto the platform by another
-    // investor (e.g. Cranbrook referred Roi in) — the referrer earns a cut on every loan
-    // this investor funds, cut from RTC's share, not the funding investor's own %.
+    // investor (e.g. Cranbrook referred Roi in) — the referrer's cut comes out of THIS
+    // investor's own baseline share (60% platform standard → 48% investor / 12% referrer,
+    // same shape as the original Roi/Cranbrook deal), never out of RTC's. RTC's revenue
+    // is always totalLoanProfit × (100 − investorBaseSharePct)%, computed below, whether
+    // or not a referral exists.
     let referrerInvestor = null;
     let referrerSharePct = 0;
     let referrerProfit = 0;
     if (selectedInvestor.referred_by_investor_id) {
       referrerInvestor = await Investor.findById(selectedInvestor.referred_by_investor_id);
       if (referrerInvestor && referrerInvestor.status === "active") {
-        referrerSharePct = selectedInvestor.referral_share_override?.[termKey] ?? 0;
+        referrerSharePct = Math.min(selectedInvestor.referral_share_override?.[termKey] ?? 0, investorBaseSharePct);
         referrerProfit = parseFloat((totalLoanProfit * (referrerSharePct / 100)).toFixed(2));
       } else {
         console.warn(
@@ -291,7 +295,11 @@ class InvestorAllocationService {
         referrerInvestor = null;
       }
     }
-    const rtcRevenue = parseFloat((totalLoanProfit - investorProfit - referrerProfit).toFixed(2));
+    // Effective share actually recorded on the investor's own allocation — their
+    // baseline share minus whatever they're giving up to the referrer.
+    const investorSharePct = investorBaseSharePct - referrerSharePct;
+    const investorProfit = parseFloat((totalLoanProfit * (investorSharePct / 100)).toFixed(2));
+    const rtcRevenue = parseFloat((totalLoanProfit * ((100 - investorBaseSharePct) / 100)).toFixed(2));
 
     const allocation = await InvestorLoanAllocation.create({
       investor_id: selectedInvestor._id,
@@ -453,7 +461,7 @@ class InvestorAllocationService {
 
     const [allocations, activeDeeds] = await Promise.all([
       InvestorLoanAllocation.find({ investor_id: investorId }),
-      TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] } }).select("loan_amount"),
+      TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] }, linked_allocation_id: null }).select("loan_amount"),
     ]);
 
     const active = allocations.filter((a) => a.status === "active");
@@ -679,7 +687,11 @@ class InvestorAllocationService {
     if (status) filter.status = status;
     if (investorId) filter.investor_id = investorId;
 
-    const deedFilter = { status: { $ne: "cancelled" } };
+    // linked_allocation_id excludes "visibility-only" deeds — deeds created purely so a
+    // loan that already exists as an InvestorLoanAllocation also shows up in the Bond &
+    // Title Deeds registry. Including them here would double-list (and double-count) the
+    // same loan under two different loan_no values.
+    const deedFilter = { status: { $ne: "cancelled" }, linked_allocation_id: null };
     if (status) deedFilter.status = status;
     if (investorId) deedFilter.investor_id = investorId;
 
@@ -897,7 +909,7 @@ class InvestorAllocationService {
       InvestorTransaction.find({ investor_id: investorId }),
       InvestorLoanAllocation.find({ investor_id: investorId }),
       InvestorMonthlyInterest.find({ investor_id: investorId }),
-      TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] } }).select("loan_amount"),
+      TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] }, linked_allocation_id: null }).select("loan_amount"),
     ]);
 
     const activeAllocs = allocations.filter((a) => a.status === "active");
@@ -987,7 +999,7 @@ class InvestorAllocationService {
     } else if (type === "capital_withdrawal" || type === "drawing" || type === "expense") {
       const [activeAllocs, activeDeeds] = await Promise.all([
         InvestorLoanAllocation.find({ investor_id: investorId, status: "active" }),
-        TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] } }).select("loan_amount"),
+        TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] }, linked_allocation_id: null }).select("loan_amount"),
       ]);
       // Co-investor rows carry the full loan principal but aren't this investor's own
       // money — excluding them here matters a lot: without this, an investor holding a
@@ -1213,7 +1225,9 @@ class InvestorAllocationService {
         select: "start_date due_date",
       }),
       InvestorMonthlyInterest.find({ investor_id: investorId }),
-      TitleDeed.find({ investor_id: investorId }),
+      // linked_allocation_id excludes visibility-only registry deeds (see getAllAllocations) —
+      // their money is already tracked via the InvestorLoanAllocation they mirror.
+      TitleDeed.find({ investor_id: investorId, linked_allocation_id: null }),
     ]);
 
     const entries = [];
@@ -1352,7 +1366,7 @@ class InvestorAllocationService {
     const [allocations, monthlyInterestRecords, titleDeeds] = await Promise.all([
       InvestorLoanAllocation.find({ investor_id: investorId, status: "active" }),
       InvestorMonthlyInterest.find({ investor_id: investorId }),
-      TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] } }),
+      TitleDeed.find({ investor_id: investorId, status: { $in: ["active", "pending"] }, linked_allocation_id: null }),
     ]);
 
     const alreadyPaidByAlloc = new Map();

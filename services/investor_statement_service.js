@@ -159,7 +159,10 @@ async function buildLoanRows(investorId) {
           { path: "asset", select: "title" },
         ],
       }),
-    TitleDeed.find({ investor_id: investorId, status: { $ne: "cancelled" } }).sort({ start_date: 1 }),
+    // linked_allocation_id excludes visibility-only registry deeds (see getAllAllocations
+    // in investor_allocation_service.js) — their money is already tracked via the
+    // InvestorLoanAllocation they mirror, so including them here would double-count.
+    TitleDeed.find({ investor_id: investorId, status: { $ne: "cancelled" }, linked_allocation_id: null }).sort({ start_date: 1 }),
   ]);
 
   const rows = [];
@@ -295,17 +298,14 @@ async function buildInvestorStatementWorkbook(investorId) {
   ];
   applyHdrStyle(s2.getRow(1));
 
-  // Running balance mirrors LedgerTable.tsx: only real cash movement counts
-  // (deposits/withdrawals/profit) — loan_funded/loan_repaid never touch it, since
-  // deploying committed capital into a loan doesn't reduce the investor's account value.
-  const BALANCE_TYPES = new Set(["deposit", "capital_withdrawal", "profit_withdrawal", "drawing", "expense", "interest_earned", "loan_profit"]);
+  // Running balance mirrors LedgerTable.tsx: every entry moves it, including
+  // loan_funded/loan_repaid — funding a loan is cash leaving the account (still the
+  // investor's asset, just no longer liquid), and a repayment is cash coming back in.
   let running = 0;
   const chronological = [...ledger].sort((a, b) => new Date(a.date) - new Date(b.date));
   const balanceByEntry = new Map();
   chronological.forEach((e, i) => {
-    if (BALANCE_TYPES.has(e.type)) {
-      running += e.direction === "in" ? e.amount : -e.amount;
-    }
+    running += e.direction === "in" ? e.amount : -e.amount;
     balanceByEntry.set(i, running);
   });
 

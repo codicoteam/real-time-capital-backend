@@ -72,6 +72,18 @@ const TitleDeedSchema = new mongoose.Schema(
       ref: "Investor",
       default: null,
     },
+
+    // Set when this deed exists purely so a loan that's already tracked as an
+    // InvestorLoanAllocation (e.g. a complex court-order/installment-plan loan) also shows
+    // up in the Bond & Title Deeds registry for visibility. When set, every financial
+    // calculation (ledger, deployed capital, expected income, reports) skips this deed
+    // entirely — the money is already accounted for via the linked allocation, so counting
+    // both would double the investor's numbers. Only the registry list itself includes it.
+    linked_allocation_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "InvestorLoanAllocation",
+      default: null,
+    },
   },
   {
     timestamps: { createdAt: "created_at", updatedAt: "updated_at" },

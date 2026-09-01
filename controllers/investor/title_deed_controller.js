@@ -37,6 +37,7 @@ const titleDeedController = {
         documents,
         notes,
         deed_number,
+        linked_allocation_id,
       } = req.body;
 
       if (!investor_id) return res.status(400).json({ success: false, message: "investor_id is required" });
@@ -69,6 +70,7 @@ const titleDeedController = {
         borrower_phone,
         documents: Array.isArray(documents) ? documents : [],
         notes,
+        linked_allocation_id: linked_allocation_id || null,
         created_by: actorId,
       });
 
@@ -114,10 +116,23 @@ const titleDeedController = {
         TitleDeed.countDocuments(filter),
       ]);
 
+      // This route is self-or-admin (an investor viewing their own deeds, or staff viewing
+      // the Bond & Title Deeds registry) — borrower PII (national ID, phone) must never
+      // reach an investor's own session, only staff.
+      const isAdmin = req.investor?.kind === "admin";
+      const sanitized = isAdmin
+        ? deeds
+        : deeds.map((d) => {
+            const obj = d.toObject();
+            delete obj.borrower_id_number;
+            delete obj.borrower_phone;
+            return obj;
+          });
+
       return res.json({
         success: true,
         data: {
-          title_deeds: deeds,
+          title_deeds: sanitized,
           pagination: { total, page: Number(page), limit: Number(limit), pages: Math.ceil(total / Number(limit)) },
         },
       });
@@ -168,6 +183,7 @@ const titleDeedController = {
         "borrower_phone",
         "documents",
         "notes",
+        "linked_allocation_id",
       ];
       const updates = {};
       for (const key of allowed) {
