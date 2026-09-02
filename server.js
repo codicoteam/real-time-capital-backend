@@ -55,6 +55,7 @@ const auctionReportRouter = require("./routers/auction_report_routers");
 const chatRouter          = require("./routers/chat_router");
 const investorRouter      = require("./routers/investor/investor_router");
 const titleDeedRouter     = require("./routers/investor/title_deed_router");
+const xeroRouter          = require("./routers/xero_router");
 
 // Services
 const auctionService = require("./services/assets_auction_service");
@@ -153,6 +154,7 @@ app.use("/api/v1/auction-report", auctionReportRouter);
 app.use("/api/v1/chat",          chatRouter);
 app.use("/api/v1/investors",     investorRouter);
 app.use("/api/v1/title-deeds",  titleDeedRouter);
+app.use("/api/v1/xero",          xeroRouter);
 
 // Global error handler
 app.use((err, req, res, next) => {
