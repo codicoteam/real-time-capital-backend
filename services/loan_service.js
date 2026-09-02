@@ -2318,6 +2318,91 @@ class LoanService {
     }
   }
 
+  /**
+   * Add more principal to an already-active loan (Loan Processor/Admin only). The loan's
+   * start_date/due_date never change — a top-up just adds money mid-term. Interest and
+   * storage on the added amount are prorated for the days actually remaining until
+   * due_date (not the loan's full original period), since that's the only time the extra
+   * money is really out there earning. Admin fee (if any) applies to the added amount
+   * only — the original principal's fee was already assessed at creation.
+   */
+  async topUpLoan(loanId, topUpData, userId) {
+    if (!mongoose.Types.ObjectId.isValid(loanId)) {
+      throw { status: 400, message: "Invalid loan ID." };
+    }
+    const { amount, admin_fee_pct, admin_fee_type, notes } = topUpData;
+    if (!amount || amount <= 0) {
+      throw { status: 400, message: "Top-up amount must be greater than 0." };
+    }
+
+    const loan = await Loan.findById(loanId);
+    if (!loan) throw { status: 404, message: "Loan not found." };
+    if (loan.status !== "active") {
+      throw { status: 400, message: `Loan must be active to top up (current status: "${loan.status}").` };
+    }
+
+    // Admin fee for THIS top-up defaults to whatever's already negotiated on the loan, but
+    // can be renegotiated per top-up.
+    const feePct = admin_fee_pct != null ? admin_fee_pct : (loan.admin_fee_pct || 0);
+    if (typeof feePct !== "number" || feePct < 0 || feePct > 10) {
+      throw { status: 400, message: "admin_fee_pct must be a number between 0 and 10." };
+    }
+    const feeType = feePct > 0 ? (admin_fee_type || loan.admin_fee_type || "deferred") : null;
+    if (feePct > 0 && !["upfront", "deferred"].includes(feeType)) {
+      throw { status: 400, message: 'admin_fee_type must be "upfront" or "deferred" when admin_fee_pct is set.' };
+    }
+
+    const now = new Date();
+    const dueDate = new Date(loan.due_date);
+    const remainingDays = Math.max(Math.ceil((dueDate - now) / (1000 * 60 * 60 * 24)), 0);
+    if (remainingDays === 0) {
+      throw { status: 400, message: "This loan's due date has already passed — top-ups aren't supported on an overdue loan." };
+    }
+    const interestPeriodDays = loan.interest_period_days || 30;
+    const numberOfPeriods = remainingDays / interestPeriodDays;
+
+    const feeIsDeferred = feeType === "deferred";
+    const adminFeeAmount = parseFloat((amount * (feePct / 100)).toFixed(2));
+    const interestBase = feeIsDeferred ? amount + adminFeeAmount : amount;
+
+    const topUpInterest = parseFloat((interestBase * (loan.interest_rate_percent / 100) * numberOfPeriods).toFixed(2));
+    const topUpStorage = parseFloat((interestBase * (loan.storage_charge_percent / 100) * numberOfPeriods).toFixed(2));
+    const balanceIncrease = parseFloat((interestBase + topUpInterest + topUpStorage).toFixed(2));
+
+    // Confirm the investor side can actually take the extra money BEFORE touching the
+    // Loan document — if this throws, nothing below has been written yet.
+    await investorAllocationService.topUpAllocation(loan._id, {
+      amount,
+      interestAmount: topUpInterest,
+      storageAmount: topUpStorage,
+      adminFeePct: feePct,
+      adminFeeType: feeType,
+      adminFeeAmount,
+      loanNo: loan.loan_no,
+    });
+
+    loan.principal_amount = parseFloat((loan.principal_amount + amount).toFixed(2));
+    loan.interest_amount = parseFloat((loan.interest_amount + topUpInterest).toFixed(2));
+    loan.storage_charge_amount = parseFloat((loan.storage_charge_amount + topUpStorage).toFixed(2));
+    loan.expected_total_repayable = parseFloat((loan.expected_total_repayable + balanceIncrease).toFixed(2));
+    loan.current_balance = parseFloat((loan.current_balance + balanceIncrease).toFixed(2));
+    loan.admin_fee_amount = parseFloat(((loan.admin_fee_amount || 0) + adminFeeAmount).toFixed(2));
+    loan.top_ups.push({
+      amount,
+      interest_amount: topUpInterest,
+      storage_charge_amount: topUpStorage,
+      admin_fee_pct: feePct,
+      admin_fee_amount: adminFeeAmount,
+      admin_fee_type: feeType,
+      added_at: now,
+      added_by: userId,
+      notes,
+    });
+    await loan.save();
+
+    return { success: true, loan, topUp: loan.top_ups[loan.top_ups.length - 1] };
+  }
+
   calculateRepaymentBreakdown(loanData) {
     const principal = loanData.principal_amount;
     const interestRate = loanData.interest_rate_percent;

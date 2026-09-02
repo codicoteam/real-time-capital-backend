@@ -640,6 +640,60 @@ router.put(
 
 /**
  * @swagger
+ * /api/v1/loans/{id}/top-up:
+ *   post:
+ *     summary: Add more principal to an already-active loan. The loan's start_date/due_date
+ *       never change; interest and storage on the added amount are prorated for the days
+ *       remaining until due_date. Loan Processor / Admin only.
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - amount
+ *             properties:
+ *               amount:
+ *                 type: number
+ *               admin_fee_pct:
+ *                 type: number
+ *               admin_fee_type:
+ *                 type: string
+ *                 enum: [upfront, deferred]
+ *               notes:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Loan topped up successfully
+ *       400:
+ *         description: Invalid top-up (loan not active, insufficient investor cash, etc.)
+ *       404:
+ *         description: Loan not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.post(
+  "/:id/top-up",
+  requireRoles(
+    "loan_officer_processor",
+    "admin_pawn_limited",
+    "super_admin_vendor",
+  ),
+  loanController.topUpLoan,
+);
+
+/**
+ * @swagger
  * /api/v1/loans/{id}/request-approval:
  *   post:
  *     summary: Request super admin approval for a loan (amount > 500)

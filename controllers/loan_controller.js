@@ -29,6 +29,28 @@ class LoanController {
   }
 
   /**
+   * Add more principal to an already-active loan (Loan Processor/Admin only).
+   */
+  async topUpLoan(req, res) {
+    try {
+      const { id } = req.params;
+      const userId = req.user?.id;
+      const result = await loanService.topUpLoan(id, req.body, userId);
+      res.status(200).json({
+        success: true,
+        message: "Loan topped up successfully",
+        data: { loan: result.loan, top_up: result.topUp },
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to top up loan",
+      });
+    }
+  }
+
+  /**
    * Create asset from collateral (utility endpoint)
    */
   async createAssetFromCollateral(req, res) {

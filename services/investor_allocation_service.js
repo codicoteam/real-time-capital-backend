@@ -389,6 +389,111 @@ class InvestorAllocationService {
   }
 
   /**
+   * Add more principal to an already-active loan's existing allocation (a top-up).
+   * Mirrors assignLoan's split logic (base share, referral carve-out, deferred-fee RTC
+   * credit) but applies it as a DELTA on top of the existing allocation's totals instead
+   * of creating a new one — the loan's own start_date/due_date, and everything already
+   * paid/recorded against the original amount, are untouched.
+   */
+  async topUpAllocation(loanId, { amount, interestAmount, storageAmount, adminFeePct, adminFeeType, adminFeeAmount, loanNo }) {
+    const primary = await InvestorLoanAllocation.findOne({ loan_id: loanId, is_co_investor: false });
+    if (!primary) {
+      throw { status: 400, message: "This loan has no investor allocation yet — it may not be disbursed." };
+    }
+
+    const investor = await Investor.findById(primary.investor_id);
+    if (!investor || investor.status !== "active") {
+      throw { status: 400, message: "The investor funding this loan is no longer active." };
+    }
+
+    const feeIsDeferred = adminFeeType === "deferred";
+    // What the investor actually has to put up right now: the added principal, plus the
+    // deferred fee if any (same "investor funds principal + fee" rule as a new loan).
+    const principalDelta = amount + (feeIsDeferred ? adminFeeAmount : 0);
+
+    const activeAllocations = await InvestorLoanAllocation.find({ investor_id: investor._id, status: "active" }).select("principal_amount");
+    const deployed = activeAllocations.reduce((s, a) => s + a.principal_amount, 0);
+    const available = investor.committed_capital - deployed;
+    if (available < principalDelta) {
+      throw {
+        status: 400,
+        message:
+          `${investor.name} only has $${available.toFixed(2)} available — not enough to cover this ` +
+          `$${principalDelta.toFixed(2)} top-up${feeIsDeferred ? " (principal + deferred admin fee)" : ""}.`,
+      };
+    }
+
+    const totalProfitDelta = parseFloat((interestAmount + storageAmount).toFixed(2));
+
+    const profitConfig = await this.getProfitSplitConfig();
+    const termKey = primary.loan_period_key;
+    const termConfig = profitConfig[termKey] || DEFAULT_PROFIT_SPLIT[termKey];
+    const investorBaseSharePct = investor.profit_share_override?.[termKey] ?? termConfig.investor_share;
+
+    let referrerAlloc = null;
+    let referrerSharePct = 0;
+    let referrerProfitDelta = 0;
+    if (investor.referred_by_investor_id) {
+      const referrer = await Investor.findById(investor.referred_by_investor_id);
+      if (referrer && referrer.status === "active") {
+        referrerSharePct = Math.min(investor.referral_share_override?.[termKey] ?? 0, investorBaseSharePct);
+        referrerProfitDelta = parseFloat((totalProfitDelta * (referrerSharePct / 100)).toFixed(2));
+        referrerAlloc = await InvestorLoanAllocation.findOne({ loan_id: loanId, investor_id: referrer._id, is_co_investor: true });
+      }
+    }
+
+    const investorSharePctDelta = investorBaseSharePct - referrerSharePct;
+    const investorProfitDelta = parseFloat((totalProfitDelta * (investorSharePctDelta / 100)).toFixed(2));
+    const rtcRevenueDelta = parseFloat((totalProfitDelta * ((100 - investorBaseSharePct) / 100)).toFixed(2));
+
+    primary.principal_amount = parseFloat((primary.principal_amount + principalDelta).toFixed(2));
+    primary.total_loan_profit = parseFloat((primary.total_loan_profit + totalProfitDelta).toFixed(2));
+    primary.investor_profit = parseFloat((primary.investor_profit + investorProfitDelta).toFixed(2));
+    primary.rtc_revenue = parseFloat((primary.rtc_revenue + rtcRevenueDelta).toFixed(2));
+    // The stored share % is a single number on a loan that may now blend two different
+    // rates (original + top-up) — recompute it as the effective blended rate so penalty
+    // splits and displays stay proportionally correct.
+    primary.investor_share_pct = primary.total_loan_profit > 0
+      ? parseFloat(((primary.investor_profit / primary.total_loan_profit) * 100).toFixed(4))
+      : primary.investor_share_pct;
+    await primary.save();
+
+    if (referrerAlloc && referrerProfitDelta > 0) {
+      referrerAlloc.principal_amount = parseFloat((referrerAlloc.principal_amount + amount).toFixed(2));
+      referrerAlloc.total_loan_profit = parseFloat((referrerAlloc.total_loan_profit + totalProfitDelta).toFixed(2));
+      referrerAlloc.investor_profit = parseFloat((referrerAlloc.investor_profit + referrerProfitDelta).toFixed(2));
+      await referrerAlloc.save();
+      console.log(
+        `[InvestorAllocation] Top-up on loan ${loanNo}: referral cut of $${referrerProfitDelta} added for ${referrerAlloc.investor_id}`,
+      );
+    }
+
+    // Deferred top-up fee is its own discrete RTC revenue event, same reasoning as a new
+    // loan's fee — credited once per top-up, not gated by any "already collected" flag
+    // since each top-up is independent.
+    if (feeIsDeferred && adminFeeAmount > 0) {
+      try {
+        const rtcAccount = await this.getRtcAccount();
+        await this.recordTransaction(rtcAccount._id, {
+          type: "deposit",
+          amount: adminFeeAmount,
+          notes: `Admin fee (deferred, ${adminFeePct}%) — Loan ${loanNo} top-up`,
+          source: "admin_fee",
+        });
+      } catch (err) {
+        console.error(`[InvestorAllocation] Failed to credit RTC's deferred top-up fee for loan ${loanNo}:`, err.message);
+      }
+    }
+
+    console.log(
+      `[InvestorAllocation] Loan ${loanNo} topped up by $${amount} → ${investor.name} ` +
+        `(+$${investorProfitDelta} profit, blended share now ${primary.investor_share_pct}%)`,
+    );
+
+    return { success: true, allocation: primary };
+  }
+
+  /**
    * Update allocation status when the underlying loan status changes.
    * active → "redeemed" / "defaulted" / "written_off" / "cancelled"
    */

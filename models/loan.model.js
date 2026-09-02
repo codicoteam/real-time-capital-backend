@@ -112,6 +112,28 @@ const LoanSchema = new mongoose.Schema(
     },
     admin_fee_notes: { type: String, trim: true },
 
+    // Additional principal added to an already-active loan (Loan Processor/Admin only).
+    // The loan's start_date/due_date never change — a top-up just adds money mid-term, so
+    // its own interest/storage are prorated for the days actually remaining until due_date,
+    // not the loan's full original period. Admin fee (if any) is charged on the top-up
+    // amount only — the original principal's fee was already assessed at creation.
+    top_ups: {
+      type: [
+        {
+          amount: { type: Number, required: true, min: 0 },
+          interest_amount: { type: Number, required: true, min: 0 },
+          storage_charge_amount: { type: Number, required: true, min: 0 },
+          admin_fee_pct: { type: Number, min: 0, max: 10, default: 0 },
+          admin_fee_amount: { type: Number, min: 0, default: 0 },
+          admin_fee_type: { type: String, enum: ["upfront", "deferred", null], default: null },
+          added_at: { type: Date, default: Date.now },
+          added_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          notes: { type: String, trim: true },
+        },
+      ],
+      default: [],
+    },
+
     // All loans are once-off payments
     repayment_type: {
       type: String,
