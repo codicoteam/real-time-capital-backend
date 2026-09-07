@@ -7,12 +7,18 @@ const tokenCrypto = require("../../utils/xero_token_crypto");
 
 const SCOPES = (process.env.XERO_SCOPES || "").trim().split(/\s+/).filter(Boolean);
 
-function baseClient() {
+// xero-node's buildConsentUrl()/apiCallback() take NO runtime arguments — they read
+// `state` off the client's own constructor config (this.config.state), not a call-time
+// param. So the CSRF state has to be baked in here at construction time, both when
+// minting the consent URL and when validating the callback, or Xero's redirect will
+// carry a state openid-client never actually embedded/expects.
+function baseClient(state) {
   return new XeroClient({
     clientId: process.env.XERO_CLIENT_ID,
     clientSecret: process.env.XERO_CLIENT_SECRET,
     redirectUris: [process.env.XERO_REDIRECT_URI],
     scopes: SCOPES,
+    state,
   });
 }
 
@@ -36,10 +42,10 @@ function consumeConnectState(state) {
 }
 
 async function getAuthUrl(userId) {
-  const client = baseClient();
-  await client.initialize();
   const state = createConnectState(userId);
-  return client.buildConsentUrl(state);
+  const client = baseClient(state);
+  await client.initialize();
+  return client.buildConsentUrl();
 }
 
 function tokenSetFromConnection(conn) {
@@ -68,12 +74,16 @@ async function persistTokenSet(conn, tokenSet) {
 // Exchanges the authorization code (full callback URL) for tokens, resolves the
 // connected tenant, and stores/updates the singleton XeroConnection document.
 async function handleCallback(fullCallbackUrl, state) {
+  // The REAL CSRF check: state must be one we minted in getAuthUrl and not already
+  // consumed. openid-client's own internal state check (inside apiCallback below) only
+  // verifies internal self-consistency — see the comment on baseClient() — so this is
+  // the check that actually matters.
   const entry = consumeConnectState(state);
   if (!entry) {
     throw new Error("Invalid or expired Xero connect session — please click Connect to Xero again.");
   }
 
-  const client = baseClient();
+  const client = baseClient(state);
   await client.initialize();
   const tokenSet = await client.apiCallback(fullCallbackUrl);
   await client.updateTenants(false);
