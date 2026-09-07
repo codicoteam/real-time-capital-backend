@@ -14,6 +14,7 @@ const XeroAccountMapSchema = new mongoose.Schema(
       enum: [
         "cash_on_hand",
         "bank_fbc_cbz",
+        "ecocash_float",
         "loans_receivable",
         "pawned_assets_inventory",
         "investor_capital_payable",

@@ -11,6 +11,7 @@ const { getAuthenticatedClient } = require("./xero_client_service");
 const REQUIRED_ACCOUNTS = [
   { key: "cash_on_hand", label: "Cash on Hand", suggested_code: "1000", xero_type: "BANK", manual_only: true },
   { key: "bank_fbc_cbz", label: "Bank — FBC / CBZ", suggested_code: "1010", xero_type: "BANK", manual_only: true },
+  { key: "ecocash_float", label: "EcoCash Float", suggested_code: "1020", xero_type: "BANK", manual_only: true },
   { key: "loans_receivable", label: "Loans Receivable", suggested_code: "1100", xero_type: "CURRENT", manual_only: false },
   { key: "pawned_assets_inventory", label: "Pawned Assets Inventory", suggested_code: "1200", xero_type: "CURRENT", manual_only: false },
   { key: "investor_capital_payable", label: "Investor Capital Payable", suggested_code: "2000", xero_type: "CURRLIAB", manual_only: false },

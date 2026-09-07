@@ -9,6 +9,7 @@ const InvestorMonthlyInterest = require("../models/investor/investor_monthly_int
 const TitleDeed = require("../models/investor/title_deed.model");
 const Loan = require("../models/loan.model");
 const investorEmailService = require("./investor_email_service");
+const xeroSyncService = require("./xero/xero_sync_service");
 
 const DEFAULT_PROFIT_SPLIT = {
   two_week: { borrower_rate: 20, investor_share: 60, label: "2-Week Loan", days: 14 },
@@ -1164,6 +1165,13 @@ class InvestorAllocationService {
       investor,
       transaction: populated,
     }).catch((err) => console.error("[recordTransaction] Email error:", err));
+
+    // Xero sync (fire-and-forget) — deposit/capital_withdrawal/profit_withdrawal/drawing.
+    // "expense" type is skipped inside syncInvestorTransaction (posted separately, see
+    // expense.service.js updateExpenseStatus, to avoid double-counting the outflow).
+    xeroSyncService
+      .syncInvestorTransaction(populated)
+      .catch((err) => console.error("[Xero] investor transaction sync error:", err.message));
 
     return { transaction: populated, investor };
   }

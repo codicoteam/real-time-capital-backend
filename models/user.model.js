@@ -146,6 +146,9 @@ const UserSchema = new mongoose.Schema(
       index: true,
     },
     // ❌ auth_providers removed
+
+    // Xero Contact this customer maps to — set on first Xero sync, never touched again
+    xero_contact_id: { type: String, default: null },
   },
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } },
 );

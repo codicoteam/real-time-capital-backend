@@ -74,6 +74,9 @@ const InvestorTransactionSchema = new mongoose.Schema(
       ),
       default: null,
     },
+
+    // Xero BankTransaction this investor transaction was posted as
+    xero_bank_transaction_id: { type: String, default: null },
   },
   {
     timestamps: { createdAt: "created_at", updatedAt: "updated_at" },

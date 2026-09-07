@@ -2,6 +2,7 @@ const Expense = require("../models/expense.model");
 const User = require("../models/user.model");
 const mongoose = require("mongoose");
 const investorAllocationService = require("./investor_allocation_service");
+const xeroSyncService = require("./xero/xero_sync_service");
 
 // For generating unique expense number
 let uuidv4;
@@ -303,6 +304,13 @@ class ExpenseService {
       }
 
       await expense.save();
+
+      // Xero sync (fire-and-forget) — only when this transition actually moved money
+      if (status === "approved") {
+        xeroSyncService
+          .syncExpenseApproved(expense)
+          .catch((err) => console.error("[Xero] expense approved sync error:", err.message));
+      }
 
       const populatedExpense = await this.getExpenseWithDetails(expense._id);
 

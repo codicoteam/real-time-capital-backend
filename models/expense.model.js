@@ -65,6 +65,9 @@ const ExpenseSchema = new mongoose.Schema(
 
     notes: { type: String, trim: true },
 
+    // Xero BankTransaction this expense was posted as
+    xero_bank_transaction_id: { type: String, default: null },
+
     created_by: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

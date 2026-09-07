@@ -122,6 +122,9 @@ const InvestorSchema = new mongoose.Schema(
     // Password reset
     reset_password_otp: { type: String, select: false },
     reset_password_expires_at: { type: Date, select: false },
+
+    // Xero Contact this investor maps to — set on first Xero sync, never touched again
+    xero_contact_id: { type: String, default: null },
   },
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } },
 );

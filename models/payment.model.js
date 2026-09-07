@@ -79,6 +79,9 @@ const PaymentSchema = new Schema(
 
     receipt_no: { type: String, index: true, sparse: true },
     meta: { type: Schema.Types.Mixed },
+
+    // Xero BankTransaction this repayment was posted as
+    xero_bank_transaction_id: { type: String, default: null },
   },
   {
     timestamps: { createdAt: "created_at", updatedAt: "updated_at" },

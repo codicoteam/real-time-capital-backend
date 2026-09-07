@@ -220,6 +220,10 @@ const LoanSchema = new mongoose.Schema(
     approved_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
 
     meta: { type: mongoose.Schema.Types.Mixed },
+
+    // Xero references — set once the corresponding event has been posted
+    xero_disbursement_transaction_id: { type: String, default: null },
+    xero_writeoff_journal_id: { type: String, default: null },
   },
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
 );

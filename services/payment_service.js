@@ -3,6 +3,7 @@ const Loan = require("../models/loan.model");
 const User = require("../models/user.model");
 const emailService = require("../utils/emails_util");
 const { Paynow } = require("paynow");
+const xeroSyncService = require("./xero/xero_sync_service");
 require("dotenv").config();
 
 class PaymentService {
@@ -1043,6 +1044,11 @@ class PaymentService {
           : { $set: { status: "pawned", active_loan: loan._id } };
         await Asset.findByIdAndUpdate(loan.asset, assetUpdate);
       }
+
+      // Xero sync (fire-and-forget — never blocks the payment confirmation response)
+      xeroSyncService
+        .syncLoanRepayment(payment, loan)
+        .catch((err) => console.error("[Xero] loan repayment sync error:", err.message));
     } catch (error) {
       console.error("Failed to update loan balance:", error);
       throw error;

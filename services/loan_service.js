@@ -16,6 +16,7 @@ const {
 } = require("../utils/emails_util");
 const NotificationService = require("../services/notifications_service");
 const investorAllocationService = require("../services/investor_allocation_service");
+const xeroSyncService = require("../services/xero/xero_sync_service");
 
 class LoanService {
   /**
@@ -1139,6 +1140,17 @@ class LoanService {
           .catch((err) => console.error("[InvestorAllocation] sync error:", err.message));
       }
 
+      // Xero sync (fire-and-forget — never blocks the loan status response)
+      if (status === "active") {
+        xeroSyncService
+          .syncLoanDisbursed(updatedLoan)
+          .catch((err) => console.error("[Xero] loan disbursed sync error:", err.message));
+      } else if (status === "written_off") {
+        xeroSyncService
+          .syncLoanWrittenOff(updatedLoan)
+          .catch((err) => console.error("[Xero] loan written-off sync error:", err.message));
+      }
+
       if (status === "redeemed") {
         sendLoanRedeemedAdminEmail({
           loanNo: updatedLoan.loan_no,
@@ -1805,6 +1817,12 @@ class LoanService {
           loanPeriodType: updatedLoan.loan_period_type,
         }).catch((err) => console.error("Redemption admin email error:", err.message));
       }
+
+      // Xero sync (fire-and-forget) — legacy embedded-payment path, no component
+      // breakdown available here; see syncLoanRepaymentLegacy for the proportional split.
+      xeroSyncService
+        .syncLoanRepaymentLegacy(updatedLoan, paymentRecord)
+        .catch((err) => console.error("[Xero] loan repayment (legacy) sync error:", err.message));
 
       return {
         success: true,
