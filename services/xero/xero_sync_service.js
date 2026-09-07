@@ -363,6 +363,8 @@ async function syncLoanRepayment(payment, loan) {
 // amounts vs. its expected_total_repayable, with any remainder (incl. penalties) folded
 // into principal so no money is ever silently dropped.
 async function syncLoanRepaymentLegacy(loan, paymentEntry) {
+  if (paymentEntry.xero_bank_transaction_id) return paymentEntry.xero_bank_transaction_id; // already posted
+
   const total = loan.expected_total_repayable || loan.principal_amount || 1;
   const interestRatio = (loan.interest_amount || 0) / total;
   const storageRatio = (loan.storage_charge_amount || 0) / total;
@@ -372,7 +374,7 @@ async function syncLoanRepaymentLegacy(loan, paymentEntry) {
   const storage = Math.round(amount * storageRatio * 100) / 100;
   const principal = Math.round((amount - interest - storage) * 100) / 100;
 
-  return postRepaymentToXero({
+  const xeroId = await postRepaymentToXero({
     sourceCollection: "Loan",
     sourceId: loan._id,
     loan,
@@ -384,6 +386,14 @@ async function syncLoanRepaymentLegacy(loan, paymentEntry) {
     storage,
     penalty: 0,
   });
+
+  if (xeroId && paymentEntry._id) {
+    await Loan.updateOne(
+      { _id: loan._id, "payments._id": paymentEntry._id },
+      { $set: { "payments.$.xero_bank_transaction_id": xeroId } },
+    );
+  }
+  return xeroId;
 }
 
 // ── Event 4: Expense approved ──────────────────────────────────────────────

@@ -19,6 +19,9 @@ const PaymentSchema = new mongoose.Schema(
     reference_no: { type: String, trim: true },
     received_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     notes: { type: String, trim: true },
+
+    // Xero BankTransaction this embedded (legacy-path) repayment was posted as
+    xero_bank_transaction_id: { type: String, default: null },
   },
   { _id: true }
 );
