@@ -1149,6 +1149,10 @@ class LoanService {
         xeroSyncService
           .syncLoanWrittenOff(updatedLoan)
           .catch((err) => console.error("[Xero] loan written-off sync error:", err.message));
+      } else if (status === "auction") {
+        xeroSyncService
+          .syncLoanMovedToAuction(updatedLoan)
+          .catch((err) => console.error("[Xero] loan moved-to-auction sync error:", err.message));
       }
 
       if (status === "redeemed") {

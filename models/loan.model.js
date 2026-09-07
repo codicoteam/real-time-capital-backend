@@ -224,6 +224,12 @@ const LoanSchema = new mongoose.Schema(
     // Xero references — set once the corresponding event has been posted
     xero_disbursement_transaction_id: { type: String, default: null },
     xero_writeoff_journal_id: { type: String, default: null },
+    // Set when this loan's balance is reclassified from Loans Receivable into Pawned
+    // Assets Inventory (loan → "auction" status). xero_auction_reclass_amount is the
+    // COGS basis used later when the auction sale actually posts (see
+    // xero_sync_service.syncAuctionSaleCompleted).
+    xero_auction_reclass_journal_id: { type: String, default: null },
+    xero_auction_reclass_amount: { type: Number, default: null },
   },
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
 );

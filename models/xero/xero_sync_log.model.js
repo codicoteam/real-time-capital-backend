@@ -18,6 +18,7 @@ const XeroSyncLogSchema = new mongoose.Schema(
         "loan_disbursed",
         "loan_repayment",
         "loan_written_off",
+        "loan_moved_to_auction",
         "expense_approved",
         "investor_deposit",
         "investor_capital_withdrawal",

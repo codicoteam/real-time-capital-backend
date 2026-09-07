@@ -64,6 +64,9 @@ const BidPaymentSchema = new mongoose.Schema(
     paid_at: { type: Date },
 
     meta: { type: mongoose.Schema.Types.Mixed },
+
+    // Xero BankTransaction this auction sale was posted as
+    xero_bank_transaction_id: { type: String, default: null },
   },
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
 );

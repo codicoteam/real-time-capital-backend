@@ -5,6 +5,7 @@ const User = require("../models/user.model");
 const Asset = require("../models/asset.model");
 const { Paynow } = require("paynow");
 const mongoose = require("mongoose");
+const xeroSyncService = require("./xero/xero_sync_service");
 require("dotenv").config();
 
 /**
@@ -684,6 +685,10 @@ class BidPaymentService {
         await Auction.findByIdAndUpdate(payment.auction, {
           $set: { "meta.payment_received": true },
         });
+
+        xeroSyncService
+          .syncAuctionSaleCompleted(payment)
+          .catch((err) => console.error("[Xero] auction sale sync error:", err.message));
       }
 
       const populatedPayment = await this.getPaymentWithDetails(payment._id);
@@ -772,6 +777,10 @@ class BidPaymentService {
         await Auction.findByIdAndUpdate(payment.auction, {
           $set: { "meta.payment_received": true },
         });
+
+        xeroSyncService
+          .syncAuctionSaleCompleted(payment)
+          .catch((err) => console.error("[Xero] auction sale sync error:", err.message));
       }
 
       return {
@@ -858,6 +867,10 @@ class BidPaymentService {
           await Auction.findByIdAndUpdate(payment.auction, {
             $set: { "meta.payment_received": true },
           });
+
+          xeroSyncService
+            .syncAuctionSaleCompleted(payment)
+            .catch((err) => console.error("[Xero] auction sale sync error:", err.message));
         }
 
         return {

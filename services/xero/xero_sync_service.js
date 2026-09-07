@@ -13,6 +13,8 @@ const Loan = require("../../models/loan.model");
 const Payment = require("../../models/payment.model");
 const Expense = require("../../models/expense.model");
 const InvestorTransaction = require("../../models/investor/investor_transaction.model");
+const Auction = require("../../models/auction.model");
+const BidPayment = require("../../models/bidPayment.model");
 
 // Every event funnels through here: logs the attempt, never throws to the caller
 // (callers use `.catch()` fire-and-forget per this codebase's existing convention —
@@ -130,6 +132,136 @@ async function syncLoanWrittenOff(loan) {
 
       const xeroId = body.manualJournals[0].manualJournalID;
       await Loan.updateOne({ _id: loan._id }, { $set: { xero_writeoff_journal_id: xeroId } });
+      return xeroId;
+    },
+  );
+}
+
+// ── Loan defaults, moves to auction ────────────────────────────────────────
+// Manual Journal: Dr Pawned Assets Inventory, Cr Loans Receivable, for the outstanding
+// balance. We're no longer expecting cash repayment on this loan — we're now holding
+// sellable collateral instead. This is what gives syncAuctionSaleCompleted a COGS basis
+// to match against when the asset actually sells.
+async function syncLoanMovedToAuction(loan) {
+  if (loan.xero_auction_reclass_journal_id) return loan.xero_auction_reclass_journal_id; // already reclassified
+  if (!loan.current_balance || loan.current_balance <= 0) return null;
+
+  return withSyncLog(
+    {
+      sourceCollection: "Loan",
+      sourceId: loan._id,
+      eventType: "loan_moved_to_auction",
+      xeroEndpoint: "ManualJournals",
+      payload: { loan_no: loan.loan_no, reclass_amount: loan.current_balance },
+    },
+    async () => {
+      const { accountingApi, tenantId } = await getAuthenticatedClient();
+      const [inventoryCode, loansReceivableCode] = await Promise.all([
+        requireAccountCode("pawned_assets_inventory"),
+        requireAccountCode("loans_receivable"),
+      ]);
+
+      const { body } = await accountingApi.createManualJournals(tenantId, {
+        manualJournals: [
+          {
+            narration: `Loan moved to auction — collateral reclassified as inventory — ${loan.loan_no}`,
+            date: toXeroDate(new Date()),
+            status: "POSTED",
+            journalLines: [
+              { lineAmount: loan.current_balance, accountCode: inventoryCode, description: "Pawned assets inventory" },
+              { lineAmount: -loan.current_balance, accountCode: loansReceivableCode, description: "Loans receivable" },
+            ],
+          },
+        ],
+      });
+
+      const xeroId = body.manualJournals[0].manualJournalID;
+      await Loan.updateOne(
+        { _id: loan._id },
+        { $set: { xero_auction_reclass_journal_id: xeroId, xero_auction_reclass_amount: loan.current_balance } },
+      );
+      return xeroId;
+    },
+  );
+}
+
+// ── Event 7: Auction sale completed (payment cleared) ─────────────────────
+// BankTransaction (RECEIVE) for the full sale proceeds, contact = winning bidder, coded
+// to Asset Sale Revenue. Plus a Manual Journal matching cost of sale against whatever was
+// reclassified into Pawned Assets Inventory when the loan defaulted (see above) — skipped
+// if that never happened (e.g. historical/manually-seeded auctions with no linked loan).
+async function syncAuctionSaleCompleted(bidPayment) {
+  if (bidPayment.xero_bank_transaction_id) return bidPayment.xero_bank_transaction_id; // already posted
+
+  return withSyncLog(
+    {
+      sourceCollection: "BidPayment",
+      sourceId: bidPayment._id,
+      eventType: "auction_sale",
+      xeroEndpoint: "BankTransactions",
+      payload: { auction_id: bidPayment.auction, amount: bidPayment.amount },
+    },
+    async () => {
+      const auction = await Auction.findById(bidPayment.auction);
+      if (!auction) throw new Error(`Auction ${bidPayment.auction} not found for BidPayment ${bidPayment._id}`);
+
+      const { accountingApi, tenantId } = await getAuthenticatedClient();
+      const contactId = await getOrCreateCustomerContact(bidPayment.payer_user._id || bidPayment.payer_user);
+      const bankAccountKey = bankAccountKeyForMethod(bidPayment.method);
+      const [bankCode, revenueCode] = await Promise.all([
+        requireAccountCode(bankAccountKey),
+        requireAccountCode("asset_sale_revenue"),
+      ]);
+
+      const { body } = await accountingApi.createBankTransactions(tenantId, {
+        bankTransactions: [
+          {
+            type: "RECEIVE",
+            contact: { contactID: contactId },
+            date: toXeroDate(bidPayment.paid_at || new Date()),
+            reference: auction.auction_no,
+            status: "AUTHORISED",
+            bankAccount: { code: bankCode },
+            lineItems: [
+              {
+                description: `Auction sale — ${auction.auction_no}`,
+                quantity: 1,
+                unitAmount: bidPayment.amount,
+                accountCode: revenueCode,
+              },
+            ],
+          },
+        ],
+      });
+
+      const xeroId = body.bankTransactions[0].bankTransactionID;
+      await BidPayment.updateOne({ _id: bidPayment._id }, { $set: { xero_bank_transaction_id: xeroId } });
+
+      // Match cost of sale against the reclassified inventory value, if there is one.
+      const loan = await Loan.findOne({ asset: auction.asset, xero_auction_reclass_amount: { $gt: 0 } }).sort({
+        created_at: -1,
+      });
+      if (loan) {
+        const [cogsCode, inventoryCode] = await Promise.all([
+          requireAccountCode("cost_of_asset_sales"),
+          requireAccountCode("pawned_assets_inventory"),
+        ]);
+        await accountingApi.createManualJournals(tenantId, {
+          manualJournals: [
+            {
+              narration: `Cost of asset sold at auction — ${auction.auction_no}`,
+              date: toXeroDate(bidPayment.paid_at || new Date()),
+              status: "POSTED",
+              journalLines: [
+                { lineAmount: loan.xero_auction_reclass_amount, accountCode: cogsCode, description: "Cost of asset sales" },
+                { lineAmount: -loan.xero_auction_reclass_amount, accountCode: inventoryCode, description: "Pawned assets inventory" },
+              ],
+            },
+          ],
+        });
+        await Loan.updateOne({ _id: loan._id }, { $set: { xero_auction_reclass_amount: null } });
+      }
+
       return xeroId;
     },
   );
@@ -379,6 +511,8 @@ async function syncInvestorTransaction(tx) {
 module.exports = {
   syncLoanDisbursed,
   syncLoanWrittenOff,
+  syncLoanMovedToAuction,
+  syncAuctionSaleCompleted,
   syncLoanRepayment,
   syncLoanRepaymentLegacy,
   syncExpenseApproved,
