@@ -358,7 +358,7 @@ class LoanReportService {
   async _getLoansByStatus(start, end) {
     const rows = await Loan.aggregate([
       { $match: { created_at: { $gte: start, $lte: end } } },
-      { $group: { _id: "$status", count: { $sum: 1 } } },
+      { $group: { _id: "$status", count: { $sum: 1 }, total_principal: { $sum: "$principal_amount" } } },
       { $sort: { count: -1 } },
     ]);
 
@@ -369,6 +369,14 @@ class LoanReportService {
         acc[r._id] = r.count;
         return acc;
       }, {}),
+      // Adds what {labels,data,raw} can't carry — per-status principal totals —
+      // without changing the existing shape any other caller (Excel export) relies on.
+      breakdown: rows.map((r) => ({
+        _id: r._id,
+        count: r.count,
+        total_amount: this._round(r.total_principal),
+        avg_amount: r.count ? this._round(r.total_principal / r.count) : 0,
+      })),
     };
   }
 
@@ -378,7 +386,7 @@ class LoanReportService {
   async _getApplicationsByStatus(start, end) {
     const rows = await LoanApplication.aggregate([
       { $match: { created_at: { $gte: start, $lte: end } } },
-      { $group: { _id: "$status", count: { $sum: 1 } } },
+      { $group: { _id: "$status", count: { $sum: 1 }, total_requested: { $sum: "$requested_loan_amount" } } },
       { $sort: { count: -1 } },
     ]);
 
@@ -389,6 +397,12 @@ class LoanReportService {
         acc[r._id] = r.count;
         return acc;
       }, {}),
+      breakdown: rows.map((r) => ({
+        _id: r._id,
+        count: r.count,
+        total_amount: this._round(r.total_requested),
+        avg_amount: r.count ? this._round(r.total_requested / r.count) : 0,
+      })),
     };
   }
 
