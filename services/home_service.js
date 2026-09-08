@@ -119,6 +119,24 @@ class HomeService {
    * Super Admin / Vendor home data
    */
   async _getSuperAdminHomeData() {
+    // "Pending" = still somewhere in the review pipeline, i.e. needs a human to look at
+    // it — not just the literal "submitted" status. A loan application that's moved on
+    // to processing/under_review/etc. is still pending from the super admin's point of
+    // view; only the terminal statuses (approved/rejected/cancelled/loan_created/
+    // disbursed/declined/denied) and "draft" (not yet submitted by the customer, so
+    // there's nothing for staff to act on yet) are excluded.
+    const PENDING_APPLICATION_STATUSES = [
+      "submitted",
+      "processing",
+      "under_review",
+      "pending_approval",
+      "awaiting_approval",
+      "admin_review",
+      "in_review",
+    ];
+    // Same idea for tickets — "open" alone misses tickets already being worked (in_progress).
+    const OPEN_TICKET_STATUSES = ["open", "in_progress"];
+
     const [
       totalCustomers,
       totalLoans,
@@ -130,9 +148,9 @@ class HomeService {
     ] = await Promise.all([
       User.countDocuments({ roles: "customer" }),
       Loan.countDocuments(),
-      LoanApplication.countDocuments({ status: "submitted" }),
+      LoanApplication.countDocuments({ status: { $in: PENDING_APPLICATION_STATUSES } }),
       Auction.countDocuments({ status: "live" }),
-      SupportTicket.countDocuments({ status: "open" }),
+      SupportTicket.countDocuments({ status: { $in: OPEN_TICKET_STATUSES } }),
       Expense.find()
         .sort({ expense_date: -1, created_at: -1 })
         .limit(5)
@@ -145,7 +163,7 @@ class HomeService {
     ]);
 
     const pendingApplications = await LoanApplication.find({
-      status: "submitted",
+      status: { $in: PENDING_APPLICATION_STATUSES },
     })
       .sort({ created_at: -1 })
       .limit(3)
@@ -153,7 +171,7 @@ class HomeService {
 
     const activeAuctions = await Auction.find({ status: "live" })
       .sort({ starts_at: -1 })
-      .limit(3)
+      .limit(5)
       .lean();
 
     const recentPayments = await Payment.find()
@@ -168,7 +186,7 @@ class HomeService {
       .select("first_name last_name email created_at")
       .lean();
 
-    const openTickets = await SupportTicket.find({ status: "open" })
+    const openTickets = await SupportTicket.find({ status: { $in: OPEN_TICKET_STATUSES } })
       .sort({ created_at: -1 })
       .limit(3)
       .lean();
