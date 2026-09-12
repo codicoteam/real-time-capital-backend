@@ -7,7 +7,7 @@ const {
   getOrCreateInvestorContact,
   getOrCreateInternalContact,
 } = require("./xero_contact_service");
-const { bankAccountKeyForMethod, expenseAccountKeyForCategory, toXeroDate } = require("./xero_mapping_helpers");
+const { bankAccountKeyForMethod, expenseAccountKeyForCategory, toXeroDate, parseXeroError } = require("./xero_mapping_helpers");
 const XeroSyncLog = require("../../models/xero/xero_sync_log.model");
 const Loan = require("../../models/loan.model");
 const Payment = require("../../models/payment.model");
@@ -37,7 +37,7 @@ async function withSyncLog({ sourceCollection, sourceId, eventType, xeroEndpoint
     await log.save();
     return xeroId;
   } catch (err) {
-    const message = (err.response && err.response.body && JSON.stringify(err.response.body)) || err.message;
+    const { message } = parseXeroError(err);
     log.status = "failed";
     log.last_error = message;
     log.attempts += 1;

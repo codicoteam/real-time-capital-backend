@@ -45,4 +45,36 @@ function toXeroDate(date) {
   return d.toISOString().slice(0, 10);
 }
 
-module.exports = { bankAccountKeyForMethod, expenseAccountKeyForCategory, toXeroDate };
+// xero-node's generated API client (xero-node/dist/gen/api) does NOT reject with a
+// normal Error on a non-2xx response — it rejects with the RAW error, which in practice
+// comes through as a JSON *string* shaped like
+//   {"response":{"statusCode":404,"body":"...","headers":{...}},"request":{...}}
+// — not an axios-style { response: { status, data } } object, and not an Error instance
+// (confirmed live: typeof err === "string", err instanceof Error === false). Any code
+// that inspects a caught Xero API error — to recognize an expected 404, or to log what
+// actually went wrong — must go through this parser rather than assuming err.message /
+// err.response.status exist, or the check silently never matches (which is exactly what
+// broke "does this contact already exist?" lookups and blocked every first-time sync).
+function parseXeroError(err) {
+  let obj = err;
+  if (typeof err === "string") {
+    try {
+      obj = JSON.parse(err);
+    } catch {
+      obj = null;
+    }
+  }
+
+  const statusCode =
+    obj?.response?.statusCode ?? obj?.response?.status ?? (err && err.statusCode) ?? (err && err.status) ?? null;
+
+  const body = obj?.response?.body ?? obj?.response?.data ?? (err && err.body) ?? null;
+
+  const bodyText = typeof body === "string" ? body : body != null ? JSON.stringify(body) : null;
+
+  const message = bodyText || (err && err.message) || (typeof err === "string" ? err : null) || "Unknown Xero API error";
+
+  return { statusCode, body, message };
+}
+
+module.exports = { bankAccountKeyForMethod, expenseAccountKeyForCategory, toXeroDate, parseXeroError };

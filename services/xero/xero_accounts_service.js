@@ -2,6 +2,7 @@
 
 const XeroAccountMap = require("../../models/xero/xero_account_map.model");
 const { getAuthenticatedClient } = require("./xero_client_service");
+const { parseXeroError } = require("./xero_mapping_helpers");
 
 // The chart-of-accounts snapshot from the Xero integration strategy doc (slide 7),
 // plus one entry per Expense.category enum value (models/expense.model.js).
@@ -117,7 +118,7 @@ async function createMissingAccounts() {
       );
       created.push(def.key);
     } catch (err) {
-      skipped.push({ key: row.key, reason: err.message });
+      skipped.push({ key: row.key, reason: parseXeroError(err).message });
     }
   }
 

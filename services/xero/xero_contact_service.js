@@ -1,6 +1,7 @@
 "use strict";
 
 const { getAuthenticatedClient } = require("./xero_client_service");
+const { parseXeroError } = require("./xero_mapping_helpers");
 const User = require("../../models/user.model");
 const Investor = require("../../models/investor/investor.model");
 
@@ -9,7 +10,11 @@ async function findExistingByContactNumber(accountingApi, tenantId, contactNumbe
     const { body } = await accountingApi.getContactByContactNumber(tenantId, contactNumber);
     return (body.contacts && body.contacts[0]) || null;
   } catch (err) {
-    if (err.response && err.response.status === 404) return null;
+    // A 404 here just means "no Xero contact for this customer/investor yet" — expected
+    // and normal for every first-time sync, not a failure. See parseXeroError for why
+    // this can't be checked as err.response.status (xero-node's real error shape).
+    const { statusCode } = parseXeroError(err);
+    if (statusCode === 404) return null;
     throw err;
   }
 }
