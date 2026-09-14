@@ -465,7 +465,10 @@ class LoanController {
     try {
       const { id } = req.params;
       const adminUserId = req.user?.id;
-      const result = await loanService.adminOverrideLoan(id, req.body, adminUserId);
+      const result = await loanService.adminOverrideLoan(id, req.body, adminUserId, {
+        ip: req.ip,
+        userAgent: req.headers["user-agent"],
+      });
       res.status(200).json(result);
     } catch (error) {
       const status = error.status || 500;

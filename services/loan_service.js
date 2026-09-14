@@ -20,6 +20,18 @@ const investorAllocationService = require("../services/investor_allocation_servi
 const xeroSyncService = require("../services/xero/xero_sync_service");
 const auditLogService = require("../services/audit_log_service");
 
+// Structured reasons for an Admin Override — required so every bypass of the normal
+// loan workflow is categorized (not just free text), making the audit trail and the
+// admin notification actually explain WHAT happened to the loan, not just THAT it changed.
+const OVERRIDE_REASON_CATEGORIES = {
+  late_payment_received: "Late payment received (outside normal flow)",
+  asset_sold_recovered_funds: "Asset sold / funds recovered",
+  penalty_waived_goodwill: "Penalty waived as goodwill",
+  dispute_resolved: "Customer dispute resolved",
+  data_correction: "Data correction / system error fix",
+  other: "Other",
+};
+
 class LoanService {
   /**
    * Create a new loan from an approved loan application
@@ -2685,7 +2697,7 @@ class LoanService {
    * payment, cancel any live auction, and force-set the loan to any status.
    * Restricted to super_admin_vendor at the route layer.
    */
-  async adminOverrideLoan(loanId, overrideData, adminUserId) {
+  async adminOverrideLoan(loanId, overrideData, adminUserId, requestMeta = {}) {
     if (!mongoose.Types.ObjectId.isValid(loanId)) {
       throw { status: 400, message: "Invalid loan ID." };
     }
@@ -2697,7 +2709,17 @@ class LoanService {
       payment_reference,
       payment_notes,
       admin_notes,
+      reason_category,
+      waive_penalty,
     } = overrideData || {};
+
+    if (!reason_category || !OVERRIDE_REASON_CATEGORIES[reason_category]) {
+      throw {
+        status: 400,
+        message: `reason_category is required and must be one of: ${Object.keys(OVERRIDE_REASON_CATEGORIES).join(", ")}`,
+      };
+    }
+    const reasonLabel = OVERRIDE_REASON_CATEGORIES[reason_category];
 
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -2705,6 +2727,12 @@ class LoanService {
     try {
       const loan = await Loan.findById(loanId).session(session);
       if (!loan) throw { status: 404, message: `Loan ${loanId} not found` };
+
+      const before = {
+        status: loan.status,
+        current_balance: loan.current_balance,
+        total_paid: loan.total_paid,
+      };
 
       const updateData = { updated_at: new Date() };
 
@@ -2723,7 +2751,7 @@ class LoanService {
           status:         "paid",
           reference_no:   payment_reference || `ADMIN-OVR-${Date.now()}`,
           received_by:    adminUserId,
-          notes:          payment_notes || `Admin override payment — ${admin_notes || ""}`,
+          notes:          payment_notes || `Admin override (${reasonLabel}) — ${admin_notes || ""}`,
         };
 
         updateData.$push       = { payments: paymentRecord };
@@ -2752,7 +2780,7 @@ class LoanService {
             to:         new_status,
             changed_by: adminUserId,
             changed_at: new Date(),
-            notes:      `Admin override: ${admin_notes || "no notes"}`,
+            notes:      `Admin override (${reasonLabel}): ${admin_notes || "no notes"}`,
           };
         }
       }
@@ -2792,16 +2820,88 @@ class LoanService {
 
       await session.commitTransaction();
 
-      const updated = await Loan.findById(loan._id).populate([
+      let updated = await Loan.findById(loan._id).populate([
         { path: "customer_user", select: "first_name last_name email phone" },
         { path: "asset",         select: "asset_no title status" },
         { path: "payments.received_by", select: "first_name last_name email" },
       ]);
 
+      const customer = updated.customer_user;
+      const customerName = customer
+        ? `${customer.first_name || ""} ${customer.last_name || ""}`.trim()
+        : "Unknown Client";
+      const actor = await User.findById(adminUserId).select("first_name last_name email roles");
+      const actorName = actor
+        ? `${actor.first_name || ""} ${actor.last_name || ""}`.trim() || actor.email
+        : "Unknown";
+
+      // Audit trail — every override is now categorized, not just free text.
+      auditLogService
+        .logLoanAction(
+          loanId,
+          adminUserId,
+          "admin_override",
+          before,
+          { status: updated.status, current_balance: updated.current_balance, total_paid: updated.total_paid },
+          requestMeta.ip,
+          requestMeta.userAgent,
+          {
+            loan_no: updated.loan_no,
+            customer_name: customerName,
+            reason_category: reason_category,
+            reason_label: reasonLabel,
+            admin_notes: admin_notes || null,
+            new_status: new_status || null,
+            payment_amount: payAmt > 0 ? payAmt : null,
+            overridden_by: actorName,
+          }
+        )
+        .catch((err) => console.error("Admin override audit log failed:", err.message));
+
+      // Notify admins/management what actually happened — the reason category makes
+      // this readable ("asset sold", "late payment received") instead of just "status
+      // changed to redeemed".
+      NotificationService.createNotification(
+        {
+          title: `Admin Override — Loan #${updated.loan_no}`,
+          message: `${actorName} applied an admin override on loan #${updated.loan_no} (${customerName}). Reason: ${reasonLabel}.${new_status ? ` Status → ${new_status.replace(/_/g, " ")}.` : ""}${payAmt > 0 ? ` Payment recorded: $${payAmt.toFixed(2)}.` : ""}${admin_notes ? ` Notes: ${admin_notes}` : ""}`,
+          type: "system_notice",
+          priority: "high",
+          audience: {
+            scope: "roles",
+            roles: ["super_admin_vendor", "admin_pawn_limited", "management"],
+          },
+          channels: ["in_app", "email"],
+          entity_type: "loan",
+          entity_id: loanId,
+          action_url: `/loans/${loanId}`,
+          action_text: "View Loan",
+        },
+        adminUserId
+      ).catch((err) => console.error("Admin override notification failed:", err.message));
+
+      let penaltyWaiveNote = "";
+      if (waive_penalty) {
+        try {
+          const waiveResult = await this.waivePenalty(
+            loanId,
+            { reason: `Admin override (${reasonLabel})${admin_notes ? `: ${admin_notes}` : ""}` },
+            adminUserId,
+            requestMeta
+          );
+          updated = waiveResult.data;
+          penaltyWaiveNote = ` ${waiveResult.message}`;
+        } catch (waiveErr) {
+          // Don't fail the whole override if there's simply nothing to waive
+          // (e.g. no penalty applied, or already waived) — just note it.
+          penaltyWaiveNote = ` (Penalty waiver skipped: ${waiveErr.message || "not applicable"})`;
+        }
+      }
+
       return {
         success: true,
         data:    updated,
-        message: `Loan ${loan.loan_no} updated via admin override${new_status ? ` → ${new_status}` : ""}`,
+        message: `Loan ${loan.loan_no} updated via admin override${new_status ? ` → ${new_status}` : ""}.${penaltyWaiveNote}`,
       };
     } catch (err) {
       await session.abortTransaction();
