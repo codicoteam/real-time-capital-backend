@@ -2606,14 +2606,19 @@ class LoanService {
       return;
     }
 
+    // Every loan is exactly one billing cycle (one "two_weeks" or "one_month" term),
+    // so interest/storage are always charged for exactly 1 period — never prorated by
+    // the literal day-count between start_date and due_date. That day-count can drift
+    // a little from the nominal period length (e.g. a calendar month can land the due
+    // date 28-31 days out), which used to produce odd multipliers like 1.0333 periods
+    // and overcharge the customer for a few extra days they didn't actually borrow for.
     let loanPeriodDays = null;
-    let numberOfPeriods = 1;
+    const numberOfPeriods = 1;
 
     if (loanData.start_date && loanData.due_date) {
       const startDate = new Date(loanData.start_date);
       const dueDate = new Date(loanData.due_date);
       loanPeriodDays = Math.ceil((dueDate - startDate) / (1000 * 60 * 60 * 24));
-      numberOfPeriods = loanPeriodDays / interestPeriodDays;
     }
 
     // Deferred admin fee is added to the customer's owed balance, so interest is charged
