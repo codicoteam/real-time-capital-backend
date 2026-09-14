@@ -14,6 +14,7 @@ const {
   sendLoanAuctionAdminEmail,
   sendLoanRolloverAdminEmail,
   sendPenaltyWaivedAdminEmail,
+  sendPenaltyWaiverReversedAdminEmail,
 } = require("../utils/emails_util");
 const NotificationService = require("../services/notifications_service");
 const investorAllocationService = require("../services/investor_allocation_service");
@@ -2022,6 +2023,139 @@ class LoanService {
         success: true,
         data: updatedLoan,
         message: `Penalty of $${waivedAmount.toLocaleString()} waived successfully`,
+      };
+    } catch (error) {
+      throw this.handleMongoError(error);
+    }
+  }
+
+  /**
+   * Reverse (undo) a penalty waiver — e.g. it was recorded by mistake or during
+   * testing. Restores the waived amount onto current_balance (correct regardless of
+   * any payments made in between, since it exactly undoes the earlier subtraction)
+   * and clears the waiver flags. The original waiver's audit log entry is left in
+   * place as history — this adds a new entry rather than rewriting the past.
+   * Super Admin only (enforced at the route layer).
+   */
+  async reversePenaltyWaiver(loanId, { reason } = {}, userId, requestMeta = {}) {
+    try {
+      const loan = await Loan.findById(loanId);
+      if (!loan) {
+        throw { status: 404, message: `Loan with ID ${loanId} not found` };
+      }
+
+      if (!loan.penalty_waived) {
+        throw {
+          status: 400,
+          message: "This loan does not have a penalty waiver to reverse",
+        };
+      }
+
+      const restoredAmount = parseFloat((loan.penalty_waived_amount || 0).toFixed(2));
+      const newBalance = parseFloat((loan.current_balance + restoredAmount).toFixed(2));
+
+      const actor = await User.findById(userId).select("first_name last_name email roles");
+      const actorName = actor
+        ? `${actor.first_name || ""} ${actor.last_name || ""}`.trim() || actor.email
+        : "Unknown";
+      const actorRole = actor?.roles?.[0] || null;
+
+      const before = {
+        current_balance: loan.current_balance,
+        penalty_waived: loan.penalty_waived,
+        penalty_waived_amount: loan.penalty_waived_amount,
+        originally_waived_by: loan.penalty_waived_by,
+        originally_waived_at: loan.penalty_waived_at,
+      };
+
+      const bd = loan.repayment_breakdown || {};
+
+      loan.current_balance = newBalance;
+      loan.penalty_waived = false;
+      loan.penalty_waived_amount = 0;
+      loan.penalty_waived_by = null;
+      loan.penalty_waived_by_role = null;
+      loan.penalty_waived_at = null;
+      loan.penalty_waived_reason = null;
+      loan.repayment_breakdown = {
+        ...bd,
+        penalty_waived: false,
+        penalty_waived_amount: 0,
+      };
+
+      await loan.save();
+
+      const updatedLoan = await Loan.findById(loanId).populate([
+        { path: "customer_user", select: "first_name last_name email phone" },
+        { path: "asset", select: "asset_no title status" },
+      ]);
+
+      const customer = updatedLoan.customer_user;
+      const customerName = customer
+        ? `${customer.first_name || ""} ${customer.last_name || ""}`.trim()
+        : "Unknown Client";
+
+      auditLogService
+        .logLoanAction(
+          loanId,
+          userId,
+          "penalty_waiver_reversed",
+          before,
+          {
+            current_balance: newBalance,
+            penalty_waived: false,
+          },
+          requestMeta.ip,
+          requestMeta.userAgent,
+          {
+            loan_no: updatedLoan.loan_no,
+            customer_name: customerName,
+            restored_amount: restoredAmount,
+            reversed_by: actorName,
+            reversed_by_role: actorRole,
+            reason: reason || null,
+          }
+        )
+        .catch((err) => console.error("Penalty waiver reversal audit log failed:", err.message));
+
+      NotificationService.createNotification(
+        {
+          title: `Penalty Waiver Reversed — Loan #${updatedLoan.loan_no}`,
+          message: `${actorName}${actorRole ? ` (${actorRole})` : ""} reversed a $${restoredAmount.toLocaleString()} penalty waiver for ${customerName} on loan #${updatedLoan.loan_no}.${reason ? ` Reason: ${reason}` : ""}`,
+          type: "penalty_waived",
+          priority: "high",
+          audience: {
+            scope: "roles",
+            roles: [
+              "super_admin_vendor",
+              "admin_pawn_limited",
+              "loan_officer_processor",
+              "loan_officer_approval",
+              "management",
+            ],
+          },
+          channels: ["in_app", "email"],
+          entity_type: "loan",
+          entity_id: loanId,
+          action_url: `/loans/${loanId}`,
+          action_text: "View Loan",
+        },
+        userId
+      ).catch((err) => console.error("Penalty waiver reversal notification failed:", err.message));
+
+      sendPenaltyWaiverReversedAdminEmail({
+        loanNo: updatedLoan.loan_no,
+        customerName,
+        restoredAmount,
+        reason,
+        reversedBy: actorName,
+        reversedByRole: actorRole,
+      }).catch((err) => console.error("Penalty waiver reversal admin email failed:", err.message));
+
+      return {
+        success: true,
+        data: updatedLoan,
+        message: `Penalty waiver reversed — $${restoredAmount.toLocaleString()} restored to the balance owed`,
       };
     } catch (error) {
       throw this.handleMongoError(error);

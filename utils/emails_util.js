@@ -1323,6 +1323,70 @@ async function sendPenaltyWaivedAdminEmail({ loanNo, customerName, waivedAmount,
 }
 
 /**
+ * Notify admins that a previously-waived penalty has been reversed (restored)
+ */
+async function sendPenaltyWaiverReversedAdminEmail({ loanNo, customerName, restoredAmount, reason, reversedBy, reversedByRole }) {
+  const subject = `Penalty Waiver Reversed — Loan #${loanNo}`;
+  const title = "Penalty Waiver Reversal Notification";
+
+  const message = `
+    <p style="margin: 0 0 15px 0;">Administrative Team,</p>
+    <p style="margin: 0 0 15px 0;">
+      A previously waived late-payment penalty has been <strong style="color: #0369a1;">reversed</strong> —
+      the amount has been added back to the customer's outstanding balance.
+    </p>
+  `;
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0; background-color: #f0f9ff; border: 1px solid #0369a1; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #1a1a1a; font-size: 12px; margin: 0 0 15px 0; font-weight: bold; border-bottom: 2px solid #0369a1; padding-bottom: 5px;">
+            REVERSAL DETAILS
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px; width: 180px;">Loan Number:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">${loanNo}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Client Name:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${customerName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Penalty Restored:</td>
+              <td style="padding: 5px 0; color: #0369a1; font-size: 12px; font-weight: bold;">$${Number(restoredAmount).toLocaleString()}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Reason:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${reason || "Not specified"}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Reversed By:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${reversedBy || "Unknown"}${reversedByRole ? ` (${reversedByRole})` : ""}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Time:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">
+                ${new Date().toLocaleString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  const html = generateDocumentTemplate({ title, message, details: detailsHtml });
+  const adminEmails = getAdminEmails();
+  for (const email of adminEmails) {
+    await sendEmail({ to: email, subject, html }).catch((err) =>
+      console.error(`Penalty waiver reversal admin email failed (${email}):`, err.message)
+    );
+  }
+}
+
+/**
  * Send the daily 6pm CAT admin activity digest — one email per admin, summarizing
  * loan processing, customer activity, investor movements, auctions, and logins for
  * the day. `digest` is the object returned by services/daily_digest_service.js.
@@ -1457,6 +1521,7 @@ module.exports = {
   sendLoanAuctionAdminEmail,
   sendLoanRolloverAdminEmail,
   sendPenaltyWaivedAdminEmail,
+  sendPenaltyWaiverReversedAdminEmail,
   sendDailyDigestEmail,
   generateOTP
 };

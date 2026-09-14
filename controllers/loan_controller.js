@@ -703,6 +703,38 @@ class LoanController {
   }
 
   /**
+   * Reverse (undo) a penalty waiver — recorded by mistake or during testing.
+   * Super Admin only.
+   */
+  async reversePenaltyWaiver(req, res) {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
+      const userId = req.user?.id;
+
+      const result = await loanService.reversePenaltyWaiver(
+        id,
+        { reason },
+        userId,
+        { ip: req.ip, userAgent: req.headers["user-agent"] }
+      );
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to reverse penalty waiver",
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
    * Roll over a loan — close it out and open a new loan cycle on the same asset
    */
   async rolloverLoan(req, res) {
