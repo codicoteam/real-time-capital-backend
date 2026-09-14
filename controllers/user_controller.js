@@ -1,5 +1,6 @@
 const userService = require("../services/user_service");
 const { sendKycApprovedEmail } = require("../utils/emails_util");
+const loginActivityService = require("../services/login_activity_service");
 
 class UserController {
   /**
@@ -175,6 +176,19 @@ class UserController {
       }
 
       const result = await userService.loginUser(email, password);
+
+      const u = result.user || {};
+      loginActivityService
+        .recordLogin({
+          user_type: "user",
+          user_id: u._id,
+          name: `${u.first_name || ""} ${u.last_name || ""}`.trim() || u.email,
+          email: u.email,
+          roles: u.roles || [],
+          ip: req.ip,
+          user_agent: req.headers["user-agent"],
+        })
+        .catch((err) => console.error("Login activity log failed:", err.message));
 
       res.json({
         success: true,

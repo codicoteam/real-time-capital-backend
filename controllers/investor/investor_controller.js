@@ -8,6 +8,7 @@ const InvestorProfitSplit = require("../../models/investor/investor_profit_split
 const Expense = require("../../models/expense.model");
 const investorAllocationService = require("../../services/investor_allocation_service");
 const investorStatementService = require("../../services/investor_statement_service");
+const loginActivityService = require("../../services/login_activity_service");
 
 const AVATAR_COLORS = ["#10b981", "#3b82f6", "#f59e0b", "#ec4899", "#8b5cf6", "#14b8a6"];
 const VALID_LOAN_TYPES = ["small_loans", "motor_vehicle", "jewellery"];
@@ -97,6 +98,18 @@ class InvestorController {
       }
 
       const token = generateToken(investor);
+
+      loginActivityService
+        .recordLogin({
+          user_type: "investor",
+          user_id: investor._id,
+          name: investor.name,
+          email: investor.email,
+          roles: [investor.kind],
+          ip: req.ip,
+          user_agent: req.headers["user-agent"],
+        })
+        .catch((err) => console.error("Login activity log failed:", err.message));
 
       return res.json({
         success: true,

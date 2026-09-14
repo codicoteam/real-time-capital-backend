@@ -57,6 +57,9 @@ const investorRouter      = require("./routers/investor/investor_router");
 const titleDeedRouter     = require("./routers/investor/title_deed_router");
 const xeroRouter          = require("./routers/xero_router");
 const systemReportsRouter = require("./routers/system_reports_router");
+const loginActivityRouter = require("./routers/login_activity_router");
+const dailyDigestRouter = require("./routers/daily_digest_router");
+const { startDailyDigestScheduler } = require("./services/daily_digest_scheduler");
 
 // Services
 const auctionService = require("./services/assets_auction_service");
@@ -157,6 +160,8 @@ app.use("/api/v1/investors",     investorRouter);
 app.use("/api/v1/title-deeds",  titleDeedRouter);
 app.use("/api/v1/xero",          xeroRouter);
 app.use("/api/v1/system-reports", systemReportsRouter);
+app.use("/api/v1/login-activity", loginActivityRouter);
+app.use("/api/v1/daily-digest", dailyDigestRouter);
 
 // Global error handler
 app.use((err, req, res, next) => {
@@ -180,4 +185,5 @@ httpServer.listen(PORT, () => {
 
   // Start background jobs
   auctionService.startAuctionScheduler();
+  startDailyDigestScheduler();
 });

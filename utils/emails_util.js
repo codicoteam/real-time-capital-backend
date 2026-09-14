@@ -1322,6 +1322,104 @@ async function sendPenaltyWaivedAdminEmail({ loanNo, customerName, waivedAmount,
   }
 }
 
+/**
+ * Send the daily 6pm CAT admin activity digest — one email per admin, summarizing
+ * loan processing, customer activity, investor movements, auctions, and logins for
+ * the day. `digest` is the object returned by services/daily_digest_service.js.
+ */
+async function sendDailyDigestEmail(digest) {
+  const subject = `Daily Activity Digest — ${digest.dateLabel}`;
+  const title = "Daily Activity Digest";
+  const fmt = (n) => `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const message = `
+    <p style="margin: 0 0 15px 0;">Administrative Team,</p>
+    <p style="margin: 0 0 15px 0;">
+      Here is the summary of everything that happened on the platform on <strong>${digest.dateLabel}</strong>
+      (Central Africa Time).
+    </p>
+  `;
+
+  const sectionHeader = (label, color = "#6ba547") => `
+    <p style="color: #1a1a1a; font-size: 12px; margin: 20px 0 10px 0; font-weight: bold; border-bottom: 2px solid ${color}; padding-bottom: 5px;">
+      ${label}
+    </p>
+  `;
+
+  const row = (label, value, valueColor = "#1a1a1a") => `
+    <tr>
+      <td style="padding: 4px 0; color: #666666; font-size: 12px;">${label}</td>
+      <td align="right" style="padding: 4px 0; color: ${valueColor}; font-size: 12px; font-weight: bold;">${value}</td>
+    </tr>
+  `;
+
+  const lp = digest.loanProcessing;
+  const cust = digest.customers;
+  const inv = digest.investors;
+  const auc = digest.auctions;
+  const logins = digest.logins;
+
+  const processorRows = (lp.disbursed.byProcessor || [])
+    .map((p) => row(`&nbsp;&nbsp;— ${p.name}`, `${p.count} loan${p.count === 1 ? "" : "s"} · ${fmt(p.total)}`))
+    .join("");
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 10px 0; background-color: #f0f7ec; border: 1px solid #6ba547; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px 20px;">
+
+          ${sectionHeader("LOAN PROCESSING")}
+          <table width="100%" cellpadding="0" cellspacing="0">
+            ${row("Loans Disbursed", `${lp.disbursed.count} · ${fmt(lp.disbursed.total)}`)}
+            ${processorRows}
+            ${row("Repayments Collected", `${lp.repayments.count} · ${fmt(lp.repayments.total)}`)}
+            ${lp.penaltyWaived.count > 0 ? row("Penalties Waived (foregone)", `${lp.penaltyWaived.count} · ${fmt(lp.penaltyWaived.total)}`, "#d97706") : ""}
+          </table>
+
+          ${sectionHeader("CUSTOMERS", "#3b82f6")}
+          <table width="100%" cellpadding="0" cellspacing="0">
+            ${row("New Loan Applications", `${cust.newApplications.count} · ${fmt(cust.newApplications.total)}`)}
+            ${row("New Customer Registrations", String(cust.newRegistrations))}
+          </table>
+
+          ${sectionHeader("INVESTORS", "#8b5cf6")}
+          <table width="100%" cellpadding="0" cellspacing="0">
+            ${row("Deposits", `${inv.deposit.count} · ${fmt(inv.deposit.total)}`)}
+            ${row("Capital Withdrawals", `${inv.capital_withdrawal.count} · ${fmt(inv.capital_withdrawal.total)}`, inv.capital_withdrawal.total > 0 ? "#dc2626" : "#1a1a1a")}
+            ${row("Profit Withdrawals", `${inv.profit_withdrawal.count} · ${fmt(inv.profit_withdrawal.total)}`, inv.profit_withdrawal.total > 0 ? "#dc2626" : "#1a1a1a")}
+            ${row("Drawings", `${inv.drawing.count} · ${fmt(inv.drawing.total)}`, inv.drawing.total > 0 ? "#dc2626" : "#1a1a1a")}
+          </table>
+
+          ${sectionHeader("AUCTIONS", "#f59e0b")}
+          <table width="100%" cellpadding="0" cellspacing="0">
+            ${row("Auctions Closed", String(auc.closedCount))}
+            ${row("Cash Received", `${auc.paymentsCount} payment${auc.paymentsCount === 1 ? "" : "s"} · ${fmt(auc.cashReceived)}`)}
+          </table>
+
+          ${sectionHeader("SYSTEM LOGINS", "#0ea5e9")}
+          <table width="100%" cellpadding="0" cellspacing="0">
+            ${row("Total Logins", String(logins.logins_today))}
+            ${row("Unique Users", String(logins.unique_users_today))}
+            ${row("&nbsp;&nbsp;— Staff", String(logins.breakdown_today.staff))}
+            ${row("&nbsp;&nbsp;— Customers", String(logins.breakdown_today.customer))}
+            ${row("&nbsp;&nbsp;— Investors", String(logins.breakdown_today.investor))}
+          </table>
+
+        </td>
+      </tr>
+    </table>
+  `;
+
+  const html = generateDocumentTemplate({ title, message, details: detailsHtml });
+  const adminEmails = getAdminEmails();
+  for (const email of adminEmails) {
+    await sendEmail({ to: email, subject, html }).catch((err) =>
+      console.error(`Daily digest email failed (${email}):`, err.message)
+    );
+  }
+  return { sent_to: adminEmails };
+}
+
 // Helper function to get status color
 function getStatusColor(status) {
   const colors = {
@@ -1359,5 +1457,6 @@ module.exports = {
   sendLoanAuctionAdminEmail,
   sendLoanRolloverAdminEmail,
   sendPenaltyWaivedAdminEmail,
+  sendDailyDigestEmail,
   generateOTP
 };
