@@ -664,7 +664,10 @@ class SystemReportsService {
     const penaltyIncome = round2(payments.reduce((s, p) => s + p.penalty_component, 0));
     const auction = await dataSources.getAuctionCashReceived(start, end);
     const titleDeed = await dataSources.getTitleDeedIncome(start, end);
+    const penaltyWaived = await dataSources.getPenaltyWaivedTotal(start, end);
 
+    // Penalty waivers are foregone revenue, never collected — informational only,
+    // NOT subtracted from totalRevenue (there was nothing to subtract it from).
     const totalRevenue = round2(interestIncome + storageIncome + penaltyIncome + auction.total + titleDeed.rtc_share);
 
     const rows = [
@@ -673,6 +676,7 @@ class SystemReportsService {
       { source: "Penalty Income", amount: penaltyIncome },
       { source: "Auction Sale Revenue", amount: round2(auction.total) },
       { source: "Title Deed Interest Income (RTC Share)", amount: round2(titleDeed.rtc_share) },
+      { source: "Penalty Waived (Foregone — informational, not collected)", amount: round2(penaltyWaived.total) },
     ];
 
     return {
@@ -687,6 +691,8 @@ class SystemReportsService {
         auctionRevenue: round2(auction.total),
         titleDeedRtcShare: round2(titleDeed.rtc_share),
         totalRevenue,
+        penaltyWaived: round2(penaltyWaived.total),
+        penaltyWaivedCount: penaltyWaived.count,
       },
     };
   }
@@ -699,6 +705,7 @@ class SystemReportsService {
       { label: "Penalty Income", value: totals.penaltyIncome },
       { label: "Auction Revenue", value: totals.auctionRevenue },
       { label: "Title Deed Interest (RTC Share)", value: totals.titleDeedRtcShare },
+      { label: "Penalty Waived (Foregone)", value: totals.penaltyWaived },
     ];
   }
 
@@ -723,7 +730,7 @@ class SystemReportsService {
       columns: cols,
       rows,
       footnote:
-        "Title Deed Interest is shown at RTC's share only — the investor's share is a pass-through, not RTC revenue. Deeds already linked to an InvestorLoanAllocation are excluded to avoid double-counting.",
+        "Title Deed Interest is shown at RTC's share only — the investor's share is a pass-through, not RTC revenue. Deeds already linked to an InvestorLoanAllocation are excluded to avoid double-counting. \"Penalty Waived\" is informational only — it reflects late-payment penalties forgiven by staff and was never part of collected revenue, so it is excluded from the Total Revenue KPI.",
     });
   }
 

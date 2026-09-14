@@ -257,6 +257,16 @@ async function getDisbursementTotal(start, end) {
   return { total: rows[0]?.total || 0, count: rows[0]?.count || 0 };
 }
 
+// ── Penalty waivers (informational — never subtracted from revenue, since the
+// waived amount was never collected in the first place) ────────────────────
+async function getPenaltyWaivedTotal(start, end) {
+  const rows = await Loan.aggregate([
+    { $match: { penalty_waived: true, penalty_waived_at: { $gte: start, $lte: end } } },
+    { $group: { _id: null, total: { $sum: "$penalty_waived_amount" }, count: { $sum: 1 } } },
+  ]);
+  return { total: rows[0]?.total || 0, count: rows[0]?.count || 0 };
+}
+
 module.exports = {
   AGING_BUCKETS,
   getReconciledPayments,
@@ -267,4 +277,5 @@ module.exports = {
   getInvestorTransactions,
   getAuctionCashReceived,
   getDisbursementTotal,
+  getPenaltyWaivedTotal,
 };

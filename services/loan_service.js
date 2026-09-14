@@ -13,10 +13,12 @@ const {
   sendLoanRedeemedAdminEmail,
   sendLoanAuctionAdminEmail,
   sendLoanRolloverAdminEmail,
+  sendPenaltyWaivedAdminEmail,
 } = require("../utils/emails_util");
 const NotificationService = require("../services/notifications_service");
 const investorAllocationService = require("../services/investor_allocation_service");
 const xeroSyncService = require("../services/xero/xero_sync_service");
+const auditLogService = require("../services/audit_log_service");
 
 class LoanService {
   /**
@@ -1845,6 +1847,169 @@ class LoanService {
           },
         },
         message: `Payment of ${amount} processed successfully${isFullyPaid ? ". Loan fully redeemed." : ""}`,
+      };
+    } catch (error) {
+      throw this.handleMongoError(error);
+    }
+  }
+
+  /**
+   * Waive the late-payment penalty on a loan. Used when a Loan Processor / Admin
+   * decides, at the point of repayment, not to collect the penalty a customer owes
+   * (goodwill, dispute, hardship, etc). Reduces current_balance by whatever portion
+   * of the penalty is still unpaid, but always records the full foregone amount so
+   * the revenue impact is visible system-wide (loan view, System Report, audit log).
+   *
+   * Nothing is posted to Xero for this — cash-basis: the waived amount is money that
+   * was never going to be collected, so no ledger transaction exists to sync.
+   */
+  async waivePenalty(loanId, { reason } = {}, userId, requestMeta = {}) {
+    try {
+      const loan = await Loan.findById(loanId);
+      if (!loan) {
+        throw { status: 404, message: `Loan with ID ${loanId} not found` };
+      }
+
+      if (loan.penalty_waived) {
+        throw {
+          status: 400,
+          message: "Penalty has already been waived for this loan",
+        };
+      }
+
+      const bd = loan.repayment_breakdown || {};
+      const penaltyApplied = Boolean(bd.penalty_applied);
+      const penaltyPercent = loan.penalty_percent ?? 10;
+
+      // Penalty may already be applied (stored in repayment_breakdown) or, if the loan
+      // is in_grace but the status-transition hook hasn't run yet, compute it live —
+      // same logic calculateLoanCharges uses for "pendingPenalty".
+      let penaltyAmount = penaltyApplied
+        ? parseFloat((bd.penalty_amount || 0).toFixed(2))
+        : 0;
+
+      if (!penaltyApplied && loan.status === "in_grace") {
+        penaltyAmount = parseFloat(
+          (loan.current_balance * (penaltyPercent / 100)).toFixed(2)
+        );
+      }
+
+      if (!penaltyAmount || penaltyAmount <= 0) {
+        throw {
+          status: 400,
+          message: "This loan has no applied penalty to waive",
+        };
+      }
+
+      // Only the unpaid portion still sitting in current_balance can be waived —
+      // never waive more than the customer currently owes.
+      const waivedAmount = Math.min(penaltyAmount, loan.current_balance);
+      const newBalance = parseFloat(
+        Math.max(0, loan.current_balance - waivedAmount).toFixed(2)
+      );
+
+      const actor = await User.findById(userId).select("first_name last_name email roles");
+      const actorName = actor
+        ? `${actor.first_name || ""} ${actor.last_name || ""}`.trim() || actor.email
+        : "Unknown";
+      const actorRole = actor?.roles?.[0] || null;
+
+      const before = {
+        current_balance: loan.current_balance,
+        penalty_waived: loan.penalty_waived,
+      };
+
+      loan.current_balance = newBalance;
+      loan.penalty_waived = true;
+      loan.penalty_waived_amount = waivedAmount;
+      loan.penalty_waived_by = userId || null;
+      loan.penalty_waived_by_role = actorRole;
+      loan.penalty_waived_at = new Date();
+      loan.penalty_waived_reason = reason || null;
+      loan.repayment_breakdown = {
+        ...bd,
+        penalty_applied: penaltyApplied ? bd.penalty_applied : true,
+        penalty_amount: penaltyApplied ? bd.penalty_amount : penaltyAmount,
+        penalty_waived: true,
+        penalty_waived_amount: waivedAmount,
+      };
+
+      await loan.save();
+
+      const updatedLoan = await Loan.findById(loanId).populate([
+        { path: "customer_user", select: "first_name last_name email phone" },
+        { path: "asset", select: "asset_no title status" },
+      ]);
+
+      const customer = updatedLoan.customer_user;
+      const customerName = customer
+        ? `${customer.first_name || ""} ${customer.last_name || ""}`.trim()
+        : "Unknown Client";
+
+      // Audit trail — first real caller of the AuditLog system.
+      auditLogService
+        .logLoanAction(
+          loanId,
+          userId,
+          "penalty_waived",
+          before,
+          {
+            current_balance: newBalance,
+            penalty_waived: true,
+            penalty_waived_amount: waivedAmount,
+          },
+          requestMeta.ip,
+          requestMeta.userAgent,
+          {
+            loan_no: updatedLoan.loan_no,
+            customer_name: customerName,
+            waived_by: actorName,
+            waived_by_role: actorRole,
+            reason: reason || null,
+          }
+        )
+        .catch((err) => console.error("Penalty waiver audit log failed:", err.message));
+
+      // In-app + email notification to admins/loan processors/management.
+      NotificationService.createNotification(
+        {
+          title: `Penalty Waived — Loan #${updatedLoan.loan_no}`,
+          message: `${actorName}${actorRole ? ` (${actorRole})` : ""} waived a $${waivedAmount.toLocaleString()} penalty for ${customerName} on loan #${updatedLoan.loan_no}.${reason ? ` Reason: ${reason}` : ""}`,
+          type: "penalty_waived",
+          priority: "high",
+          audience: {
+            scope: "roles",
+            roles: [
+              "super_admin_vendor",
+              "admin_pawn_limited",
+              "loan_officer_processor",
+              "loan_officer_approval",
+              "management",
+            ],
+          },
+          channels: ["in_app", "email"],
+          entity_type: "loan",
+          entity_id: loanId,
+          action_url: `/loans/${loanId}`,
+          action_text: "View Loan",
+        },
+        userId
+      ).catch((err) => console.error("Penalty waiver notification failed:", err.message));
+
+      // Dedicated admin-inbox email, same idiom as disbursement/redemption/rollover.
+      sendPenaltyWaivedAdminEmail({
+        loanNo: updatedLoan.loan_no,
+        customerName,
+        waivedAmount,
+        reason,
+        waivedBy: actorName,
+        waivedByRole: actorRole,
+      }).catch((err) => console.error("Penalty waiver admin email failed:", err.message));
+
+      return {
+        success: true,
+        data: updatedLoan,
+        message: `Penalty of $${waivedAmount.toLocaleString()} waived successfully`,
       };
     } catch (error) {
       throw this.handleMongoError(error);

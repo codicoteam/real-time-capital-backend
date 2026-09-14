@@ -1258,6 +1258,70 @@ async function sendLoanRolloverAdminEmail({ loanNo, newLoanNo, customerName, pri
   }
 }
 
+/**
+ * Notify admins that a late-payment penalty has been waived on a loan
+ */
+async function sendPenaltyWaivedAdminEmail({ loanNo, customerName, waivedAmount, reason, waivedBy, waivedByRole }) {
+  const subject = `Penalty Waived — Loan #${loanNo}`;
+  const title = "Penalty Waiver Notification";
+
+  const message = `
+    <p style="margin: 0 0 15px 0;">Administrative Team,</p>
+    <p style="margin: 0 0 15px 0;">
+      A late-payment penalty has been <strong style="color: #d97706;">waived</strong> on a loan repayment.
+      This amount will not be collected and is recorded as foregone revenue.
+    </p>
+  `;
+
+  const detailsHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0; background-color: #fff7ed; border: 1px solid #d97706; border-radius: 8px;">
+      <tr>
+        <td style="padding: 15px;">
+          <p style="color: #1a1a1a; font-size: 12px; margin: 0 0 15px 0; font-weight: bold; border-bottom: 2px solid #d97706; padding-bottom: 5px;">
+            WAIVER DETAILS
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px; width: 180px;">Loan Number:</td>
+              <td style="padding: 5px 0; color: #1a1a1a; font-size: 12px; font-weight: bold;">${loanNo}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Client Name:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${customerName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Penalty Waived:</td>
+              <td style="padding: 5px 0; color: #d97706; font-size: 12px; font-weight: bold;">$${Number(waivedAmount).toLocaleString()}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Reason:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${reason || "Not specified"}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Waived By:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">${waivedBy || "Unknown"}${waivedByRole ? ` (${waivedByRole})` : ""}</td>
+            </tr>
+            <tr>
+              <td style="padding: 5px 0; color: #666666; font-size: 12px;">Time:</td>
+              <td style="padding: 5px 0; color: #333333; font-size: 12px;">
+                ${new Date().toLocaleString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  const html = generateDocumentTemplate({ title, message, details: detailsHtml });
+  const adminEmails = getAdminEmails();
+  for (const email of adminEmails) {
+    await sendEmail({ to: email, subject, html }).catch((err) =>
+      console.error(`Penalty waiver admin email failed (${email}):`, err.message)
+    );
+  }
+}
+
 // Helper function to get status color
 function getStatusColor(status) {
   const colors = {
@@ -1294,5 +1358,6 @@ module.exports = {
   sendLoanRedeemedAdminEmail,
   sendLoanAuctionAdminEmail,
   sendLoanRolloverAdminEmail,
+  sendPenaltyWaivedAdminEmail,
   generateOTP
 };

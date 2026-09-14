@@ -817,6 +817,48 @@ router.post(
 
 /**
  * @swagger
+ * /api/v1/loans/{id}/waive-penalty:
+ *   post:
+ *     summary: Waive the late-payment penalty on a loan (Loan Processor / Admin decision made at repayment time)
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Penalty waived successfully
+ *       400:
+ *         description: No penalty to waive, or already waived
+ *       404:
+ *         description: Loan not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.post(
+  "/:id/waive-penalty",
+  requireRoles(
+    "loan_officer_processor",
+    "super_admin_vendor",
+    "admin_pawn_limited",
+  ),
+  loanController.waivePenalty,
+);
+
+/**
+ * @swagger
  * /api/v1/loans/{id}/rollover:
  *   post:
  *     summary: Roll over a loan — close it out and open a new loan cycle on the same asset

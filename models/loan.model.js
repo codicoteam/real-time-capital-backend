@@ -94,6 +94,17 @@ const LoanSchema = new mongoose.Schema(
     expected_total_repayable: { type: Number, min: 0 },           // principal + interest + storage (+ admin fee if deferred)
     repayment_breakdown: { type: mongoose.Schema.Types.Mixed, default: null }, // full calculation detail
 
+    // Penalty waiver — Loan Processor/Admin can forgive the late-payment penalty for a
+    // customer (goodwill, dispute, hardship, etc). The waiver reduces current_balance by
+    // the unpaid penalty amount so the customer no longer owes it, but the foregone
+    // revenue is always tracked here so management can see the real impact.
+    penalty_waived: { type: Boolean, default: false },
+    penalty_waived_amount: { type: Number, min: 0, default: 0 }, // $ value forgone
+    penalty_waived_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    penalty_waived_by_role: { type: String, default: null },
+    penalty_waived_at: { type: Date, default: null },
+    penalty_waived_reason: { type: String, trim: true, default: null },
+
     // Admin fee (0-10% of principal_amount) — negotiated by the Loan Processor/Super Admin
     // at loan CREATION time, not at application. This is pure RTC revenue: it never touches
     // an investor's principal_amount or profit split (see investor_allocation_service.assignLoan).

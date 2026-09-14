@@ -926,12 +926,26 @@ class ReportService {
       { $group: { _id: null, total: { $sum: "$winning_bid_amount" } } },
     ]);
 
+    // Informational only — penalties forgiven via the penalty-waiver feature.
+    // NOT subtracted from any revenue total above (it was never collected in the
+    // first place); shown separately so management can see the true foregone amount.
+    const [penaltyWaived] = await Loan.aggregate([
+      {
+        $match: {
+          penalty_waived: true,
+          penalty_waived_at: { $gte: start, $lte: end },
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$penalty_waived_amount" } } },
+    ]);
+
     return {
       interest_income: interestIncome?.interest || 0,
       principal_collected: interestIncome?.principal || 0,
       storage_fees: interestIncome?.storage || 0,
       penalty_fees: interestIncome?.penalty || 0,
       auction_revenue: auctionRevenue?.total || 0,
+      penalty_waived: penaltyWaived?.total || 0,
     };
   }
 
