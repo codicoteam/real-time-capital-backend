@@ -481,9 +481,14 @@ class AuctionService {
           // Notify the winning bidder
           await this.notifyWinner(auction, highestBid);
         } else {
-          // No bids, mark asset as available for re-auction
+          // No bids — the collateral found no buyer, so it becomes RTC's own
+          // inventory rather than going back to "overdue" (which would incorrectly
+          // imply the loan is still awaiting repayment/re-pawning). A Super Admin
+          // records how it's eventually disposed of via the asset disposal endpoint.
           await Asset.findByIdAndUpdate(auction.asset, {
-            status: "overdue",
+            status: "rtc_owned",
+            rtc_owned_at: new Date(),
+            rtc_owned_from_auction: auction._id,
           });
         }
       }

@@ -6,7 +6,7 @@ const XeroSyncLogSchema = new mongoose.Schema(
   {
     source_collection: {
       type: String,
-      enum: ["Loan", "Payment", "Expense", "InvestorTransaction", "BidPayment", "Auction"],
+      enum: ["Loan", "Payment", "Expense", "InvestorTransaction", "BidPayment", "Auction", "Asset"],
       required: true,
       index: true,
     },
@@ -19,6 +19,7 @@ const XeroSyncLogSchema = new mongoose.Schema(
         "loan_repayment",
         "loan_written_off",
         "loan_moved_to_auction",
+        "asset_disposal_sale",
         "expense_approved",
         "investor_deposit",
         "investor_capital_withdrawal",

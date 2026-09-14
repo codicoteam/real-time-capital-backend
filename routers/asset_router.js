@@ -373,9 +373,56 @@ router.put("/:id/valuation",
  *       401:
  *         description: Unauthorized
  */
-router.put("/:id/status", 
+router.put("/:id/status",
   requireRoles('loan_officer_processor', 'loan_officer_approval', 'admin_pawn_limited', 'management', 'super_admin_vendor'),
   assetController.updateStatus
+);
+
+/**
+ * @swagger
+ * /api/v1/assets/{id}/disposal:
+ *   put:
+ *     summary: Record how an RTC-owned asset (auction or rtc_owned) was disposed of — sold externally or retained for internal use. Super Admin only.
+ *     tags: [Assets]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - disposal_method
+ *             properties:
+ *               disposal_method:
+ *                 type: string
+ *                 enum: [sold_externally, retained_internal_use]
+ *               sale_price:
+ *                 type: number
+ *               payment_method:
+ *                 type: string
+ *               notes:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Disposal recorded
+ *       400:
+ *         description: Invalid disposal
+ *       404:
+ *         description: Asset not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.put("/:id/disposal",
+  requireRoles('super_admin_vendor'),
+  assetController.recordDisposal
 );
 
 /**

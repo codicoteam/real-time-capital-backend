@@ -7,6 +7,7 @@ const User = require("../models/user.model");
 const { sendSmsWithMessage } = require("../utils/sms_utils"); // your twilio file
 const { sendEmail, generateDocumentTemplate, sendLoanAuctionAdminEmail } = require("../utils/emails_util");
 const NotificationService = require("./notifications_service");
+const AuctionService = require("./auction_service");
 
 // ─────────────────────────────────────────────
 // Helper – generate sequential auction_no
@@ -58,16 +59,23 @@ function calculateAuctionAmount(loan) {
 async function updateAuctionStatuses() {
   const now = new Date();
 
-  // Close auctions that have ended but are still live
-  const closedResult = await Auction.updateMany(
-    {
-      status: "live",
-      ends_at: { $lte: now },
-    },
-    {
-      $set: { status: "closed" },
-    },
-  );
+  // Close auctions that have ended but are still live. Route each one through
+  // AuctionService.updateAuctionStatus rather than a blunt status flip — that's the
+  // one place that actually determines a winner (or, with no bids, marks the asset
+  // "rtc_owned" so it becomes tracked company inventory instead of silently sitting
+  // at status "auction" forever). A blunt updateMany here would skip all of that.
+  const expiredLiveAuctions = await Auction.find({ status: "live", ends_at: { $lte: now } }).select("_id").lean();
+  let closedCount = 0;
+  for (const { _id } of expiredLiveAuctions) {
+    try {
+      const result = await AuctionService.updateAuctionStatus(_id, "closed", null);
+      if (result.success) closedCount += 1;
+      else console.error(`[AuctionService] Failed to auto-close auction ${_id}: ${result.message}`);
+    } catch (err) {
+      console.error(`[AuctionService] Error auto-closing auction ${_id}:`, err.message);
+    }
+  }
+  const closedResult = { modifiedCount: closedCount };
 
   // Reopen auctions that should be live but are closed (edge case)
   const reopenedResult = await Auction.updateMany(

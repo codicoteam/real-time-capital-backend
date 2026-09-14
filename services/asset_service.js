@@ -350,7 +350,9 @@ class AssetService {
         "overdue",
         "in_repair",
         "auction",
+        "rtc_owned",
         "sold",
+        "retained",
         "redeemed",
         "closed",
       ];
@@ -399,6 +401,111 @@ class AssetService {
         success: true,
         data: updatedAsset,
         message: `Asset status updated to ${status}`,
+      };
+    } catch (error) {
+      throw this.handleMongoError(error);
+    }
+  }
+
+  /**
+   * Record how an RTC-owned asset was disposed of — either sold externally (with a
+   * profit/loss against the defaulted loan's outstanding balance) or retained for
+   * internal company use. Usable while the asset is still "auction" (lets a Super
+   * Admin sell it directly without waiting for the auction to expire — this also
+   * force-closes the auction so it stops showing as live) or once it's already
+   * "rtc_owned" (auction already expired with no winning bid).
+   */
+  async recordDisposal(assetId, { disposal_method, sale_price, payment_method, notes }, userId) {
+    try {
+      if (!["sold_externally", "retained_internal_use"].includes(disposal_method)) {
+        throw { status: 400, message: 'disposal_method must be "sold_externally" or "retained_internal_use".' };
+      }
+      if (disposal_method === "sold_externally" && !(Number(sale_price) > 0)) {
+        throw { status: 400, message: "sale_price is required and must be greater than 0 for a sold_externally disposal." };
+      }
+
+      const asset = await Asset.findById(assetId);
+      if (!asset) throw { status: 404, message: `Asset with ID ${assetId} not found` };
+      if (!["auction", "rtc_owned"].includes(asset.status)) {
+        throw {
+          status: 400,
+          message: `Cannot record a disposal for an asset with status "${asset.status}" — must be "auction" or "rtc_owned".`,
+        };
+      }
+      if (asset.disposal_method) {
+        throw { status: 400, message: "This asset already has a disposal recorded." };
+      }
+
+      // Cost basis: the defaulted loan's outstanding balance. Prefer the frozen
+      // snapshot taken when the loan moved to auction (Loan.xero_auction_reclass_amount
+      // — set regardless of whether Xero is even connected, see loan_service.js
+      // updateLoanStatus → xero_sync_service.syncLoanMovedToAuction), falling back to
+      // the loan's current live balance so this works even for older loans that
+      // predate that field.
+      const loan = await Loan.findOne({ asset: assetId }).sort({ created_at: -1 });
+      const costBasis = loan
+        ? loan.xero_auction_reclass_amount != null
+          ? loan.xero_auction_reclass_amount
+          : loan.current_balance || 0
+        : 0;
+
+      const wasStillInAuction = asset.status === "auction";
+      const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+      const update = {
+        disposal_method,
+        disposal_cost_basis: round2(costBasis),
+        disposal_notes: notes ? String(notes).trim() : null,
+        disposed_by: userId || null,
+        disposed_at: new Date(),
+      };
+
+      if (disposal_method === "sold_externally") {
+        update.disposal_sale_price = round2(sale_price);
+        update.disposal_profit_loss = round2(sale_price - costBasis);
+        update.status = "sold";
+      } else {
+        update.disposal_sale_price = null;
+        update.disposal_profit_loss = null; // retaining an asset isn't a P&L event — a balance-sheet reclassification
+        update.status = "retained";
+      }
+
+      const updatedAsset = await Asset.findByIdAndUpdate(assetId, update, { new: true }).populate([
+        { path: "owner_user", select: "first_name last_name email phone" },
+        { path: "disposed_by", select: "first_name last_name email" },
+      ]);
+
+      // If the auction was still open/unresolved, force it closed so it stops showing
+      // as live — this is an admin override sale, not a normal bidder-wins close, so
+      // we set status directly rather than routing through AuctionService's winner logic.
+      if (wasStillInAuction) {
+        const Auction = require("../models/auction.model");
+        await Auction.updateMany({ asset: assetId, status: { $in: ["live", "draft"] } }, { $set: { status: "closed" } });
+      }
+
+      // Loans Receivable was already reclassified into Pawned Assets Inventory when the
+      // loan defaulted — clear that marker now that the asset's final disposition is
+      // known, so nothing else (e.g. a stray BidPayment) can double-post against it later.
+      if (loan && loan.xero_auction_reclass_amount != null) {
+        await Loan.updateOne({ _id: loan._id }, { $set: { xero_auction_reclass_amount: null } });
+      }
+
+      // Xero sync (fire-and-forget) — only a real sale is a cash/revenue event worth
+      // posting; retaining the asset internally is a reclassification, not booked here.
+      if (disposal_method === "sold_externally") {
+        const xeroSyncService = require("./xero/xero_sync_service");
+        xeroSyncService
+          .syncAssetDisposalSale(updatedAsset, { costBasis: round2(costBasis), paymentMethod: payment_method })
+          .catch((err) => console.error("[Xero] asset disposal sync error:", err.message));
+      }
+
+      return {
+        success: true,
+        data: updatedAsset,
+        message:
+          disposal_method === "sold_externally"
+            ? `Disposal recorded — sold for $${round2(sale_price).toFixed(2)} (${update.disposal_profit_loss >= 0 ? "gain" : "loss"} of $${Math.abs(update.disposal_profit_loss).toFixed(2)} vs. the $${round2(costBasis).toFixed(2)} owed).`
+            : "Disposal recorded — asset retained for internal company use.",
       };
     } catch (error) {
       throw this.handleMongoError(error);

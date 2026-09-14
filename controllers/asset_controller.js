@@ -273,6 +273,34 @@ class AssetController {
   }
 
   /**
+   * Record how an RTC-owned asset (status "auction" or "rtc_owned") was disposed of —
+   * sold externally (with a sale price, computing profit/loss against the defaulted
+   * loan's balance) or retained for internal company use. Super Admin only.
+   */
+  async recordDisposal(req, res) {
+    try {
+      const { id } = req.params;
+      const { disposal_method, sale_price, payment_method, notes } = req.body;
+      const userId = req.user?.id;
+
+      const result = await assetService.recordDisposal(id, { disposal_method, sale_price, payment_method, notes }, userId);
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to record disposal",
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
    * Get assets by owner
    */
   async getAssetsByOwner(req, res) {

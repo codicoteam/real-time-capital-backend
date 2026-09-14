@@ -32,9 +32,11 @@ const BaseAssetSchema = new mongoose.Schema(
         "overdue",        // loan overdue but asset still held
         "in_repair",      // optional
         "auction",        // loan defaulted → asset moved to auction
-        "sold",           // sold at auction
+        "rtc_owned",      // auction expired with no winning bid — now RTC's own inventory, awaiting disposal decision
+        "sold",           // sold — either to an auction winner, or later disposed of by RTC (see disposal_method)
+        "retained",       // RTC decided to keep/use the asset internally rather than sell it — terminal, no sale
         "redeemed",       // loan fully paid, asset returned to customer
-        "closed",         // final state (either redeemed or sold)
+        "closed",         // final state (redeemed, sold, or retained)
       ],
       default: "submitted",
       index: true,
@@ -51,6 +53,39 @@ const BaseAssetSchema = new mongoose.Schema(
 
     // Link to active loan if pawned
     active_loan: { type: mongoose.Schema.Types.ObjectId, ref: "Loan" },
+
+    // Set when an auction expires with no winning bid — the asset becomes RTC's own
+    // inventory rather than returning to the customer or a buyer. Populated by the
+    // auction expiry logic (services/auction_service.js / assets_auction_service.js).
+    rtc_owned_at: { type: Date, default: null },
+    rtc_owned_from_auction: { type: mongoose.Schema.Types.ObjectId, ref: "Auction", default: null },
+
+    // How an RTC-owned asset (status "auction" or "rtc_owned") was eventually disposed
+    // of. Set once, by the Super Admin "Record Disposal" action.
+    //   sold_externally     — RTC sold the asset outside the normal bidder-wins flow
+    //                         (off-platform sale, or a direct sale while still "in
+    //                         auction"). disposal_sale_price is required.
+    //   retained_internal_use — RTC kept the asset for its own use. No sale, no
+    //                         disposal_sale_price, no profit/loss (a balance-sheet
+    //                         reclassification, not a P&L event).
+    disposal_method: {
+      type: String,
+      enum: ["sold_externally", "retained_internal_use", null],
+      default: null,
+    },
+    // Snapshot of the defaulted loan's outstanding balance at the time of disposal —
+    // what RTC's collateral was actually worth on the books when it stopped being a
+    // receivable. The basis profit/loss is measured against.
+    disposal_cost_basis: { type: Number, min: 0, default: null },
+    disposal_sale_price: { type: Number, min: 0, default: null }, // only for sold_externally
+    // sale_price - cost_basis. Only meaningful (non-null) for sold_externally — a
+    // positive value is a gain over what was owed, negative is a shortfall.
+    disposal_profit_loss: { type: Number, default: null },
+    disposal_notes: { type: String, trim: true },
+    disposed_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    disposed_at: { type: Date, default: null },
+    // Xero BankTransaction/ManualJournal this disposal sale was posted as (sold_externally only)
+    xero_disposal_transaction_id: { type: String, default: null },
   },
   {
     timestamps: { createdAt: "created_at", updatedAt: "updated_at" },

@@ -15,6 +15,7 @@ const Expense = require("../../models/expense.model");
 const InvestorTransaction = require("../../models/investor/investor_transaction.model");
 const Auction = require("../../models/auction.model");
 const BidPayment = require("../../models/bidPayment.model");
+const Asset = require("../../models/asset.model");
 
 // Every event funnels through here: logs the attempt, never throws to the caller
 // (callers use `.catch()` fire-and-forget per this codebase's existing convention —
@@ -260,6 +261,82 @@ async function syncAuctionSaleCompleted(bidPayment) {
           ],
         });
         await Loan.updateOne({ _id: loan._id }, { $set: { xero_auction_reclass_amount: null } });
+      }
+
+      return xeroId;
+    },
+  );
+}
+
+// ── RTC asset disposal sale ─────────────────────────────────────────────
+// A collateral asset that RTC ended up owning (auction expired unsold, or a Super
+// Admin sold it directly while it was still "in auction") gets sold off-platform —
+// no BidPayment/bidder involved, so this is a separate entry point from
+// syncAuctionSaleCompleted above, but posts to the exact same accounts: BankTransaction
+// RECEIVE for the sale proceeds, plus a Manual Journal matching cost of sale against
+// the loan balance that was reclassified into Pawned Assets Inventory when it defaulted.
+async function syncAssetDisposalSale(asset, { costBasis, paymentMethod }) {
+  if (asset.xero_disposal_transaction_id) return asset.xero_disposal_transaction_id; // already posted
+
+  return withSyncLog(
+    {
+      sourceCollection: "Asset",
+      sourceId: asset._id,
+      eventType: "asset_disposal_sale",
+      xeroEndpoint: "BankTransactions",
+      payload: { asset_no: asset.asset_no, amount: asset.disposal_sale_price, cost_basis: costBasis },
+    },
+    async () => {
+      const { accountingApi, tenantId } = await getAuthenticatedClient();
+      const contactId = await getOrCreateInternalContact();
+      const bankAccountKey = bankAccountKeyForMethod(paymentMethod);
+      const [bankCode, revenueCode] = await Promise.all([
+        requireAccountCode(bankAccountKey),
+        requireAccountCode("asset_sale_revenue"),
+      ]);
+
+      const { body } = await accountingApi.createBankTransactions(tenantId, {
+        bankTransactions: [
+          {
+            type: "RECEIVE",
+            contact: { contactID: contactId },
+            date: toXeroDate(asset.disposed_at || new Date()),
+            reference: asset.asset_no,
+            status: "AUTHORISED",
+            bankAccount: { code: bankCode },
+            lineItems: [
+              {
+                description: `Disposal sale — ${asset.asset_no}`,
+                quantity: 1,
+                unitAmount: asset.disposal_sale_price,
+                accountCode: revenueCode,
+              },
+            ],
+          },
+        ],
+      });
+
+      const xeroId = body.bankTransactions[0].bankTransactionID;
+      await Asset.updateOne({ _id: asset._id }, { $set: { xero_disposal_transaction_id: xeroId } });
+
+      if (costBasis > 0) {
+        const [cogsCode, inventoryCode] = await Promise.all([
+          requireAccountCode("cost_of_asset_sales"),
+          requireAccountCode("pawned_assets_inventory"),
+        ]);
+        await accountingApi.createManualJournals(tenantId, {
+          manualJournals: [
+            {
+              narration: `Cost of asset disposed — ${asset.asset_no}`,
+              date: toXeroDate(asset.disposed_at || new Date()),
+              status: "POSTED",
+              journalLines: [
+                { lineAmount: costBasis, accountCode: cogsCode, description: "Cost of asset sales" },
+                { lineAmount: -costBasis, accountCode: inventoryCode, description: "Pawned assets inventory" },
+              ],
+            },
+          ],
+        });
       }
 
       return xeroId;
@@ -523,6 +600,7 @@ module.exports = {
   syncLoanWrittenOff,
   syncLoanMovedToAuction,
   syncAuctionSaleCompleted,
+  syncAssetDisposalSale,
   syncLoanRepayment,
   syncLoanRepaymentLegacy,
   syncExpenseApproved,
