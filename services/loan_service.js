@@ -713,7 +713,7 @@ class LoanService {
         {
           path: "asset",
           select:
-            "asset_no title category evaluated_value declared_value status storage_location asset_images brand model serial_no make registration_no engine_no chassis_no metal_type purity weight_grams",
+            "asset_no title category evaluated_value declared_value status storage_location asset_images brand model serial_no make registration_no engine_no chassis_no metal_type purity weight_grams disposal_method disposal_sale_price disposal_profit_loss disposal_notes disposed_at rtc_owned_at",
         },
         {
           path: "application",
