@@ -1,23 +1,40 @@
 "use strict";
 
-// Maps our internal payment_method values (used across Loan/Payment/Expense) to the
-// xero_account_map key of the actual bank/cash account money moved through.
-function bankAccountKeyForMethod(method) {
+// Every online/app-originated rail settles into the PayNow merchant account
+// (Designit Media Pvt Ltd) — this is automatic and not staff-selectable.
+const ONLINE_PROVIDERS = new Set(["paynow", "ecocash", "onemoney", "telecash"]);
+
+// Resolves the xero_account_map key of the actual bank/cash account money moved
+// through for a given event.
+//
+//   1. An explicit `bankAccountKey` (staff picked one from the dropdown) always wins.
+//   2. Otherwise, if this was paid online through the app (provider is one of the
+//      PayNow rails), it's automatically Designit Media — no staff choice involved.
+//   3. Otherwise, fall back to a same-method-family default (used only for paths
+//      that haven't been updated to capture an explicit choice yet).
+function bankAccountKeyForMethod(method, { provider, bankAccountKey } = {}) {
+  if (bankAccountKey) return bankAccountKey;
+  if (provider && ONLINE_PROVIDERS.has(provider)) return "designit_media";
+
   switch (method) {
     case "mobile_money":
     case "ecocash":
     case "onemoney":
     case "telecash":
-      return "ecocash_float";
+      return "ecocash_real_time_capital";
     case "bank_transfer":
     case "bank":
     case "cheque":
     case "card":
+      return "bank_real_time_capital";
     case "paynow":
-      return "bank_fbc_cbz";
+      return "designit_media";
     case "cash":
     default:
-      return "cash_on_hand";
+      // No till specified — Admin is the safer default (Reception should always be
+      // explicit, since misattributing a Reception cash sale to Admin is the more
+      // likely bookkeeping error to go unnoticed).
+      return "cash_on_hand_admin";
   }
 }
 

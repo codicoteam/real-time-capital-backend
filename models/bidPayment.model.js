@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { XERO_BANK_ACCOUNT_KEYS } = require("../configs/xero_bank_accounts");
 
 const BidPaymentSchema = new mongoose.Schema(
   {
@@ -52,6 +53,10 @@ const BidPaymentSchema = new mongoose.Schema(
     },
     provider: { type: String, trim: true }, // e.g. paynow, ecocash, etc (optional)
     provider_txn_id: { type: String, trim: true, index: true, sparse: true },
+    // Which real Xero bank account this bid payment was recorded against (manual
+    // payments only — a PayNow-provider payment always resolves to Designit Media
+    // automatically regardless of this field).
+    bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
     poll_url: { type: String, trim: true, default: null },
 
     // Mobile payment specific fields

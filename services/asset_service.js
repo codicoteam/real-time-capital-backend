@@ -415,7 +415,7 @@ class AssetService {
    * force-closes the auction so it stops showing as live) or once it's already
    * "rtc_owned" (auction already expired with no winning bid).
    */
-  async recordDisposal(assetId, { disposal_method, sale_price, payment_method, notes }, userId) {
+  async recordDisposal(assetId, { disposal_method, sale_price, payment_method, bank_account_key, notes }, userId) {
     try {
       if (!["sold_externally", "retained_internal_use"].includes(disposal_method)) {
         throw { status: 400, message: 'disposal_method must be "sold_externally" or "retained_internal_use".' };
@@ -464,6 +464,8 @@ class AssetService {
         update.disposal_sale_price = round2(sale_price);
         update.disposal_profit_loss = round2(sale_price - costBasis);
         update.status = "sold";
+        update.disposal_payment_method = payment_method || null;
+        update.disposal_bank_account_key = bank_account_key || null;
       } else {
         update.disposal_sale_price = null;
         update.disposal_profit_loss = null; // retaining an asset isn't a P&L event — a balance-sheet reclassification
@@ -495,7 +497,11 @@ class AssetService {
       if (disposal_method === "sold_externally") {
         const xeroSyncService = require("./xero/xero_sync_service");
         xeroSyncService
-          .syncAssetDisposalSale(updatedAsset, { costBasis: round2(costBasis), paymentMethod: payment_method })
+          .syncAssetDisposalSale(updatedAsset, {
+            costBasis: round2(costBasis),
+            paymentMethod: payment_method,
+            bankAccountKey: bank_account_key,
+          })
           .catch((err) => console.error("[Xero] asset disposal sync error:", err.message));
       }
 

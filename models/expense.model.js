@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { XERO_BANK_ACCOUNT_KEYS } = require("../configs/xero_bank_accounts");
 
 const ExpenseSchema = new mongoose.Schema(
   {
@@ -37,6 +38,8 @@ const ExpenseSchema = new mongoose.Schema(
       enum: ["cash", "bank_transfer", "mobile_money", "cheque", "other"],
       default: "cash",
     },
+    // Which real Xero bank account this expense was paid from.
+    bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
 
     description: { type: String, trim: true },
 

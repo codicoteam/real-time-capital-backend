@@ -118,6 +118,7 @@ class BidPaymentService {
         payer_phone,
         redirect_url,
         notes,
+        bank_account_key,
       } = paymentData;
 
       // Validate required fields
@@ -215,6 +216,7 @@ class BidPaymentService {
         redirect_url,
         receipt_no: receiptNo,
         notes,
+        bank_account_key: bank_account_key || null,
       });
 
       // For mobile payments, validate and set phone number

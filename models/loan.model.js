@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const { LOAN_PERIOD_TYPES } = require("../configs/loan_periods");
+const { XERO_BANK_ACCOUNT_KEYS } = require("../configs/xero_bank_accounts");
 
 // Payment subdocument (records each repayment)
 const PaymentSchema = new mongoose.Schema(
@@ -19,6 +20,12 @@ const PaymentSchema = new mongoose.Schema(
     reference_no: { type: String, trim: true },
     received_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     notes: { type: String, trim: true },
+
+    // Which real Xero bank account this repayment was recorded against — staff-picked
+    // (with a role-based default) for manually-recorded payments; unset for anything
+    // not yet passing one through, in which case Xero sync falls back to inferring
+    // from payment_method. See configs/xero_bank_accounts.js for the 5 valid keys.
+    bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
 
     // Xero BankTransaction this embedded (legacy-path) repayment was posted as
     xero_bank_transaction_id: { type: String, default: null },
@@ -124,6 +131,11 @@ const LoanSchema = new mongoose.Schema(
       enum: ["cash", "bank_transfer", "mobile_money", "cheque", null],
       default: null,
     },
+    // The fee is a separate GL line from the disbursement itself and can genuinely be
+    // collected through a different till/account (e.g. disbursement paid out from the
+    // main bank, but the upfront fee collected in cash at the counter) — its own
+    // selector, independent of disbursement_bank_account_key.
+    admin_fee_bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
     admin_fee_notes: { type: String, trim: true },
 
     // Additional principal added to an already-active loan (Loan Processor/Admin only).
@@ -140,6 +152,8 @@ const LoanSchema = new mongoose.Schema(
           admin_fee_pct: { type: Number, min: 0, max: 10, default: 0 },
           admin_fee_amount: { type: Number, min: 0, default: 0 },
           admin_fee_type: { type: String, enum: ["upfront", "deferred", null], default: null },
+          bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
+          admin_fee_bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
           added_at: { type: Date, default: Date.now },
           added_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
           notes: { type: String, trim: true },
@@ -162,6 +176,8 @@ const LoanSchema = new mongoose.Schema(
       type: String,
       enum: ["cash", "bank_transfer", "mobile_money", "cheque"],
     },
+    // Which real Xero bank account the disbursement paid out from — staff-picked.
+    disbursement_bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
     disbursement_reference: { type: String, trim: true },
     disbursed_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     disbursement_notes: { type: String, trim: true },

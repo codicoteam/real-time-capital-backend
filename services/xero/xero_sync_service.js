@@ -63,7 +63,9 @@ async function syncLoanDisbursed(loan) {
     async () => {
       const { accountingApi, tenantId } = await getAuthenticatedClient();
       const contactId = await getOrCreateCustomerContact(loan.customer_user._id || loan.customer_user);
-      const bankAccountKey = bankAccountKeyForMethod(loan.payment_method);
+      const bankAccountKey = bankAccountKeyForMethod(loan.payment_method, {
+        bankAccountKey: loan.disbursement_bank_account_key,
+      });
       const [bankCode, loansReceivableCode] = await Promise.all([
         requireAccountCode(bankAccountKey),
         requireAccountCode("loans_receivable"),
@@ -208,7 +210,10 @@ async function syncAuctionSaleCompleted(bidPayment) {
 
       const { accountingApi, tenantId } = await getAuthenticatedClient();
       const contactId = await getOrCreateCustomerContact(bidPayment.payer_user._id || bidPayment.payer_user);
-      const bankAccountKey = bankAccountKeyForMethod(bidPayment.method);
+      const bankAccountKey = bankAccountKeyForMethod(bidPayment.method, {
+        provider: bidPayment.provider,
+        bankAccountKey: bidPayment.bank_account_key,
+      });
       const [bankCode, revenueCode] = await Promise.all([
         requireAccountCode(bankAccountKey),
         requireAccountCode("asset_sale_revenue"),
@@ -275,7 +280,7 @@ async function syncAuctionSaleCompleted(bidPayment) {
 // syncAuctionSaleCompleted above, but posts to the exact same accounts: BankTransaction
 // RECEIVE for the sale proceeds, plus a Manual Journal matching cost of sale against
 // the loan balance that was reclassified into Pawned Assets Inventory when it defaulted.
-async function syncAssetDisposalSale(asset, { costBasis, paymentMethod }) {
+async function syncAssetDisposalSale(asset, { costBasis, paymentMethod, bankAccountKey: explicitBankAccountKey }) {
   if (asset.xero_disposal_transaction_id) return asset.xero_disposal_transaction_id; // already posted
 
   return withSyncLog(
@@ -289,7 +294,7 @@ async function syncAssetDisposalSale(asset, { costBasis, paymentMethod }) {
     async () => {
       const { accountingApi, tenantId } = await getAuthenticatedClient();
       const contactId = await getOrCreateInternalContact();
-      const bankAccountKey = bankAccountKeyForMethod(paymentMethod);
+      const bankAccountKey = bankAccountKeyForMethod(paymentMethod, { bankAccountKey: explicitBankAccountKey });
       const [bankCode, revenueCode] = await Promise.all([
         requireAccountCode(bankAccountKey),
         requireAccountCode("asset_sale_revenue"),
@@ -353,6 +358,8 @@ async function postRepaymentToXero({
   sourceId,
   loan,
   method,
+  provider,
+  bankAccountKey: explicitBankAccountKey,
   date,
   reference,
   principal,
@@ -371,7 +378,7 @@ async function postRepaymentToXero({
     async () => {
       const { accountingApi, tenantId } = await getAuthenticatedClient();
       const contactId = await getOrCreateCustomerContact(loan.customer_user._id || loan.customer_user);
-      const bankAccountKey = bankAccountKeyForMethod(method);
+      const bankAccountKey = bankAccountKeyForMethod(method, { provider, bankAccountKey: explicitBankAccountKey });
 
       const componentAccounts = [
         { amount: principal, key: "loans_receivable", label: "Principal repayment" },
@@ -421,6 +428,8 @@ async function syncLoanRepayment(payment, loan) {
     sourceId: payment._id,
     loan,
     method: payment.method || payment.provider,
+    provider: payment.provider,
+    bankAccountKey: payment.bank_account_key,
     date: payment.paid_at,
     reference: payment.receipt_no || loan.loan_no,
     principal: payment.principal_component || 0,
@@ -456,6 +465,7 @@ async function syncLoanRepaymentLegacy(loan, paymentEntry) {
     sourceId: loan._id,
     loan,
     method: paymentEntry.payment_method,
+    bankAccountKey: paymentEntry.bank_account_key,
     date: paymentEntry.payment_date,
     reference: loan.loan_no,
     principal,
@@ -488,7 +498,9 @@ async function syncExpenseApproved(expense) {
     async () => {
       const { accountingApi, tenantId } = await getAuthenticatedClient();
       const contactId = await getOrCreateInternalContact();
-      const bankAccountKey = bankAccountKeyForMethod(expense.payment_method);
+      const bankAccountKey = bankAccountKeyForMethod(expense.payment_method, {
+        bankAccountKey: expense.bank_account_key,
+      });
       const expenseKey = expenseAccountKeyForCategory(expense.category);
       const [bankCode, expenseCode] = await Promise.all([
         requireAccountCode(bankAccountKey),
@@ -560,10 +572,11 @@ async function syncInvestorTransaction(tx) {
     async () => {
       const { accountingApi, tenantId } = await getAuthenticatedClient();
       const contactId = await getOrCreateInvestorContact(tx.investor_id._id || tx.investor_id);
-      // Investor cash movements aren't tied to a specific payment_method in this system —
-      // default to the main bank account.
+      const bankAccountKey = bankAccountKeyForMethod(tx.payment_method, {
+        bankAccountKey: tx.bank_account_key,
+      });
       const [bankCode, lineCode] = await Promise.all([
-        requireAccountCode("bank_fbc_cbz"),
+        requireAccountCode(bankAccountKey),
         requireAccountCode(mapping.accountKey),
       ]);
 

@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const { Schema } = mongoose;
+const { XERO_BANK_ACCOUNT_KEYS } = require("../configs/xero_bank_accounts");
 
 const PaymentSchema = new Schema(
   {
@@ -79,6 +80,9 @@ const PaymentSchema = new Schema(
 
     receipt_no: { type: String, index: true, sparse: true },
     meta: { type: Schema.Types.Mixed },
+
+    // Which real Xero bank account this repayment was recorded against.
+    bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
 
     // Xero BankTransaction this repayment was posted as
     xero_bank_transaction_id: { type: String, default: null },

@@ -346,27 +346,33 @@ class InvestorAllocationService {
       );
     }
 
-    // Deferred fee: skim it out of the investor's disbursed capital right now, as RTC's
-    // own cash — the customer only ever receives loan.principal_amount, the investor
-    // funded principal_amount + fee, and the difference is RTC's immediate fee income
-    // (not something RTC waits to collect when the loan is eventually repaid).
-    if (feeIsDeferred && adminFeeAmount > 0 && !loan.admin_fee_collected) {
+    // Credit RTC with the admin fee, regardless of type — deferred fees are skimmed
+    // out of the investor's disbursed capital right now (the customer only ever
+    // receives loan.principal_amount, the investor funded principal_amount + fee, and
+    // the difference is RTC's immediate income); upfront fees are separate cash
+    // collected from the customer at signing. Either way this is the one place both
+    // get recorded against the bank account staff picked for the fee specifically
+    // (admin_fee_bank_account_key — independent of whichever account the disbursement
+    // itself used).
+    if (adminFeeAmount > 0 && !loan.admin_fee_collected) {
       try {
         const rtcAccount = await this.getRtcAccount();
         await this.recordTransaction(rtcAccount._id, {
           type: "deposit",
           amount: adminFeeAmount,
-          notes: `Admin fee (deferred, ${loan.admin_fee_pct}%) — Loan ${loan.loan_no}`,
+          notes: `Admin fee (${loan.admin_fee_type}, ${loan.admin_fee_pct}%) — Loan ${loan.loan_no}`,
           source: "admin_fee",
+          paymentMethod: loan.admin_fee_payment_method || undefined,
+          bankAccountKey: loan.admin_fee_bank_account_key || undefined,
         });
         loan.admin_fee_collected = true;
         loan.admin_fee_collected_at = new Date();
         await loan.save();
         console.log(
-          `[InvestorAllocation] Credited RTC with $${adminFeeAmount.toFixed(2)} deferred admin fee for loan ${loan.loan_no}`,
+          `[InvestorAllocation] Credited RTC with $${adminFeeAmount.toFixed(2)} (${loan.admin_fee_type}) admin fee for loan ${loan.loan_no}`,
         );
       } catch (err) {
-        console.error(`[InvestorAllocation] Failed to credit RTC's deferred admin fee for loan ${loan.loan_no}:`, err.message);
+        console.error(`[InvestorAllocation] Failed to credit RTC's admin fee for loan ${loan.loan_no}:`, err.message);
       }
     }
 
@@ -396,7 +402,7 @@ class InvestorAllocationService {
    * of creating a new one — the loan's own start_date/due_date, and everything already
    * paid/recorded against the original amount, are untouched.
    */
-  async topUpAllocation(loanId, { amount, interestAmount, storageAmount, adminFeePct, adminFeeType, adminFeeAmount, loanNo }) {
+  async topUpAllocation(loanId, { amount, interestAmount, storageAmount, adminFeePct, adminFeeType, adminFeeAmount, adminFeePaymentMethod, adminFeeBankAccountKey, loanNo }) {
     const primary = await InvestorLoanAllocation.findOne({ loan_id: loanId, is_co_investor: false });
     if (!primary) {
       throw { status: 400, message: "This loan has no investor allocation yet — it may not be disbursed." };
@@ -480,6 +486,8 @@ class InvestorAllocationService {
           amount: adminFeeAmount,
           notes: `Admin fee (deferred, ${adminFeePct}%) — Loan ${loanNo} top-up`,
           source: "admin_fee",
+          paymentMethod: adminFeePaymentMethod || undefined,
+          bankAccountKey: adminFeeBankAccountKey || undefined,
         });
       } catch (err) {
         console.error(`[InvestorAllocation] Failed to credit RTC's deferred top-up fee for loan ${loanNo}:`, err.message);
@@ -1087,7 +1095,7 @@ class InvestorAllocationService {
    * Record a deposit, profit withdrawal, or capital withdrawal.
    * Validates available balance before recording. Updates committed_capital atomically.
    */
-  async recordTransaction(investorId, { type, amount, notes, recordedById, actorInfo, source, expenseId, expenseCategory }) {
+  async recordTransaction(investorId, { type, amount, notes, recordedById, actorInfo, source, expenseId, expenseCategory, paymentMethod, bankAccountKey }) {
     const investor = await Investor.findById(investorId);
     if (!investor) throw new Error("Investor not found.");
 
@@ -1156,6 +1164,8 @@ class InvestorAllocationService {
       source: source || null,
       expense_id: expenseId || null,
       expense_category: expenseCategory || null,
+      payment_method: paymentMethod || null,
+      bank_account_key: bankAccountKey || null,
     });
 
     const populated = await InvestorTransaction.findById(tx._id).populate("recorded_by", "name email");

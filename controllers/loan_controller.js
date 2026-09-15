@@ -348,6 +348,8 @@ class LoanController {
         disbursement_reference,
         disbursement_notes,
         disbursement_payment_method,
+        bank_account_key,
+        admin_fee_bank_account_key,
       } = req.body;
       const userId = req.user?.id;
 
@@ -364,6 +366,8 @@ class LoanController {
               disbursement_reference: disbursement_reference || null,
               disbursement_notes: disbursement_notes || null,
               payment_method: disbursement_payment_method || null,
+              bank_account_key: bank_account_key || null,
+              admin_fee_bank_account_key: admin_fee_bank_account_key || null,
             }
           : null;
 

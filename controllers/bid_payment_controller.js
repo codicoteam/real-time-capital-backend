@@ -18,6 +18,7 @@ class BidPaymentController {
         payer_phone,
         redirect_url,
         notes,
+        bank_account_key,
       } = req.body;
 
       // Validate required fields
@@ -52,6 +53,7 @@ class BidPaymentController {
           payer_phone,
           redirect_url,
           notes,
+          bank_account_key,
         },
         req.user
       );

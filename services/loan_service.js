@@ -1111,6 +1111,10 @@ class LoanService {
             updateData.disbursement_notes = disbursementDetails.disbursement_notes;
           if (disbursementDetails.payment_method)
             updateData.payment_method = disbursementDetails.payment_method;
+          if (disbursementDetails.bank_account_key)
+            updateData.disbursement_bank_account_key = disbursementDetails.bank_account_key;
+          if (disbursementDetails.admin_fee_bank_account_key)
+            updateData.admin_fee_bank_account_key = disbursementDetails.admin_fee_bank_account_key;
         }
       }
 
@@ -1723,7 +1727,7 @@ class LoanService {
         };
       }
 
-      const { amount, payment_method, notes, reference_no, received_by } =
+      const { amount, payment_method, notes, reference_no, received_by, bank_account_key } =
         paymentData;
 
       if (!amount || amount <= 0) {
@@ -1767,6 +1771,7 @@ class LoanService {
         reference_no: reference_no || `PAY-${Date.now()}`,
         received_by: received_by || loan.processed_by || loan.created_by,
         notes: notes || null,
+        bank_account_key: bank_account_key || null,
       };
 
       // Loan is fully redeemed when total paid meets or exceeds what was owed
@@ -2198,6 +2203,7 @@ class LoanService {
       new_loan_period_type,
       start_date,
       notes,
+      bank_account_key,
     } = rolloverData || {};
 
     const paymentAmount = Number(payment_amount);
@@ -2283,6 +2289,7 @@ class LoanService {
         reference_no: payment_reference || `ROLLOVER-${Date.now()}`,
         received_by: userId || oldLoan.processed_by || oldLoan.created_by,
         notes: payment_notes || "Rollover interest payment",
+        bank_account_key: bank_account_key || null,
       };
 
       oldLoan.payments.push(paymentRecord);
@@ -2663,7 +2670,15 @@ class LoanService {
     if (!mongoose.Types.ObjectId.isValid(loanId)) {
       throw { status: 400, message: "Invalid loan ID." };
     }
-    const { amount, admin_fee_pct, admin_fee_type, notes } = topUpData;
+    const {
+      amount,
+      admin_fee_pct,
+      admin_fee_type,
+      notes,
+      bank_account_key,
+      admin_fee_payment_method,
+      admin_fee_bank_account_key,
+    } = topUpData;
     if (!amount || amount <= 0) {
       throw { status: 400, message: "Top-up amount must be greater than 0." };
     }
@@ -2711,6 +2726,8 @@ class LoanService {
       adminFeePct: feePct,
       adminFeeType: feeType,
       adminFeeAmount,
+      adminFeePaymentMethod: admin_fee_payment_method,
+      adminFeeBankAccountKey: admin_fee_bank_account_key,
       loanNo: loan.loan_no,
     });
 
@@ -2727,6 +2744,8 @@ class LoanService {
       admin_fee_pct: feePct,
       admin_fee_amount: adminFeeAmount,
       admin_fee_type: feeType,
+      bank_account_key: bank_account_key || null,
+      admin_fee_bank_account_key: admin_fee_bank_account_key || null,
       added_at: now,
       added_by: userId,
       notes,
@@ -2845,6 +2864,7 @@ class LoanService {
       admin_notes,
       reason_category,
       waive_penalty,
+      bank_account_key,
     } = overrideData || {};
 
     if (!reason_category || !OVERRIDE_REASON_CATEGORIES[reason_category]) {
@@ -2886,6 +2906,7 @@ class LoanService {
           reference_no:   payment_reference || `ADMIN-OVR-${Date.now()}`,
           received_by:    adminUserId,
           notes:          payment_notes || `Admin override (${reasonLabel}) — ${admin_notes || ""}`,
+          bank_account_key: bank_account_key || null,
         };
 
         updateData.$push       = { payments: paymentRecord };

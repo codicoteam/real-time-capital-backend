@@ -10,9 +10,22 @@ const { parseXeroError } = require("./xero_mapping_helpers");
 // post against Type=BANK accounts) — we never auto-create those with fake account numbers
 // against a live paid org; the user's accountant sets those up for real.
 const REQUIRED_ACCOUNTS = [
-  { key: "cash_on_hand", label: "Cash on Hand", suggested_code: "1000", xero_type: "BANK", manual_only: true },
-  { key: "bank_fbc_cbz", label: "Bank — FBC / CBZ", suggested_code: "1010", xero_type: "BANK", manual_only: true },
-  { key: "ecocash_float", label: "EcoCash Float", suggested_code: "1020", xero_type: "BANK", manual_only: true },
+  // Real bank accounts, matched by NAME (exact strings as created in Xero — see the
+  // user's own bank accounts page). manual_only accounts must be real Type=BANK
+  // accounts in Xero; we never auto-create these against a live paid org.
+  { key: "bank_real_time_capital", label: "Real Time Capital", suggested_code: "1010", xero_type: "BANK", manual_only: true },
+  { key: "ecocash_real_time_capital", label: "Real Time Capital Ecocash", suggested_code: "1020", xero_type: "BANK", manual_only: true },
+  // NOTE the trailing space before the closing paren in both labels below — that's
+  // not a typo, it's the exact name as created in the user's live Xero org (name
+  // matching in validateChartOfAccounts() below is exact, case-insensitive only).
+  // The frontend's display label (configs/xero_bank_accounts.js) uses the clean
+  // version without the stray space; only this Xero-matching string needs it.
+  { key: "cash_on_hand_admin", label: "Real Time Capital Cash On Hand (Admin )", suggested_code: "1000", xero_type: "BANK", manual_only: true },
+  { key: "cash_on_hand_reception", label: "Real Time Capital Cash On Hand (Reception )", suggested_code: "1001", xero_type: "BANK", manual_only: true },
+  // PayNow's merchant settlement account — a different legal entity (Designit Media),
+  // used automatically for every app/PayNow-originated payment, and also selectable
+  // manually (e.g. to correct a mis-posted entry).
+  { key: "designit_media", label: "Designit Media Pvt Ltd", suggested_code: "1030", xero_type: "BANK", manual_only: true },
   { key: "loans_receivable", label: "Loans Receivable", suggested_code: "1100", xero_type: "CURRENT", manual_only: false },
   { key: "pawned_assets_inventory", label: "Pawned Assets Inventory", suggested_code: "1200", xero_type: "CURRENT", manual_only: false },
   { key: "investor_capital_payable", label: "Investor Capital Payable", suggested_code: "2000", xero_type: "CURRLIAB", manual_only: false },

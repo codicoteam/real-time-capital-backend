@@ -1,6 +1,7 @@
 "use strict";
 
 const mongoose = require("mongoose");
+const { XERO_BANK_ACCOUNT_KEYS } = require("../../configs/xero_bank_accounts");
 
 const InvestorTransactionSchema = new mongoose.Schema(
   {
@@ -35,6 +36,15 @@ const InvestorTransactionSchema = new mongoose.Schema(
       trim: true,
       default: null,
     },
+
+    // How this transaction actually moved money — investor transactions didn't track
+    // this before; needed now to resolve which real Xero bank account it posted to.
+    payment_method: {
+      type: String,
+      enum: ["cash", "bank_transfer", "mobile_money", "cheque", null],
+      default: null,
+    },
+    bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
 
     // Expense-only: links this cash-out entry back to the approved pawn Expense record
     expense_id: {

@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { XERO_BANK_ACCOUNT_KEYS } = require("../configs/xero_bank_accounts");
 
 const BaseAssetSchema = new mongoose.Schema(
   {
@@ -84,6 +85,14 @@ const BaseAssetSchema = new mongoose.Schema(
     disposal_notes: { type: String, trim: true },
     disposed_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     disposed_at: { type: Date, default: null },
+    // How the sale proceeds were received, and which real Xero bank account they were
+    // recorded against (sold_externally only).
+    disposal_payment_method: {
+      type: String,
+      enum: ["cash", "bank_transfer", "mobile_money", "cheque", null],
+      default: null,
+    },
+    disposal_bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
     // Xero BankTransaction/ManualJournal this disposal sale was posted as (sold_externally only)
     xero_disposal_transaction_id: { type: String, default: null },
   },

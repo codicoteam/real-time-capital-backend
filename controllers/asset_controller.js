@@ -280,10 +280,10 @@ class AssetController {
   async recordDisposal(req, res) {
     try {
       const { id } = req.params;
-      const { disposal_method, sale_price, payment_method, notes } = req.body;
+      const { disposal_method, sale_price, payment_method, bank_account_key, notes } = req.body;
       const userId = req.user?.id;
 
-      const result = await assetService.recordDisposal(id, { disposal_method, sale_price, payment_method, notes }, userId);
+      const result = await assetService.recordDisposal(id, { disposal_method, sale_price, payment_method, bank_account_key, notes }, userId);
 
       res.status(200).json({
         success: true,

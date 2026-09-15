@@ -1327,7 +1327,7 @@ class InvestorController {
         return res.status(400).json({ success: false, message: "Invalid investor ID." });
       }
 
-      const { type, amount, notes } = req.body;
+      const { type, amount, notes, payment_method, bank_account_key } = req.body;
       if (!type) {
         return res.status(400).json({ success: false, message: "type is required." });
       }
@@ -1342,6 +1342,8 @@ class InvestorController {
         notes,
         recordedById: req.investor._id,
         actorInfo: req.actorInfo || null,
+        paymentMethod: payment_method,
+        bankAccountKey: bank_account_key,
       });
 
       return res.status(201).json({
@@ -1447,7 +1449,7 @@ class InvestorController {
    */
   async recordRtcTransaction(req, res) {
     try {
-      const { type, notes, source, expense_id } = req.body;
+      const { type, notes, source, expense_id, payment_method, bank_account_key } = req.body;
       if (!["deposit", "drawing", "expense"].includes(type)) {
         return res.status(400).json({ success: false, message: "type must be deposit, drawing, or expense." });
       }
@@ -1486,6 +1488,8 @@ class InvestorController {
         source: type === "deposit" ? source : undefined,
         expenseId: expenseDoc ? expenseDoc._id : undefined,
         expenseCategory,
+        paymentMethod: payment_method,
+        bankAccountKey: bank_account_key,
       });
 
       if (expenseDoc) {
