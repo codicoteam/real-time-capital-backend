@@ -1,7 +1,7 @@
 "use strict";
 
 const { getAuthenticatedClient } = require("./xero_client_service");
-const { requireAccountCode } = require("./xero_accounts_service");
+const { requireAccountCode, requireBankAccountRef } = require("./xero_accounts_service");
 const {
   getOrCreateCustomerContact,
   getOrCreateInvestorContact,
@@ -52,6 +52,7 @@ async function withSyncLog({ sourceCollection, sourceId, eventType, xeroEndpoint
 // ── Event 1: Loan disbursed ────────────────────────────────────────────────
 // Single BankTransaction (SPEND): Dr Loans Receivable, Cr Bank/Cash, contact = customer.
 async function syncLoanDisbursed(loan) {
+  if (loan.xero_disbursement_transaction_id) return loan.xero_disbursement_transaction_id; // already posted
   return withSyncLog(
     {
       sourceCollection: "Loan",
@@ -66,8 +67,8 @@ async function syncLoanDisbursed(loan) {
       const bankAccountKey = bankAccountKeyForMethod(loan.payment_method, {
         bankAccountKey: loan.disbursement_bank_account_key,
       });
-      const [bankCode, loansReceivableCode] = await Promise.all([
-        requireAccountCode(bankAccountKey),
+      const [bankAccountRef, loansReceivableCode] = await Promise.all([
+        requireBankAccountRef(bankAccountKey),
         requireAccountCode("loans_receivable"),
       ]);
 
@@ -79,7 +80,7 @@ async function syncLoanDisbursed(loan) {
             date: toXeroDate(loan.disbursement_date),
             reference: loan.loan_no,
             status: "AUTHORISED",
-            bankAccount: { code: bankCode },
+            bankAccount: bankAccountRef,
             lineItems: [
               {
                 description: `Loan disbursement — ${loan.loan_no}`,
@@ -102,6 +103,7 @@ async function syncLoanDisbursed(loan) {
 // ── Event 3: Loan written off ──────────────────────────────────────────────
 // Manual Journal: Dr Bad Debt Write-offs, Cr Loans Receivable, for the remaining balance.
 async function syncLoanWrittenOff(loan) {
+  if (loan.xero_writeoff_journal_id) return loan.xero_writeoff_journal_id; // already posted
   return withSyncLog(
     {
       sourceCollection: "Loan",
@@ -214,8 +216,8 @@ async function syncAuctionSaleCompleted(bidPayment) {
         provider: bidPayment.provider,
         bankAccountKey: bidPayment.bank_account_key,
       });
-      const [bankCode, revenueCode] = await Promise.all([
-        requireAccountCode(bankAccountKey),
+      const [bankAccountRef, revenueCode] = await Promise.all([
+        requireBankAccountRef(bankAccountKey),
         requireAccountCode("asset_sale_revenue"),
       ]);
 
@@ -227,7 +229,7 @@ async function syncAuctionSaleCompleted(bidPayment) {
             date: toXeroDate(bidPayment.paid_at || new Date()),
             reference: auction.auction_no,
             status: "AUTHORISED",
-            bankAccount: { code: bankCode },
+            bankAccount: bankAccountRef,
             lineItems: [
               {
                 description: `Auction sale — ${auction.auction_no}`,
@@ -295,8 +297,8 @@ async function syncAssetDisposalSale(asset, { costBasis, paymentMethod, bankAcco
       const { accountingApi, tenantId } = await getAuthenticatedClient();
       const contactId = await getOrCreateInternalContact();
       const bankAccountKey = bankAccountKeyForMethod(paymentMethod, { bankAccountKey: explicitBankAccountKey });
-      const [bankCode, revenueCode] = await Promise.all([
-        requireAccountCode(bankAccountKey),
+      const [bankAccountRef, revenueCode] = await Promise.all([
+        requireBankAccountRef(bankAccountKey),
         requireAccountCode("asset_sale_revenue"),
       ]);
 
@@ -308,7 +310,7 @@ async function syncAssetDisposalSale(asset, { costBasis, paymentMethod, bankAcco
             date: toXeroDate(asset.disposed_at || new Date()),
             reference: asset.asset_no,
             status: "AUTHORISED",
-            bankAccount: { code: bankCode },
+            bankAccount: bankAccountRef,
             lineItems: [
               {
                 description: `Disposal sale — ${asset.asset_no}`,
@@ -389,8 +391,8 @@ async function postRepaymentToXero({
 
       if (componentAccounts.length === 0) return null;
 
-      const [bankCode, ...componentCodes] = await Promise.all([
-        requireAccountCode(bankAccountKey),
+      const [bankAccountRef, ...componentCodes] = await Promise.all([
+        requireBankAccountRef(bankAccountKey),
         ...componentAccounts.map((c) => requireAccountCode(c.key)),
       ]);
 
@@ -409,7 +411,7 @@ async function postRepaymentToXero({
             date: toXeroDate(date),
             reference: reference || loan.loan_no,
             status: "AUTHORISED",
-            bankAccount: { code: bankCode },
+            bankAccount: bankAccountRef,
             lineItems,
           },
         ],
@@ -423,6 +425,7 @@ async function postRepaymentToXero({
 // Path 2a — the primary Payment-model repayment flow (services/payment_service.js
 // updateLoanBalance). Component split comes straight from the Payment document.
 async function syncLoanRepayment(payment, loan) {
+  if (payment.xero_bank_transaction_id) return payment.xero_bank_transaction_id; // already posted
   const xeroId = await postRepaymentToXero({
     sourceCollection: "Payment",
     sourceId: payment._id,
@@ -487,6 +490,7 @@ async function syncLoanRepaymentLegacy(loan, paymentEntry) {
 // BankTransaction (SPEND), contact = internal placeholder (this system doesn't track
 // individual vendors), coded to the account matching the expense's category.
 async function syncExpenseApproved(expense) {
+  if (expense.xero_bank_transaction_id) return expense.xero_bank_transaction_id; // already posted
   return withSyncLog(
     {
       sourceCollection: "Expense",
@@ -502,8 +506,8 @@ async function syncExpenseApproved(expense) {
         bankAccountKey: expense.bank_account_key,
       });
       const expenseKey = expenseAccountKeyForCategory(expense.category);
-      const [bankCode, expenseCode] = await Promise.all([
-        requireAccountCode(bankAccountKey),
+      const [bankAccountRef, expenseCode] = await Promise.all([
+        requireBankAccountRef(bankAccountKey),
         requireAccountCode(expenseKey),
       ]);
 
@@ -515,7 +519,7 @@ async function syncExpenseApproved(expense) {
             date: toXeroDate(expense.expense_date),
             reference: expense.expense_no,
             status: "AUTHORISED",
-            bankAccount: { code: bankCode },
+            bankAccount: bankAccountRef,
             lineItems: [
               {
                 description: expense.description || expense.category,
@@ -547,6 +551,7 @@ const INVESTOR_TX_MAP = {
 };
 
 async function syncInvestorTransaction(tx) {
+  if (tx.xero_bank_transaction_id) return tx.xero_bank_transaction_id; // already posted
   if (tx.type === "expense") return null; // posted separately via syncExpenseApproved
 
   const mapping = INVESTOR_TX_MAP[tx.type];
@@ -575,8 +580,8 @@ async function syncInvestorTransaction(tx) {
       const bankAccountKey = bankAccountKeyForMethod(tx.payment_method, {
         bankAccountKey: tx.bank_account_key,
       });
-      const [bankCode, lineCode] = await Promise.all([
-        requireAccountCode(bankAccountKey),
+      const [bankAccountRef, lineCode] = await Promise.all([
+        requireBankAccountRef(bankAccountKey),
         requireAccountCode(mapping.accountKey),
       ]);
 
@@ -588,7 +593,7 @@ async function syncInvestorTransaction(tx) {
             date: toXeroDate(tx.created_at || new Date()),
             reference: tx.source || mapping.label,
             status: "AUTHORISED",
-            bankAccount: { code: bankCode },
+            bankAccount: bankAccountRef,
             lineItems: [
               {
                 description: `${mapping.label}${tx.notes ? ` — ${tx.notes}` : ""}`,

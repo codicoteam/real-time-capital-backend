@@ -60,6 +60,7 @@ const systemReportsRouter = require("./routers/system_reports_router");
 const loginActivityRouter = require("./routers/login_activity_router");
 const dailyDigestRouter = require("./routers/daily_digest_router");
 const { startDailyDigestScheduler } = require("./services/daily_digest_scheduler");
+const { startXeroRetryScheduler } = require("./services/xero/xero_retry_scheduler");
 
 // Services
 const auctionService = require("./services/assets_auction_service");
@@ -186,4 +187,5 @@ httpServer.listen(PORT, () => {
   // Start background jobs
   auctionService.startAuctionScheduler();
   startDailyDigestScheduler();
+  startXeroRetryScheduler();
 });

@@ -155,10 +155,35 @@ async function requireAccountCode(key) {
   return row.xero_code;
 }
 
+// Used specifically for the `BankAccount` reference on a BankTransaction (SPEND/RECEIVE).
+// Per Xero's Bank Transactions API, that reference must be identified by AccountID or Code —
+// but real bank accounts (Type=BANK) in a live Xero org very often have no Code set at all
+// (unlike REVENUE/EXPENSE accounts, Xero doesn't require one), which is the case for every
+// manual_only bank account in this org. Always prefer AccountID — it's the one field Xero
+// guarantees is present and unique for every account — and only fall back to Code for the
+// rare account that has one but somehow lost its AccountID. Passing `{ code: null }` (the
+// old behaviour) gets serialized by the SDK into an all-zero GUID that Xero's API rejects
+// with "does not match a known bank account" — silent and easy to misdiagnose from the
+// error alone, so this exists as its own function rather than reusing requireAccountCode.
+async function requireBankAccountRef(key) {
+  const row = await XeroAccountMap.findOne({ key, resolved: true });
+  if (!row) {
+    throw new Error(
+      `Xero account for "${key}" is not set up yet — run chart-of-accounts validation in Super Admin > Xero Integration first.`,
+    );
+  }
+  if (row.xero_account_id) return { accountID: row.xero_account_id };
+  if (row.xero_code) return { code: row.xero_code };
+  throw new Error(
+    `Xero account for "${key}" resolved but has neither an AccountID nor a Code — re-run chart-of-accounts validation in Super Admin > Xero Integration.`,
+  );
+}
+
 module.exports = {
   REQUIRED_ACCOUNTS,
   validateChartOfAccounts,
   createMissingAccounts,
   getAccountMap,
   requireAccountCode,
+  requireBankAccountRef,
 };
