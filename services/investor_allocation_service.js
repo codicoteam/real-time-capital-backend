@@ -41,27 +41,30 @@ class InvestorAllocationService {
    * regardless of what any external investor has set in their own
    * loan_type_preferences.
    */
-  async getEligibleInvestors(loan) {
+  /**
+   * All active investors whose preferences match this loan (category + term),
+   * regardless of whether they currently have enough available cash to fund it.
+   * This is the base candidate set both the cash-filtered auto-assignment list
+   * and the staff-facing display list are built from.
+   */
+  async getPreferenceMatchedInvestors(loan) {
     const termKey = mapPeriodToTermKey(loan.loan_period_type);
-    const loanPrincipal = loan.principal_amount || 0;
-
     const eligibleKinds = loan.collateral_category === "small_loans"
       ? ["rtc"]
       : ["individual", "company", "company_client", "rtc"];
 
-    // Fetch all preference-matched active investors
-    const candidates = await Investor.find({
+    return Investor.find({
       kind: { $in: eligibleKinds },
       status: "active",
       loan_type_preferences: loan.collateral_category,
       loan_term_preferences: termKey,
       committed_capital: { $gt: 0 },
     }).sort({ committed_capital: -1 });
+  }
 
-    if (candidates.length === 0) return [];
-
-    // Compute available balance: committed_capital − capital locked in active loans
-    const investorIds = candidates.map((i) => i._id);
+  /** Map of investor_id (string) → capital currently locked in their active allocations. */
+  async getDeployedCapitalMap(investorIds) {
+    if (investorIds.length === 0) return new Map();
     const activeAllocations = await InvestorLoanAllocation.find({
       investor_id: { $in: investorIds },
       status: "active",
@@ -72,6 +75,15 @@ class InvestorAllocationService {
       const id = alloc.investor_id.toString();
       deployedMap.set(id, (deployedMap.get(id) || 0) + alloc.principal_amount);
     }
+    return deployedMap;
+  }
+
+  async getEligibleInvestors(loan) {
+    const loanPrincipal = loan.principal_amount || 0;
+    const candidates = await this.getPreferenceMatchedInvestors(loan);
+    if (candidates.length === 0) return [];
+
+    const deployedMap = await this.getDeployedCapitalMap(candidates.map((i) => i._id));
 
     return candidates.filter((investor) => {
       const deployed = deployedMap.get(investor._id.toString()) || 0;
@@ -88,41 +100,34 @@ class InvestorAllocationService {
   }
 
   /**
-   * Eligible-investor list for the loan CREATION form, before the Loan document exists —
+   * Investor list for the loan CREATION form, before the Loan document exists —
    * lets a Loan Processor/Super Admin manually pick who funds a motor_vehicle/jewellery
-   * loan instead of relying on the automatic round-robin. Mirrors getEligibleInvestors'
-   * query exactly (same preferences + available-cash filter) but returns a lean,
-   * display-ready shape instead of raw Investor docs, since callers here never proceed to
-   * create an allocation directly from this list.
+   * loan instead of relying on the automatic round-robin. Returns EVERY preference-matched
+   * active investor, not just ones with enough cash on hand — staff can knowingly fund a
+   * loan even when it puts an investor over their committed capital (e.g. a top-up they've
+   * verbally agreed to, or a short-term shortfall); the UI is expected to highlight
+   * `sufficient: false` rows rather than hide them, so that choice stays visible and
+   * deliberate instead of silently failing with an empty dropdown.
    */
   async getEligibleInvestorsForDisplay({ collateral_category, loan_period_type, principal_amount }) {
-    const eligible = await this.getEligibleInvestors({
-      collateral_category,
-      loan_period_type,
-      principal_amount: principal_amount || 0,
-    });
+    const loan = { collateral_category, loan_period_type };
+    const candidates = await this.getPreferenceMatchedInvestors(loan);
+    if (candidates.length === 0) return [];
 
-    if (eligible.length === 0) return [];
+    const loanPrincipal = principal_amount || 0;
+    const deployedMap = await this.getDeployedCapitalMap(candidates.map((i) => i._id));
 
-    const investorIds = eligible.map((i) => i._id);
-    const activeAllocations = await InvestorLoanAllocation.find({
-      investor_id: { $in: investorIds },
-      status: "active",
-    }).select("investor_id principal_amount");
-    const deployedMap = new Map();
-    for (const alloc of activeAllocations) {
-      const id = alloc.investor_id.toString();
-      deployedMap.set(id, (deployedMap.get(id) || 0) + alloc.principal_amount);
-    }
-
-    return eligible
+    return candidates
       .map((investor) => {
         const deployed = deployedMap.get(investor._id.toString()) || 0;
+        const availableCash = parseFloat((investor.committed_capital - deployed).toFixed(2));
         return {
           id: investor._id.toString(),
           name: investor.name,
           kind: investor.kind,
-          available_cash: parseFloat((investor.committed_capital - deployed).toFixed(2)),
+          available_cash: availableCash,
+          sufficient: availableCash >= loanPrincipal,
+          shortfall: availableCash >= loanPrincipal ? 0 : parseFloat((loanPrincipal - availableCash).toFixed(2)),
         };
       })
       .sort((a, b) => b.available_cash - a.available_cash);
@@ -204,29 +209,17 @@ class InvestorAllocationService {
     const loan = await Loan.findById(loanId);
     if (!loan) return { success: false, message: "Loan not found." };
 
-    const eligibleInvestors = await this.getEligibleInvestors(loan);
-    if (eligibleInvestors.length === 0) {
-      console.warn(
-        `[InvestorAllocation] No eligible investors for loan ${loan.loan_no} ` +
-          `(category=${loan.collateral_category}, period=${loan.loan_period_type}, ` +
-          `principal=$${(loan.principal_amount || 0).toFixed(2)}) — ` +
-          `no investor has sufficient available cash balance.`,
-      );
-      return {
-        success: false,
-        message:
-          "No eligible investors for this loan — either no preferences match or no investor " +
-          "has sufficient available cash balance to fund this loan.",
-      };
-    }
-
     // Staff can pick the investor at loan creation time (motor_vehicle/jewellery only —
-    // see loan_service.createLoan validation). Honor that choice if they're still
-    // eligible at disbursement time; otherwise fall back to normal auto-assignment rather
-    // than blocking disbursement over a preference that's gone stale.
+    // see loan_service.createLoan validation), including one whose available cash is
+    // currently short of the principal — the creation-form dropdown shows that shortfall
+    // rather than hiding the investor, and picking them anyway is a deliberate staff
+    // decision that must be honored here, not silently overridden by auto-assignment.
+    // Only fall back to SWRR if the preference match itself has gone stale (investor
+    // deactivated, or their preferences changed since the loan was created).
     let selectedInvestor = null;
     if (loan.preferred_investor_id) {
-      selectedInvestor = eligibleInvestors.find(
+      const preferenceMatched = await this.getPreferenceMatchedInvestors(loan);
+      selectedInvestor = preferenceMatched.find(
         (inv) => inv._id.toString() === loan.preferred_investor_id.toString(),
       );
       if (selectedInvestor) {
@@ -236,11 +229,27 @@ class InvestorAllocationService {
       } else {
         console.warn(
           `[InvestorAllocation] Preferred investor for loan ${loan.loan_no} is no longer ` +
-            `eligible (inactive, preference mismatch, or insufficient cash) — falling back to auto-assignment.`,
+            `eligible (inactive or preference mismatch) — falling back to auto-assignment.`,
         );
       }
     }
+
     if (!selectedInvestor) {
+      const eligibleInvestors = await this.getEligibleInvestors(loan);
+      if (eligibleInvestors.length === 0) {
+        console.warn(
+          `[InvestorAllocation] No eligible investors for loan ${loan.loan_no} ` +
+            `(category=${loan.collateral_category}, period=${loan.loan_period_type}, ` +
+            `principal=$${(loan.principal_amount || 0).toFixed(2)}) — ` +
+            `no investor has sufficient available cash balance.`,
+        );
+        return {
+          success: false,
+          message:
+            "No eligible investors for this loan — either no preferences match or no investor " +
+            "has sufficient available cash balance to fund this loan.",
+        };
+      }
       selectedInvestor = await this.selectInvestorSWRR(eligibleInvestors);
     }
     if (!selectedInvestor) return { success: false, message: "Could not select investor." };
