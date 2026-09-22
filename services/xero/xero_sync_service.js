@@ -590,7 +590,7 @@ async function syncInvestorTransaction(tx) {
           {
             type: mapping.type,
             contact: { contactID: contactId },
-            date: toXeroDate(tx.created_at || new Date()),
+            date: toXeroDate(tx.transaction_date || tx.created_at || new Date()),
             reference: tx.source || mapping.label,
             status: "AUTHORISED",
             bankAccount: bankAccountRef,

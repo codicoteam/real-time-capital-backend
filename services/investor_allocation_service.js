@@ -1104,7 +1104,7 @@ class InvestorAllocationService {
    * Record a deposit, profit withdrawal, or capital withdrawal.
    * Validates available balance before recording. Updates committed_capital atomically.
    */
-  async recordTransaction(investorId, { type, amount, notes, recordedById, actorInfo, source, expenseId, expenseCategory, paymentMethod, bankAccountKey }) {
+  async recordTransaction(investorId, { type, amount, notes, recordedById, actorInfo, source, expenseId, expenseCategory, paymentMethod, bankAccountKey, transactionDate }) {
     const investor = await Investor.findById(investorId);
     if (!investor) throw new Error("Investor not found.");
 
@@ -1175,6 +1175,7 @@ class InvestorAllocationService {
       expense_category: expenseCategory || null,
       payment_method: paymentMethod || null,
       bank_account_key: bankAccountKey || null,
+      transaction_date: transactionDate ? new Date(transactionDate) : new Date(),
     });
 
     const populated = await InvestorTransaction.findById(tx._id).populate("recorded_by", "name email");
@@ -1323,7 +1324,7 @@ class InvestorAllocationService {
     const skip = (Number(page) - 1) * Number(limit);
     const [transactions, total] = await Promise.all([
       InvestorTransaction.find({ investor_id: investorId })
-        .sort({ created_at: -1 })
+        .sort({ transaction_date: -1, created_at: -1 })
         .skip(skip)
         .limit(Number(limit))
         .populate("recorded_by", "name email"),
@@ -1367,7 +1368,7 @@ class InvestorAllocationService {
     for (const t of transactions) {
       const direction = t.type === "deposit" ? "in" : "out";
       entries.push({
-        date: t.created_at,
+        date: t.transaction_date || t.created_at,
         type: t.type,
         label: t.notes || null,
         amount: t.amount,

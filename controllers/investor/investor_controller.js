@@ -1279,6 +1279,7 @@ class InvestorController {
               : null,
             committed_capital_before: t.committed_capital_before,
             committed_capital_after: t.committed_capital_after,
+            transaction_date: t.transaction_date || t.created_at,
             created_at: t.created_at,
           })),
           total: result.total,
@@ -1327,13 +1328,16 @@ class InvestorController {
         return res.status(400).json({ success: false, message: "Invalid investor ID." });
       }
 
-      const { type, amount, notes, payment_method, bank_account_key } = req.body;
+      const { type, amount, notes, payment_method, bank_account_key, transaction_date } = req.body;
       if (!type) {
         return res.status(400).json({ success: false, message: "type is required." });
       }
       const parsedAmount = parseFloat(amount);
       if (!parsedAmount || parsedAmount <= 0) {
         return res.status(400).json({ success: false, message: "amount must be a positive number." });
+      }
+      if (transaction_date && Number.isNaN(new Date(transaction_date).getTime())) {
+        return res.status(400).json({ success: false, message: "transaction_date is not a valid date." });
       }
 
       const result = await investorAllocationService.recordTransaction(id, {
@@ -1344,6 +1348,7 @@ class InvestorController {
         actorInfo: req.actorInfo || null,
         paymentMethod: payment_method,
         bankAccountKey: bank_account_key,
+        transactionDate: transaction_date,
       });
 
       return res.status(201).json({
@@ -1360,6 +1365,7 @@ class InvestorController {
               : null,
             committed_capital_before: result.transaction.committed_capital_before,
             committed_capital_after: result.transaction.committed_capital_after,
+            transaction_date: result.transaction.transaction_date,
             created_at: result.transaction.created_at,
           },
           investor: safeInvestor(result.investor),
@@ -1449,9 +1455,12 @@ class InvestorController {
    */
   async recordRtcTransaction(req, res) {
     try {
-      const { type, notes, source, expense_id, payment_method, bank_account_key } = req.body;
+      const { type, notes, source, expense_id, payment_method, bank_account_key, transaction_date } = req.body;
       if (!["deposit", "drawing", "expense"].includes(type)) {
         return res.status(400).json({ success: false, message: "type must be deposit, drawing, or expense." });
+      }
+      if (transaction_date && Number.isNaN(new Date(transaction_date).getTime())) {
+        return res.status(400).json({ success: false, message: "transaction_date is not a valid date." });
       }
 
       const account = await investorAllocationService.getRtcAccount();
@@ -1490,6 +1499,7 @@ class InvestorController {
         expenseCategory,
         paymentMethod: payment_method,
         bankAccountKey: bank_account_key,
+        transactionDate: transaction_date,
       });
 
       if (expenseDoc) {
@@ -1738,6 +1748,7 @@ function mapRtcTransaction(tx) {
     source: tx.source || undefined,
     expense_category: tx.expense_category || undefined,
     notes: tx.notes || undefined,
+    transaction_date: tx.transaction_date || tx.created_at,
     created_at: tx.created_at,
     balance_after: tx.committed_capital_after,
     actor: tx.actor || null,

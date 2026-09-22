@@ -24,6 +24,11 @@ const InvestorTransactionSchema = new mongoose.Schema(
       min: 0.01,
     },
 
+    // The real-world date this transaction happened (a deposit made last week, entered
+    // today) — distinct from created_at, which is always "when this record was saved" and
+    // can't be backdated. Defaults to now for the common case of recording same-day.
+    transaction_date: { type: Date, default: Date.now },
+
     notes: {
       type: String,
       trim: true,
@@ -94,5 +99,6 @@ const InvestorTransactionSchema = new mongoose.Schema(
 );
 
 InvestorTransactionSchema.index({ investor_id: 1, created_at: -1 });
+InvestorTransactionSchema.index({ investor_id: 1, transaction_date: -1 });
 
 module.exports = mongoose.model("InvestorTransaction", InvestorTransactionSchema);
