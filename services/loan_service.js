@@ -35,6 +35,54 @@ const OVERRIDE_REASON_CATEGORIES = {
 
 class LoanService {
   /**
+   * Resolves loanData.interest_rate_percent against the standard rate for its
+   * loan_period_type. Called at both loan creation and any later edit that touches the
+   * rate, so "negotiated" status can never drift out of sync with the actual rate on
+   * record — it's derived by comparison here, not trusted from a client-sent flag.
+   *
+   * If the caller didn't send interest_rate_percent at all, the standard rate is used
+   * (unchanged default behavior). If they sent one that differs from standard, the loan
+   * is flagged negotiated and who/when is recorded; if it matches standard exactly
+   * (including a staff member "negotiating" back to the standard rate), the flag clears.
+   */
+  async applyNegotiatedRate(loanData, period, userId) {
+    const standardRate = period.interest_rate_percent;
+    const requestedRate = loanData.interest_rate_percent;
+    const hasRequestedRate = requestedRate !== undefined && requestedRate !== null && requestedRate !== "";
+
+    if (hasRequestedRate) {
+      const parsedRate = Number(requestedRate);
+      if (Number.isNaN(parsedRate) || parsedRate < 0 || parsedRate > 100) {
+        throw { status: 400, message: "interest_rate_percent must be a number between 0 and 100." };
+      }
+      loanData.interest_rate_percent = parsedRate;
+    } else {
+      loanData.interest_rate_percent = standardRate;
+    }
+
+    loanData.standard_interest_rate_percent = standardRate;
+    loanData.is_negotiated = loanData.interest_rate_percent !== standardRate;
+
+    if (loanData.is_negotiated) {
+      let actorRole = null;
+      if (userId) {
+        const actor = await User.findById(userId).select("roles");
+        actorRole = actor?.roles?.[0] || null;
+      }
+      loanData.negotiated_by = userId || null;
+      loanData.negotiated_by_role = actorRole;
+      loanData.negotiated_at = new Date();
+      // negotiation_reason is left as whatever the caller sent (or null) — only the
+      // detection/bookkeeping above needs to happen unconditionally.
+    } else {
+      loanData.negotiated_by = null;
+      loanData.negotiated_by_role = null;
+      loanData.negotiated_at = null;
+      loanData.negotiation_reason = null;
+    }
+  }
+
+  /**
    * Create a new loan from an approved loan application
    * This creates both the loan and converts collateral to an asset
    */
@@ -50,13 +98,14 @@ class LoanService {
         loanData.created_by = userId;
       }
 
-      // Apply hardcoded rates from loan_period_type
+      // Apply rates from loan_period_type — interest_rate_percent may be overridden with
+      // a negotiated rate (storage/penalty/grace stay standard); see applyNegotiatedRate.
       if (loanData.loan_period_type) {
         const period = LOAN_PERIODS[loanData.loan_period_type];
         if (!period) {
           throw { status: 400, message: `Invalid loan_period_type. Must be one of: ${Object.keys(LOAN_PERIODS).join(", ")}` };
         }
-        loanData.interest_rate_percent = period.interest_rate_percent;
+        await this.applyNegotiatedRate(loanData, period, userId);
         loanData.storage_charge_percent = period.storage_charge_percent;
         loanData.interest_period_days = period.days;
         loanData.penalty_percent = period.penalty_percent;
@@ -953,6 +1002,62 @@ class LoanService {
           status: 400,
           message: `Cannot update loan with status: ${existingLoan.status}`,
         };
+      }
+
+      // A rate change (including a negotiated interest rate) must recompute the whole
+      // repayment breakdown, or interest_amount/expected_total_repayable/current_balance
+      // silently go stale against the new rate — this previously just wrote the raw
+      // percentage field and left everything downstream of it wrong. Only safe to do
+      // when no cash has moved yet: calculateRepaymentBreakdown resets current_balance
+      // to the freshly computed total, which would wipe out real payments already
+      // recorded against this loan.
+      const rateFieldsChanged =
+        (updateData.interest_rate_percent !== undefined &&
+          Number(updateData.interest_rate_percent) !== existingLoan.interest_rate_percent) ||
+        (updateData.storage_charge_percent !== undefined &&
+          Number(updateData.storage_charge_percent) !== existingLoan.storage_charge_percent);
+      if (rateFieldsChanged) {
+        if ((existingLoan.total_paid || 0) > 0 || (existingLoan.payments || []).length > 0) {
+          throw {
+            status: 400,
+            message:
+              "Cannot change the interest or storage rate on a loan that already has payments recorded — " +
+              "use Admin Override to adjust an already-active loan instead.",
+          };
+        }
+        const period = LOAN_PERIODS[existingLoan.loan_period_type];
+        const recalcData = {
+          principal_amount: existingLoan.principal_amount,
+          interest_rate_percent: updateData.interest_rate_percent,
+          storage_charge_percent:
+            updateData.storage_charge_percent !== undefined
+              ? updateData.storage_charge_percent
+              : existingLoan.storage_charge_percent,
+          interest_period_days: existingLoan.interest_period_days,
+          admin_fee_amount: existingLoan.admin_fee_amount,
+          admin_fee_type: existingLoan.admin_fee_type,
+          admin_fee_pct: existingLoan.admin_fee_pct,
+          start_date: existingLoan.start_date,
+          due_date: existingLoan.due_date,
+        };
+        if (period) await this.applyNegotiatedRate(recalcData, period, userId);
+        this.calculateRepaymentBreakdown(recalcData);
+
+        updateData.interest_rate_percent = recalcData.interest_rate_percent;
+        updateData.storage_charge_percent = recalcData.storage_charge_percent;
+        updateData.interest_amount = recalcData.interest_amount;
+        updateData.storage_charge_amount = recalcData.storage_charge_amount;
+        updateData.expected_total_repayable = recalcData.expected_total_repayable;
+        updateData.current_balance = recalcData.current_balance;
+        updateData.repayment_breakdown = recalcData.repayment_breakdown;
+        updateData.is_negotiated = recalcData.is_negotiated;
+        updateData.standard_interest_rate_percent = recalcData.standard_interest_rate_percent;
+        updateData.negotiated_by = recalcData.negotiated_by;
+        updateData.negotiated_by_role = recalcData.negotiated_by_role;
+        updateData.negotiated_at = recalcData.negotiated_at;
+        if (recalcData.is_negotiated && updateData.negotiation_reason === undefined) {
+          updateData.negotiation_reason = existingLoan.negotiation_reason || null;
+        }
       }
 
       // Add audit trail
