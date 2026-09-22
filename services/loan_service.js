@@ -35,33 +35,34 @@ const OVERRIDE_REASON_CATEGORIES = {
 
 class LoanService {
   /**
-   * Resolves loanData.interest_rate_percent against the standard rate for its
+   * Resolves loanData.storage_charge_percent against the standard storage rate for its
    * loan_period_type. Called at both loan creation and any later edit that touches the
    * rate, so "negotiated" status can never drift out of sync with the actual rate on
    * record — it's derived by comparison here, not trusted from a client-sent flag.
+   * Interest stays fixed to the standard schedule — only storage is negotiable.
    *
-   * If the caller didn't send interest_rate_percent at all, the standard rate is used
+   * If the caller didn't send storage_charge_percent at all, the standard rate is used
    * (unchanged default behavior). If they sent one that differs from standard, the loan
    * is flagged negotiated and who/when is recorded; if it matches standard exactly
    * (including a staff member "negotiating" back to the standard rate), the flag clears.
    */
   async applyNegotiatedRate(loanData, period, userId) {
-    const standardRate = period.interest_rate_percent;
-    const requestedRate = loanData.interest_rate_percent;
+    const standardRate = period.storage_charge_percent;
+    const requestedRate = loanData.storage_charge_percent;
     const hasRequestedRate = requestedRate !== undefined && requestedRate !== null && requestedRate !== "";
 
     if (hasRequestedRate) {
       const parsedRate = Number(requestedRate);
       if (Number.isNaN(parsedRate) || parsedRate < 0 || parsedRate > 100) {
-        throw { status: 400, message: "interest_rate_percent must be a number between 0 and 100." };
+        throw { status: 400, message: "storage_charge_percent must be a number between 0 and 100." };
       }
-      loanData.interest_rate_percent = parsedRate;
+      loanData.storage_charge_percent = parsedRate;
     } else {
-      loanData.interest_rate_percent = standardRate;
+      loanData.storage_charge_percent = standardRate;
     }
 
-    loanData.standard_interest_rate_percent = standardRate;
-    loanData.is_negotiated = loanData.interest_rate_percent !== standardRate;
+    loanData.standard_storage_charge_percent = standardRate;
+    loanData.is_negotiated = loanData.storage_charge_percent !== standardRate;
 
     if (loanData.is_negotiated) {
       let actorRole = null;
@@ -98,15 +99,15 @@ class LoanService {
         loanData.created_by = userId;
       }
 
-      // Apply rates from loan_period_type — interest_rate_percent may be overridden with
-      // a negotiated rate (storage/penalty/grace stay standard); see applyNegotiatedRate.
+      // Apply rates from loan_period_type — storage_charge_percent may be overridden with
+      // a negotiated rate (interest/penalty/grace stay standard); see applyNegotiatedRate.
       if (loanData.loan_period_type) {
         const period = LOAN_PERIODS[loanData.loan_period_type];
         if (!period) {
           throw { status: 400, message: `Invalid loan_period_type. Must be one of: ${Object.keys(LOAN_PERIODS).join(", ")}` };
         }
+        loanData.interest_rate_percent = period.interest_rate_percent;
         await this.applyNegotiatedRate(loanData, period, userId);
-        loanData.storage_charge_percent = period.storage_charge_percent;
         loanData.interest_period_days = period.days;
         loanData.penalty_percent = period.penalty_percent;
         loanData.grace_days = period.grace_days;
@@ -1028,11 +1029,11 @@ class LoanService {
         const period = LOAN_PERIODS[existingLoan.loan_period_type];
         const recalcData = {
           principal_amount: existingLoan.principal_amount,
-          interest_rate_percent: updateData.interest_rate_percent,
-          storage_charge_percent:
-            updateData.storage_charge_percent !== undefined
-              ? updateData.storage_charge_percent
-              : existingLoan.storage_charge_percent,
+          interest_rate_percent:
+            updateData.interest_rate_percent !== undefined
+              ? updateData.interest_rate_percent
+              : existingLoan.interest_rate_percent,
+          storage_charge_percent: updateData.storage_charge_percent,
           interest_period_days: existingLoan.interest_period_days,
           admin_fee_amount: existingLoan.admin_fee_amount,
           admin_fee_type: existingLoan.admin_fee_type,
@@ -1051,7 +1052,7 @@ class LoanService {
         updateData.current_balance = recalcData.current_balance;
         updateData.repayment_breakdown = recalcData.repayment_breakdown;
         updateData.is_negotiated = recalcData.is_negotiated;
-        updateData.standard_interest_rate_percent = recalcData.standard_interest_rate_percent;
+        updateData.standard_storage_charge_percent = recalcData.standard_storage_charge_percent;
         updateData.negotiated_by = recalcData.negotiated_by;
         updateData.negotiated_by_role = recalcData.negotiated_by_role;
         updateData.negotiated_at = recalcData.negotiated_at;

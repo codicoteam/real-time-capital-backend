@@ -95,15 +95,16 @@ const LoanSchema = new mongoose.Schema(
     penalty_percent: { type: Number, default: 10 }, // late payment penalty %
     grace_days: { type: Number, default: 7 },
 
-    // Negotiated interest rate — a Loan Processor/Admin can agree a different interest
-    // rate than the standard one for this loan_period_type at creation (or correct it
-    // later while the loan is still editable). Derived, not client-trusted: loan_service
-    // sets is_negotiated by comparing interest_rate_percent against LOAN_PERIODS' standard
-    // rate at save time, so it can never drift out of sync with the actual rate on record.
-    // standard_interest_rate_percent is kept purely for display/audit — "what it would
-    // have been" — and never feeds into any calculation itself.
+    // Negotiated storage rate — a Loan Processor/Admin can agree a different storage
+    // charge than the standard one for this loan_period_type at creation (or correct it
+    // later while the loan is still editable). Interest always stays on the standard
+    // schedule. Derived, not client-trusted: loan_service sets is_negotiated by comparing
+    // storage_charge_percent against LOAN_PERIODS' standard rate at save time, so it can
+    // never drift out of sync with the actual rate on record. standard_storage_charge_percent
+    // is kept purely for display/audit — "what it would have been" — and never feeds into
+    // any calculation itself.
     is_negotiated: { type: Boolean, default: false },
-    standard_interest_rate_percent: { type: Number, default: null },
+    standard_storage_charge_percent: { type: Number, default: null },
     negotiated_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     negotiated_by_role: { type: String, default: null },
     negotiated_at: { type: Date, default: null },
