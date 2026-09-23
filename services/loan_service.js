@@ -18,8 +18,10 @@ const {
 } = require("../utils/emails_util");
 const NotificationService = require("../services/notifications_service");
 const investorAllocationService = require("../services/investor_allocation_service");
+const InvestorLoanAllocation = require("../models/investor/investor_loan_allocation.model");
 const xeroSyncService = require("../services/xero/xero_sync_service");
 const auditLogService = require("../services/audit_log_service");
+const agentCommissionService = require("../services/agent_commission_service");
 
 // Structured reasons for an Admin Override — required so every bypass of the normal
 // loan workflow is categorized (not just free text), making the audit trail and the
@@ -125,6 +127,10 @@ class LoanService {
       // Admin fee (0-10% of principal, negotiated by the Loan Processor/Super Admin at
       // creation time) — validate before it feeds into the repayment calculation below.
       this.validateAdminFee(loanData);
+
+      // Agent referral commission — validated against the now-resolved admin fee above
+      // (admin_fee_commission_pct can't exceed admin_fee_pct). See agent_commission_service.
+      await agentCommissionService.validateReferralCommission(loanData, userId);
 
       // Staff-selected investor — only meaningful for motor_vehicle/jewellery. small_loans
       // are always RTC's own book, so manually picking an outside investor for one would
@@ -1948,6 +1954,17 @@ class LoanService {
         }).catch((err) => console.error("Redemption admin email error:", err.message));
       }
 
+      // Agent interest-commission accrual — synchronous (not fire-and-forget like the Xero
+      // call below): a dropped Xero sync is recoverable via the retry poller/backfill, but
+      // a silently-lost commission accrual has no such safety net today, so any failure
+      // here is caught and logged rather than risked being lost.
+      const insertedPayment = updatedLoan.payments[updatedLoan.payments.length - 1];
+      try {
+        await agentCommissionService.accrueInterestCommission(updatedLoan, amount, insertedPayment?._id || null);
+      } catch (err) {
+        console.error(`[AgentCommission] interest accrual failed for loan ${updatedLoan.loan_no}:`, err.message);
+      }
+
       // Xero sync (fire-and-forget) — legacy embedded-payment path, no component
       // breakdown available here; see syncLoanRepaymentLegacy for the proportional split.
       xeroSyncService
@@ -2409,6 +2426,14 @@ class LoanService {
       const dueDate = new Date(rolloverStart);
       dueDate.setDate(dueDate.getDate() + period.days);
 
+      // The new loan cycle keeps the SAME investor who funded the old one by default —
+      // assignLoan() (called after commit, below) honors preferred_investor_id and only
+      // falls back to auto-assignment if that investor's gone stale in the meantime.
+      const oldAllocation = await InvestorLoanAllocation.findOne({
+        loan_id: oldLoan._id,
+        is_co_investor: false,
+      }).select("investor_id");
+
       const newLoanData = {
         loan_no: this.generateLoanNo(),
         customer_user: oldLoan.customer_user,
@@ -2442,6 +2467,24 @@ class LoanService {
         created_by: userId,
         processed_by: userId,
         approved_by: userId,
+        preferred_investor_id: oldAllocation?.investor_id || undefined,
+        // Referral commission terms carry forward unchanged — a rollover isn't a new deal
+        // with the agent, it's a continuation of the same one. admin_fee_commission_amount
+        // is deliberately NOT copied: rollovers get no new admin fee, same as admin_fee_pct
+        // itself never being copied.
+        is_referral_loan: oldLoan.is_referral_loan,
+        referral_agent_id: oldLoan.referral_agent_id,
+        admin_fee_commission_pct: oldLoan.admin_fee_commission_pct,
+        interest_commission_enabled: oldLoan.interest_commission_enabled,
+        interest_commission_pct: oldLoan.interest_commission_pct,
+        referral_set_by: oldLoan.referral_set_by,
+        referral_set_by_role: oldLoan.referral_set_by_role,
+        referral_set_at: oldLoan.referral_set_at,
+        referral_notes: oldLoan.referral_notes
+          ? `Carried over from rollover of ${oldLoan.loan_no}. ${oldLoan.referral_notes}`
+          : oldLoan.is_referral_loan
+            ? `Carried over from rollover of ${oldLoan.loan_no}.`
+            : null,
       };
 
       this.calculateRepaymentBreakdown(newLoanData);
@@ -2477,6 +2520,15 @@ class LoanService {
       }
 
       await session.commitTransaction();
+
+      // Re-run investor profit-split allocation for the new loan cycle — a rolled-over
+      // loan previously got NO InvestorLoanAllocation at all (it's created directly with
+      // status "active", bypassing the normal updateLoanStatus → assignLoan path), which
+      // left RTC's revenue share undetermined for that cycle. Fire-and-forget, same
+      // pattern updateLoanStatus already uses when a loan goes active.
+      investorAllocationService
+        .assignLoan(newLoan._id)
+        .catch((err) => console.error(`[InvestorAllocation] Rollover assign error for loan ${newLoan.loan_no}:`, err.message));
 
       const populatedOldLoan = await Loan.findById(oldLoan._id).populate([
         { path: "customer_user", select: "first_name last_name email phone" },
@@ -2784,6 +2836,7 @@ class LoanService {
       bank_account_key,
       admin_fee_payment_method,
       admin_fee_bank_account_key,
+      admin_fee_commission_pct,
     } = topUpData;
     if (!amount || amount <= 0) {
       throw { status: 400, message: "Top-up amount must be greater than 0." };
@@ -2804,6 +2857,23 @@ class LoanService {
     const feeType = feePct > 0 ? (admin_fee_type || loan.admin_fee_type || "deferred") : null;
     if (feePct > 0 && !["upfront", "deferred"].includes(feeType)) {
       throw { status: 400, message: 'admin_fee_type must be "upfront" or "deferred" when admin_fee_pct is set.' };
+    }
+
+    // Referral commission on THIS top-up's fee — defaults to the loan's negotiated rate,
+    // same "carry forward unless renegotiated" behavior as the fee % itself. Only
+    // meaningful on a referral loan; commissionPct is capped at feePct exactly like
+    // agentCommissionService.validateReferralCommission caps it against admin_fee_pct.
+    const commissionPct = loan.is_referral_loan
+      ? (admin_fee_commission_pct != null ? admin_fee_commission_pct : (loan.admin_fee_commission_pct || 0))
+      : 0;
+    if (typeof commissionPct !== "number" || commissionPct < 0) {
+      throw { status: 400, message: "admin_fee_commission_pct must be a number 0 or greater." };
+    }
+    if (commissionPct > feePct) {
+      throw {
+        status: 400,
+        message: `admin_fee_commission_pct (${commissionPct}) cannot exceed this top-up's admin_fee_pct (${feePct}).`,
+      };
     }
 
     const now = new Date();
@@ -2843,6 +2913,7 @@ class LoanService {
     loan.expected_total_repayable = parseFloat((loan.expected_total_repayable + balanceIncrease).toFixed(2));
     loan.current_balance = parseFloat((loan.current_balance + balanceIncrease).toFixed(2));
     loan.admin_fee_amount = parseFloat(((loan.admin_fee_amount || 0) + adminFeeAmount).toFixed(2));
+    const commissionAmount = parseFloat((amount * (commissionPct / 100)).toFixed(2));
     loan.top_ups.push({
       amount,
       interest_amount: topUpInterest,
@@ -2850,6 +2921,8 @@ class LoanService {
       admin_fee_pct: feePct,
       admin_fee_amount: adminFeeAmount,
       admin_fee_type: feeType,
+      admin_fee_commission_pct: commissionPct,
+      admin_fee_commission_amount: commissionAmount,
       bank_account_key: bank_account_key || null,
       admin_fee_bank_account_key: admin_fee_bank_account_key || null,
       added_at: now,
@@ -2857,6 +2930,21 @@ class LoanService {
       notes,
     });
     await loan.save();
+
+    // Agent admin-fee commission on this top-up's fee — mirrors the loan-creation accrual
+    // in investorAllocationService.assignLoan. Caught independently so a commission
+    // failure never blocks the top-up itself.
+    try {
+      await agentCommissionService.accrueAdminFeeCommission(loan, {
+        sourceEvent: "top_up",
+        topUpIndex: loan.top_ups.length - 1,
+        feeAmount: adminFeeAmount,
+        relevantPrincipal: amount,
+        commissionPct,
+      });
+    } catch (err) {
+      console.error(`[AgentCommission] top-up admin-fee accrual failed for loan ${loan.loan_no}:`, err.message);
+    }
 
     return { success: true, loan, topUp: loan.top_ups[loan.top_ups.length - 1] };
   }

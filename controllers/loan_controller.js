@@ -1,4 +1,5 @@
 const loanService = require("../services/loan_service");
+const agentCommissionService = require("../services/agent_commission_service");
 const mongoose = require("mongoose");
 
 class LoanController {
@@ -306,6 +307,40 @@ class LoanController {
         message: error.message || "Failed to retrieve agent loan summary",
         detail: error.detail,
       });
+    }
+  }
+
+  /**
+   * Get the calling agent's own referral commissions (loans they referred that carry an
+   * admin-fee and/or interest commission cut).
+   */
+  async getMyCommissions(req, res) {
+    try {
+      const agentId = req.user?.id;
+      const { status, page = 1, limit = 20 } = req.query;
+      const result = await agentCommissionService.getAgentCommissions(agentId, {
+        status,
+        page: parseInt(page),
+        limit: Math.min(100, parseInt(limit)),
+      });
+      res.status(200).json({ success: true, ...result });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({ success: false, message: error.message || "Failed to retrieve commissions" });
+    }
+  }
+
+  /**
+   * Get the calling agent's own pending/paid/lifetime commission totals.
+   */
+  async getMyCommissionsSummary(req, res) {
+    try {
+      const agentId = req.user?.id;
+      const summary = await agentCommissionService.getAgentCommissionsSummary(agentId);
+      res.status(200).json({ success: true, summary });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({ success: false, message: error.message || "Failed to retrieve commission summary" });
     }
   }
 

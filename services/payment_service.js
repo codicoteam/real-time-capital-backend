@@ -4,6 +4,7 @@ const User = require("../models/user.model");
 const emailService = require("../utils/emails_util");
 const { Paynow } = require("paynow");
 const xeroSyncService = require("./xero/xero_sync_service");
+const agentCommissionService = require("./agent_commission_service");
 require("dotenv").config();
 
 class PaymentService {
@@ -1035,6 +1036,15 @@ class PaymentService {
       });
 
       await loan.save();
+
+      // Agent interest-commission accrual — synchronous, own try/catch (see the same
+      // reasoning in loan_service.processPayment: a dropped commission accrual has no
+      // backfill safety net the way a missed Xero sync does).
+      try {
+        await agentCommissionService.accrueInterestCommission(loan, payment.amount, payment._id);
+      } catch (err) {
+        console.error(`[AgentCommission] interest accrual failed for loan ${loan.loan_no}:`, err.message);
+      }
 
       // Update associated asset if exists
       if (loan.asset) {

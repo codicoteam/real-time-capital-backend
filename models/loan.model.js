@@ -153,6 +153,27 @@ const LoanSchema = new mongoose.Schema(
     admin_fee_bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
     admin_fee_notes: { type: String, trim: true },
 
+    // Agent referral commission — set by the Loan Processor/Admin at creation when this
+    // loan was brought in by a registered agent. admin_fee_commission_pct is on the SAME
+    // principal-based scale as admin_fee_pct itself (e.g. admin_fee_pct=10,
+    // admin_fee_commission_pct=2.5 → agent gets 2.5 points of principal, RTC keeps the
+    // remaining 7.5) and is capped at admin_fee_pct — see agent_commission_service. The
+    // optional interest_commission_pct is a cut of RTC's own INTEREST-ONLY revenue share
+    // (never storage, never the investor's share) — see getRtcInterestSharePct /
+    // accrueInterestCommission. Actual $ accrual only happens against money genuinely
+    // collected (fee actually credited to RTC, interest actually paid), never a
+    // front-loaded expected total — see models/agent_commission.model.js for the ledger.
+    is_referral_loan: { type: Boolean, default: false },
+    referral_agent_id: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    admin_fee_commission_pct: { type: Number, min: 0, default: 0 },
+    admin_fee_commission_amount: { type: Number, min: 0, default: 0 }, // audit/preview only
+    interest_commission_enabled: { type: Boolean, default: false },
+    interest_commission_pct: { type: Number, min: 0, max: 100, default: 0 },
+    referral_set_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    referral_set_by_role: { type: String, default: null },
+    referral_set_at: { type: Date, default: null },
+    referral_notes: { type: String, trim: true, default: null },
+
     // Additional principal added to an already-active loan (Loan Processor/Admin only).
     // The loan's start_date/due_date never change — a top-up just adds money mid-term, so
     // its own interest/storage are prorated for the days actually remaining until due_date,
@@ -167,6 +188,10 @@ const LoanSchema = new mongoose.Schema(
           admin_fee_pct: { type: Number, min: 0, max: 10, default: 0 },
           admin_fee_amount: { type: Number, min: 0, default: 0 },
           admin_fee_type: { type: String, enum: ["upfront", "deferred", null], default: null },
+          // Snapshots the referral rate in effect at the moment of THIS top-up, mirroring
+          // how admin_fee_pct/amount are already snapshotted per top-up above.
+          admin_fee_commission_pct: { type: Number, min: 0, default: 0 },
+          admin_fee_commission_amount: { type: Number, min: 0, default: 0 },
           bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
           admin_fee_bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
           added_at: { type: Date, default: Date.now },

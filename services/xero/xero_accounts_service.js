@@ -41,6 +41,7 @@ const REQUIRED_ACCOUNTS = [
   { key: "expense_water", label: "Water", suggested_code: "6120", xero_type: "OVERHEADS", manual_only: false },
   { key: "expense_internet", label: "Internet", suggested_code: "6130", xero_type: "OVERHEADS", manual_only: false },
   { key: "expense_salaries", label: "Salaries & Wages", suggested_code: "6010", xero_type: "EXPENSE", manual_only: false },
+  { key: "agent_commission_expense", label: "Agent Commission Expense", suggested_code: "6200", xero_type: "EXPENSE", manual_only: false },
   { key: "expense_maintenance", label: "Maintenance", suggested_code: "6140", xero_type: "OVERHEADS", manual_only: false },
   { key: "expense_transport", label: "Transport", suggested_code: "6150", xero_type: "OVERHEADS", manual_only: false },
   { key: "expense_office_supplies", label: "Office Supplies", suggested_code: "6160", xero_type: "OVERHEADS", manual_only: false },

@@ -16,6 +16,7 @@ const InvestorTransaction = require("../../models/investor/investor_transaction.
 const Auction = require("../../models/auction.model");
 const BidPayment = require("../../models/bidPayment.model");
 const Asset = require("../../models/asset.model");
+const AgentCommission = require("../../models/agent_commission.model");
 
 // Every event funnels through here: logs the attempt, never throws to the caller
 // (callers use `.catch()` fire-and-forget per this codebase's existing convention —
@@ -613,6 +614,69 @@ async function syncInvestorTransaction(tx) {
   );
 }
 
+// ── Event 7: Agent referral commission paid ────────────────────────────────
+// BankTransaction (SPEND), contact = the agent (a User — reuses getOrCreateCustomerContact,
+// which already works for any User, not just customers), coded to "Agent Commission
+// Expense". One transaction per payout batch. A batch has no single document of its own
+// (it's several AgentCommission rows sharing payout_batch_id), so idempotency is checked
+// by asking whether any row in the batch already carries a xero_bank_transaction_id.
+async function syncAgentCommissionPaid(batch) {
+  const alreadyPosted = await AgentCommission.findOne({
+    payout_batch_id: batch.payout_batch_id,
+    xero_bank_transaction_id: { $ne: null },
+  });
+  if (alreadyPosted) return alreadyPosted.xero_bank_transaction_id;
+
+  return withSyncLog(
+    {
+      sourceCollection: "AgentCommission",
+      sourceId: batch.payout_batch_id,
+      eventType: "agent_commission_paid",
+      xeroEndpoint: "BankTransactions",
+      payload: { agent_id: batch.agent_id, total_amount: batch.total_amount, commission_ids: batch.commission_ids },
+    },
+    async () => {
+      const { accountingApi, tenantId } = await getAuthenticatedClient();
+      const contactId = await getOrCreateCustomerContact(batch.agent_id);
+      const bankAccountKey = bankAccountKeyForMethod(batch.payout_method, {
+        bankAccountKey: batch.payout_bank_account_key,
+      });
+      const [bankAccountRef, expenseCode] = await Promise.all([
+        requireBankAccountRef(bankAccountKey),
+        requireAccountCode("agent_commission_expense"),
+      ]);
+
+      const { body } = await accountingApi.createBankTransactions(tenantId, {
+        bankTransactions: [
+          {
+            type: "SPEND",
+            contact: { contactID: contactId },
+            date: toXeroDate(batch.paid_at),
+            reference: batch.payout_batch_id,
+            status: "AUTHORISED",
+            bankAccount: bankAccountRef,
+            lineItems: [
+              {
+                description: `Agent referral commission payout (${batch.commission_ids.length} commission(s))`,
+                quantity: 1,
+                unitAmount: batch.total_amount,
+                accountCode: expenseCode,
+              },
+            ],
+          },
+        ],
+      });
+
+      const xeroId = body.bankTransactions[0].bankTransactionID;
+      await AgentCommission.updateMany(
+        { _id: { $in: batch.commission_ids } },
+        { $set: { xero_bank_transaction_id: xeroId } },
+      );
+      return xeroId;
+    },
+  );
+}
+
 module.exports = {
   syncLoanDisbursed,
   syncLoanWrittenOff,
@@ -623,4 +687,5 @@ module.exports = {
   syncLoanRepaymentLegacy,
   syncExpenseApproved,
   syncInvestorTransaction,
+  syncAgentCommissionPaid,
 };

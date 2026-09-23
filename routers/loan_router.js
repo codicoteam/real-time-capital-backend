@@ -407,6 +407,58 @@ router.get(
 
 /**
  * @swagger
+ * /api/v1/loans/agent/commissions:
+ *   get:
+ *     summary: Get the calling agent's own referral commissions
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [pending, paid, cancelled]
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Agent's commissions retrieved successfully
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: User is not an agent
+ */
+router.get("/agent/commissions", requireRoles("agent"), loanController.getMyCommissions);
+
+/**
+ * @swagger
+ * /api/v1/loans/agent/commissions/summary:
+ *   get:
+ *     summary: Get the calling agent's pending/paid/lifetime commission totals
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Agent's commission summary retrieved successfully
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: User is not an agent
+ */
+router.get("/agent/commissions/summary", requireRoles("agent"), loanController.getMyCommissionsSummary);
+
+/**
+ * @swagger
  * /api/v1/loans/search:
  *   get:
  *     summary: Search loans

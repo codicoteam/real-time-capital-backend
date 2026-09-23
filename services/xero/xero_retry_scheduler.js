@@ -22,6 +22,7 @@ const Expense = require("../../models/expense.model");
 const Asset = require("../../models/asset.model");
 const BidPayment = require("../../models/bidPayment.model");
 const InvestorTransaction = require("../../models/investor/investor_transaction.model");
+const AgentCommission = require("../../models/agent_commission.model");
 const xeroSyncService = require("./xero_sync_service");
 
 const FIVE_MIN_MS = 5 * 60 * 1000;
@@ -111,8 +112,31 @@ async function replayLoanRepayment(row) {
   return { outcome: anyFailed ? "partially_synced" : "synced", xeroId: xeroIds.join(",") };
 }
 
+// agent_commission_paid's source_id is a payout_batch_id (a string shared by several
+// AgentCommission rows), not a single document's ObjectId — doesn't fit the generic
+// REPLAYERS map, same reason loan_repayment gets its own function above.
+async function replayAgentCommissionPayout(row) {
+  const rows = await AgentCommission.find({ payout_batch_id: row.source_id });
+  if (rows.length === 0) return { outcome: "orphaned" };
+  if (rows[0].xero_bank_transaction_id) {
+    return { outcome: "already_synced", xeroId: rows[0].xero_bank_transaction_id };
+  }
+  const batch = {
+    payout_batch_id: row.source_id,
+    agent_id: rows[0].agent_id,
+    total_amount: rows.reduce((s, r) => s + r.commission_amount, 0),
+    commission_ids: rows.map((r) => r._id.toString()),
+    payout_method: rows[0].payout_method,
+    payout_bank_account_key: rows[0].payout_bank_account_key,
+    paid_at: rows[0].paid_at,
+  };
+  const xeroId = await xeroSyncService.syncAgentCommissionPaid(batch);
+  return xeroId ? { outcome: "synced", xeroId } : { outcome: "failed" };
+}
+
 async function replayRow(row) {
   if (row.event_type === "loan_repayment") return replayLoanRepayment(row);
+  if (row.event_type === "agent_commission_paid") return replayAgentCommissionPayout(row);
 
   let def = REPLAYERS[row.event_type];
   if (!def && INVESTOR_TX_EVENT_TYPES.has(row.event_type)) {

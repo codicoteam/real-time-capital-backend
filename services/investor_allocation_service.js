@@ -10,6 +10,7 @@ const TitleDeed = require("../models/investor/title_deed.model");
 const Loan = require("../models/loan.model");
 const investorEmailService = require("./investor_email_service");
 const xeroSyncService = require("./xero/xero_sync_service");
+const agentCommissionService = require("./agent_commission_service");
 
 const DEFAULT_PROFIT_SPLIT = {
   two_week: { borrower_rate: 20, investor_share: 60, label: "2-Week Loan", days: 14 },
@@ -380,6 +381,19 @@ class InvestorAllocationService {
         console.log(
           `[InvestorAllocation] Credited RTC with $${adminFeeAmount.toFixed(2)} (${loan.admin_fee_type}) admin fee for loan ${loan.loan_no}`,
         );
+
+        // Agent's cut of this fee, if the loan is a referral — caught independently so a
+        // commission failure never undoes the admin-fee credit above.
+        try {
+          await agentCommissionService.accrueAdminFeeCommission(loan, {
+            sourceEvent: "loan_creation",
+            topUpIndex: null,
+            feeAmount: adminFeeAmount,
+            relevantPrincipal: loan.principal_amount,
+          });
+        } catch (commErr) {
+          console.error(`[AgentCommission] admin-fee accrual failed for loan ${loan.loan_no}:`, commErr.message);
+        }
       } catch (err) {
         console.error(`[InvestorAllocation] Failed to credit RTC's admin fee for loan ${loan.loan_no}:`, err.message);
       }
@@ -484,22 +498,25 @@ class InvestorAllocationService {
       );
     }
 
-    // Deferred top-up fee is its own discrete RTC revenue event, same reasoning as a new
-    // loan's fee — credited once per top-up, not gated by any "already collected" flag
-    // since each top-up is independent.
-    if (feeIsDeferred && adminFeeAmount > 0) {
+    // Credit RTC with the top-up's admin fee, regardless of type — same reasoning as a new
+    // loan's fee (see assignLoan): deferred fees are skimmed out of the investor's
+    // disbursed capital right now, upfront fees are separate cash collected from the
+    // customer at signing. Either way this is a discrete RTC revenue event, credited once
+    // per top-up, not gated by any "already collected" flag since each top-up is
+    // independent.
+    if (adminFeeAmount > 0) {
       try {
         const rtcAccount = await this.getRtcAccount();
         await this.recordTransaction(rtcAccount._id, {
           type: "deposit",
           amount: adminFeeAmount,
-          notes: `Admin fee (deferred, ${adminFeePct}%) — Loan ${loanNo} top-up`,
+          notes: `Admin fee (${adminFeeType}, ${adminFeePct}%) — Loan ${loanNo} top-up`,
           source: "admin_fee",
           paymentMethod: adminFeePaymentMethod || undefined,
           bankAccountKey: adminFeeBankAccountKey || undefined,
         });
       } catch (err) {
-        console.error(`[InvestorAllocation] Failed to credit RTC's deferred top-up fee for loan ${loanNo}:`, err.message);
+        console.error(`[InvestorAllocation] Failed to credit RTC's top-up admin fee for loan ${loanNo}:`, err.message);
       }
     }
 

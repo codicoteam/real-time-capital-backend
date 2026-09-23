@@ -1105,4 +1105,27 @@ router.get(
   investorController.getEligibleInvestorsForLoan.bind(investorController),
 );
 
+// ─── AGENT REFERRAL COMMISSIONS (RTC-admin) ─────────────────────────────────
+
+router.get(
+  "/admin/agent-commissions",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.getAllAgentCommissions.bind(investorController),
+);
+
+router.get(
+  "/admin/agent-commissions/report",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.getAgentCommissionsReport.bind(investorController),
+);
+
+router.post(
+  "/admin/agent-commissions/payout",
+  investorOrPawnAdminMiddleware,
+  requireInvestorAdminOrPawnSuperAdmin,
+  investorController.payoutAgentCommissions.bind(investorController),
+);
+
 module.exports = router;

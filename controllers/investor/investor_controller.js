@@ -7,6 +7,7 @@ const Investor = require("../../models/investor/investor.model");
 const InvestorProfitSplit = require("../../models/investor/investor_profit_split.model");
 const Expense = require("../../models/expense.model");
 const investorAllocationService = require("../../services/investor_allocation_service");
+const agentCommissionService = require("../../services/agent_commission_service");
 const investorStatementService = require("../../services/investor_statement_service");
 const loginActivityService = require("../../services/login_activity_service");
 
@@ -1008,6 +1009,77 @@ class InvestorController {
     } catch (error) {
       console.error("InvestorController.getEligibleInvestorsForLoan:", error);
       return res.status(500).json({ success: false, message: "Failed to fetch eligible investors." });
+    }
+  }
+
+  /**
+   * GET /api/v1/investors/admin/agent-commissions?agent_id=&status=&loan_no=&dateFrom=&dateTo=&page=&limit=
+   * All agent referral commissions across the platform (admin only).
+   */
+  async getAllAgentCommissions(req, res) {
+    try {
+      const { agent_id, status, loan_no, dateFrom, dateTo, page = 1, limit = 20 } = req.query;
+      const result = await agentCommissionService.getAllCommissions({
+        agent_id,
+        status,
+        loan_no,
+        dateFrom,
+        dateTo,
+        page: parseInt(page),
+        limit: Math.min(100, parseInt(limit)),
+      });
+      return res.json({ success: true, ...result });
+    } catch (error) {
+      console.error("InvestorController.getAllAgentCommissions:", error);
+      const status = error.status || 500;
+      return res.status(status).json({ success: false, message: error.message || "Failed to fetch agent commissions." });
+    }
+  }
+
+  /**
+   * GET /api/v1/investors/admin/agent-commissions/report?dateFrom=&dateTo=
+   * The RTC-team report: total admin-fee revenue vs. given to agents vs. kept, and the
+   * equivalent breakdown for interest commission, with per-agent/per-loan drill-down.
+   */
+  async getAgentCommissionsReport(req, res) {
+    try {
+      const { dateFrom, dateTo } = req.query;
+      const report = await agentCommissionService.getCommissionsReport({ dateFrom, dateTo });
+      return res.json({ success: true, data: report });
+    } catch (error) {
+      console.error("InvestorController.getAgentCommissionsReport:", error);
+      const status = error.status || 500;
+      return res.status(status).json({ success: false, message: error.message || "Failed to build agent commissions report." });
+    }
+  }
+
+  /**
+   * POST /api/v1/investors/admin/agent-commissions/payout
+   * Marks a batch of pending commissions (all belonging to one agent) as paid, then
+   * fires the Xero sync for the payout.
+   */
+  async payoutAgentCommissions(req, res) {
+    try {
+      const { commission_ids, payout_method, payout_bank_account_key, payout_notes } = req.body;
+      const userId = req.user?.id;
+      const batch = await agentCommissionService.payoutCommissions({
+        commission_ids,
+        payout_method,
+        payout_bank_account_key,
+        payout_notes,
+        userId,
+      });
+
+      const xeroSyncService = require("../../services/xero/xero_sync_service");
+      xeroSyncService
+        .syncAgentCommissionPaid(batch)
+        .catch((err) => console.error("[Xero] agent commission payout sync error:", err.message));
+
+      return res.json({ success: true, data: batch, message: `Marked ${batch.commission_ids.length} commission(s) as paid.` });
+    } catch (error) {
+      console.error("InvestorController.payoutAgentCommissions:", error);
+      const status = error.status || 500;
+      return res.status(status).json({ success: false, message: error.message || "Failed to pay out agent commissions." });
     }
   }
 
