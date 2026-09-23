@@ -3,6 +3,15 @@
 const xeroClientService = require("../services/xero/xero_client_service");
 const xeroAccountsService = require("../services/xero/xero_accounts_service");
 const XeroSyncLog = require("../models/xero/xero_sync_log.model");
+const { parseXeroError } = require("../services/xero/xero_mapping_helpers");
+
+// Never console.error a raw caught error here — on older xero-node SDKs (pre-20.0.0) the
+// error object thrown by a failed API call could carry the outgoing request's headers,
+// including the Authorization bearer token / client secret used for that call. Always go
+// through parseXeroError, which extracts only the safe, useful parts (status + message).
+function logXeroControllerError(label, error) {
+  console.error(label, parseXeroError(error).message || error.message || error);
+}
 
 function frontendUrl(path) {
   const base = (process.env.FRONTEND_URL || "").replace(/\/+$/, "");
@@ -19,8 +28,8 @@ const xeroController = {
       const authUrl = await xeroClientService.getAuthUrl(String(req.user._id));
       res.json({ success: true, authUrl });
     } catch (error) {
-      console.error("Xero getConnectUrl error:", error);
-      res.status(500).json({ success: false, message: error.message });
+      logXeroControllerError("Xero getConnectUrl error:", error);
+      res.status(500).json({ success: false, message: parseXeroError(error).message });
     }
   },
 
@@ -32,8 +41,8 @@ const xeroController = {
       await xeroClientService.handleCallback(fullUrl, req.query.state);
       return res.redirect(frontendUrl("/settings/xero?xero=connected"));
     } catch (error) {
-      console.error("Xero callback error:", error);
-      return res.redirect(frontendUrl(`/settings/xero?xero=error&message=${encodeURIComponent(error.message)}`));
+      logXeroControllerError("Xero callback error:", error);
+      return res.redirect(frontendUrl(`/settings/xero?xero=error&message=${encodeURIComponent(parseXeroError(error).message)}`));
     }
   },
 
@@ -43,8 +52,8 @@ const xeroController = {
       const status = await xeroClientService.getConnectionStatus();
       res.json({ success: true, ...status });
     } catch (error) {
-      console.error("Xero getStatus error:", error);
-      res.status(500).json({ success: false, message: error.message });
+      logXeroControllerError("Xero getStatus error:", error);
+      res.status(500).json({ success: false, message: parseXeroError(error).message });
     }
   },
 
@@ -54,8 +63,8 @@ const xeroController = {
       await xeroClientService.disconnect();
       res.json({ success: true, message: "Xero disconnected." });
     } catch (error) {
-      console.error("Xero disconnect error:", error);
-      res.status(500).json({ success: false, message: error.message });
+      logXeroControllerError("Xero disconnect error:", error);
+      res.status(500).json({ success: false, message: parseXeroError(error).message });
     }
   },
 
@@ -65,8 +74,8 @@ const xeroController = {
       const rows = await xeroAccountsService.getAccountMap();
       res.json({ success: true, accounts: rows });
     } catch (error) {
-      console.error("Xero getAccountMap error:", error);
-      res.status(500).json({ success: false, message: error.message });
+      logXeroControllerError("Xero getAccountMap error:", error);
+      res.status(500).json({ success: false, message: parseXeroError(error).message });
     }
   },
 
@@ -76,8 +85,8 @@ const xeroController = {
       const checklist = await xeroAccountsService.validateChartOfAccounts();
       res.json({ success: true, accounts: checklist });
     } catch (error) {
-      console.error("Xero validateAccounts error:", error);
-      res.status(500).json({ success: false, message: error.message });
+      logXeroControllerError("Xero validateAccounts error:", error);
+      res.status(500).json({ success: false, message: parseXeroError(error).message });
     }
   },
 
@@ -87,8 +96,8 @@ const xeroController = {
       const result = await xeroAccountsService.createMissingAccounts();
       res.json({ success: true, ...result });
     } catch (error) {
-      console.error("Xero createMissingAccounts error:", error);
-      res.status(500).json({ success: false, message: error.message });
+      logXeroControllerError("Xero createMissingAccounts error:", error);
+      res.status(500).json({ success: false, message: parseXeroError(error).message });
     }
   },
 
@@ -118,8 +127,8 @@ const xeroController = {
         summary: { pending: pendingCount, failed: failedCount },
       });
     } catch (error) {
-      console.error("Xero getSyncLog error:", error);
-      res.status(500).json({ success: false, message: error.message });
+      logXeroControllerError("Xero getSyncLog error:", error);
+      res.status(500).json({ success: false, message: parseXeroError(error).message });
     }
   },
 
@@ -134,8 +143,8 @@ const xeroController = {
       await row.save();
       res.json({ success: true, log: row });
     } catch (error) {
-      console.error("Xero retrySyncLog error:", error);
-      res.status(500).json({ success: false, message: error.message });
+      logXeroControllerError("Xero retrySyncLog error:", error);
+      res.status(500).json({ success: false, message: parseXeroError(error).message });
     }
   },
 };

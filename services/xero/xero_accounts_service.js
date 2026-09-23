@@ -63,21 +63,28 @@ function normalize(name) {
   return String(name || "").trim().toLowerCase();
 }
 
-// Fetches the org's live chart of accounts and resolves each required key against it,
-// matching first by exact account Code, then by case-insensitive Name. Never creates
-// anything — this is a read-only reconciliation pass, safe to run anytime.
+// Fetches the org's live chart of accounts and resolves each required key against it by
+// case-insensitive Name ONLY — no code matching. suggested_code is a numbering WE invented
+// for our own chart of accounts; it has no guaranteed relationship to what a different (or
+// freshly-connected) Xero org happens to have sitting at that same code, and matching by
+// code was found to silently resolve accounts like "Interest Income" or "Bad Debt
+// Write-offs" to a completely unrelated default account (e.g. "Sale of Goods", "Rent -
+// Real Estate") purely because a fresh org's own default chart of accounts happens to have
+// *something* at nearly every low code. suggested_code is only ever used as the code to
+// assign when CREATING a missing account (see createMissingAccounts), never for matching
+// an existing one. Never creates anything — this is a read-only reconciliation pass, safe
+// to run anytime.
 async function validateChartOfAccounts() {
   await ensureSeeded();
   const { accountingApi, tenantId } = await getAuthenticatedClient();
   const { body } = await accountingApi.getAccounts(tenantId);
   const liveAccounts = body.accounts || [];
 
-  const byCode = new Map(liveAccounts.filter((a) => a.code).map((a) => [a.code, a]));
   const byName = new Map(liveAccounts.map((a) => [normalize(a.name), a]));
 
   const checklist = [];
   for (const def of REQUIRED_ACCOUNTS) {
-    const match = byCode.get(def.suggested_code) || byName.get(normalize(def.label));
+    const match = byName.get(normalize(def.label));
     const update = match
       ? {
           xero_account_id: match.accountID,
@@ -98,9 +105,28 @@ async function validateChartOfAccounts() {
 // Explicit, user-triggered creation of the accounts that were NOT found and are safe
 // to auto-create (i.e. not a real bank account). Requires validateChartOfAccounts to
 // have run first so we know what's missing.
+// Fallback code block for when suggested_code is already taken by an unrelated account —
+// common when connecting to an org that shipped with a dense default chart of accounts
+// (seen live: a fresh org already occupied nearly every code from 1000-8200). Picked well
+// clear of any standard template's range so it should never collide again.
+const FALLBACK_CODE_START = 9500;
+const FALLBACK_CODE_END = 9899;
+
 async function createMissingAccounts() {
   const { accountingApi, tenantId } = await getAuthenticatedClient();
   const unresolved = await XeroAccountMap.find({ resolved: false });
+
+  const { body: accountsBody } = await accountingApi.getAccounts(tenantId);
+  const usedCodes = new Set((accountsBody.accounts || []).filter((a) => a.code).map((a) => a.code));
+
+  function nextFreeCode(suggested) {
+    if (!usedCodes.has(suggested)) return suggested;
+    for (let c = FALLBACK_CODE_START; c <= FALLBACK_CODE_END; c++) {
+      const code = String(c);
+      if (!usedCodes.has(code)) return code;
+    }
+    return null; // exhausted the fallback block — extremely unlikely
+  }
 
   const created = [];
   const skipped = [];
@@ -110,26 +136,32 @@ async function createMissingAccounts() {
       skipped.push({ key: row.key, reason: "Must be created manually in Xero (real bank account)." });
       continue;
     }
+    const code = nextFreeCode(def.suggested_code);
+    if (!code) {
+      skipped.push({ key: row.key, reason: "No free account code available (fallback block exhausted)." });
+      continue;
+    }
     try {
       const { body } = await accountingApi.createAccount(tenantId, {
-        code: def.suggested_code,
+        code,
         name: def.label,
         type: def.xero_type,
       });
       const acc = body.accounts && body.accounts[0];
+      usedCodes.add(code); // reserve it so the next iteration doesn't also pick it
       await XeroAccountMap.updateOne(
         { key: def.key },
         {
           $set: {
             xero_account_id: acc.accountID,
-            xero_code: acc.code || def.suggested_code,
+            xero_code: acc.code || code,
             xero_name: acc.name,
             resolved: true,
             resolved_at: new Date(),
           },
         },
       );
-      created.push(def.key);
+      created.push({ key: def.key, code });
     } catch (err) {
       skipped.push({ key: row.key, reason: parseXeroError(err).message });
     }
