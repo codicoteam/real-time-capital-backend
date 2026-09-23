@@ -2931,13 +2931,28 @@ class LoanService {
     });
     await loan.save();
 
+    const newTopUpIndex = loan.top_ups.length - 1;
+
+    // Post this top-up's admin fee to Xero as real RTC revenue (Admin Fee Income) —
+    // same fix as the original loan's fee, see investorAllocationService.assignLoan.
+    xeroSyncService
+      .syncAdminFeeRecognized(loan, {
+        topUpIndex: newTopUpIndex,
+        feeAmount: adminFeeAmount,
+        feeType,
+        paymentMethod: admin_fee_payment_method,
+        bankAccountKey: admin_fee_bank_account_key,
+        date: now,
+      })
+      .catch((err) => console.error(`[Xero] top-up admin fee sync error for loan ${loan.loan_no}:`, err.message));
+
     // Agent admin-fee commission on this top-up's fee — mirrors the loan-creation accrual
     // in investorAllocationService.assignLoan. Caught independently so a commission
     // failure never blocks the top-up itself.
     try {
       await agentCommissionService.accrueAdminFeeCommission(loan, {
         sourceEvent: "top_up",
-        topUpIndex: loan.top_ups.length - 1,
+        topUpIndex: newTopUpIndex,
         feeAmount: adminFeeAmount,
         relevantPrincipal: amount,
         commissionPct,

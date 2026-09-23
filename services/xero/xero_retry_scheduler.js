@@ -134,9 +134,98 @@ async function replayAgentCommissionPayout(row) {
   return xeroId ? { outcome: "synced", xeroId } : { outcome: "failed" };
 }
 
+// admin_fee_recognized's idempotency field lives on the Loan itself (loan creation) OR
+// nested inside loan.top_ups[topUpIndex] (a top-up) — doesn't fit the generic REPLAYERS
+// shape, which assumes a single top-level idField.
+async function replayAdminFeeRecognized(row) {
+  const loan = await Loan.findById(row.source_id);
+  if (!loan) return { outcome: "orphaned" };
+
+  const topUpIndex = row.payload?.topUpIndex ?? null;
+  const alreadyPosted =
+    topUpIndex == null ? loan.xero_admin_fee_transaction_id : loan.top_ups?.[topUpIndex]?.xero_admin_fee_transaction_id;
+  if (alreadyPosted) return { outcome: "already_synced", xeroId: alreadyPosted };
+
+  const feeAmount = topUpIndex == null ? loan.admin_fee_amount : loan.top_ups?.[topUpIndex]?.admin_fee_amount;
+  if (!feeAmount || feeAmount <= 0) return { outcome: "orphaned" }; // fee was corrected/removed since this log row was created
+
+  const feeType = topUpIndex == null ? loan.admin_fee_type : loan.top_ups?.[topUpIndex]?.admin_fee_type;
+  const paymentMethod = topUpIndex == null ? loan.admin_fee_payment_method : null;
+  const bankAccountKey =
+    topUpIndex == null ? loan.admin_fee_bank_account_key : loan.top_ups?.[topUpIndex]?.admin_fee_bank_account_key;
+  const date = topUpIndex == null ? loan.admin_fee_collected_at : loan.top_ups?.[topUpIndex]?.added_at;
+
+  const xeroId = await xeroSyncService.syncAdminFeeRecognized(loan, {
+    topUpIndex,
+    feeAmount,
+    feeType,
+    paymentMethod,
+    bankAccountKey,
+    date,
+  });
+  return xeroId ? { outcome: "synced", xeroId } : { outcome: "failed" };
+}
+
+// investor_profit_share_accrued's source_id is a Payment._id (Payment-model path) or an
+// embedded payments[]._id (legacy path, source_collection "Loan") — same split reasoning
+// as loan_repayment above, so it gets its own function too.
+async function replayInvestorProfitShareAccrual(row) {
+  if (row.source_collection === "Payment") {
+    const payment = await Payment.findById(row.source_id);
+    if (!payment) return { outcome: "orphaned" };
+    if (payment.xero_investor_profit_journal_id) {
+      return { outcome: "already_synced", xeroId: payment.xero_investor_profit_journal_id };
+    }
+    const loan = await Loan.findById(payment.loan);
+    if (!loan) return { outcome: "orphaned" };
+    const xeroId = await xeroSyncService.accrueInvestorProfitShare(loan, {
+      interest: payment.interest_component || 0,
+      storage: payment.storage_component || 0,
+      sourceCollection: "Payment",
+      sourceId: payment._id,
+      date: payment.paid_at,
+    });
+    if (xeroId) await Payment.updateOne({ _id: payment._id }, { $set: { xero_investor_profit_journal_id: xeroId } });
+    return xeroId ? { outcome: "synced", xeroId } : { outcome: "failed" };
+  }
+
+  // Legacy embedded path — source_id is the embedded payment's own _id (see
+  // xero_sync_service.syncLoanRepaymentLegacy), so find its parent loan directly.
+  const loan = await Loan.findOne({ "payments._id": row.source_id });
+  if (!loan) return { outcome: "orphaned" };
+  const paymentEntry = loan.payments.id(row.source_id);
+  if (!paymentEntry) return { outcome: "orphaned" };
+  if (paymentEntry.xero_investor_profit_journal_id) {
+    return { outcome: "already_synced", xeroId: paymentEntry.xero_investor_profit_journal_id };
+  }
+
+  const total = loan.expected_total_repayable || loan.principal_amount || 1;
+  const interestRatio = (loan.interest_amount || 0) / total;
+  const storageRatio = (loan.storage_charge_amount || 0) / total;
+  const interest = Math.round(paymentEntry.amount * interestRatio * 100) / 100;
+  const storage = Math.round(paymentEntry.amount * storageRatio * 100) / 100;
+
+  const xeroId = await xeroSyncService.accrueInvestorProfitShare(loan, {
+    interest,
+    storage,
+    sourceCollection: "Loan",
+    sourceId: paymentEntry._id,
+    date: paymentEntry.payment_date,
+  });
+  if (xeroId) {
+    await Loan.updateOne(
+      { _id: loan._id, "payments._id": paymentEntry._id },
+      { $set: { "payments.$.xero_investor_profit_journal_id": xeroId } },
+    );
+  }
+  return xeroId ? { outcome: "synced", xeroId } : { outcome: "failed" };
+}
+
 async function replayRow(row) {
   if (row.event_type === "loan_repayment") return replayLoanRepayment(row);
   if (row.event_type === "agent_commission_paid") return replayAgentCommissionPayout(row);
+  if (row.event_type === "admin_fee_recognized") return replayAdminFeeRecognized(row);
+  if (row.event_type === "investor_profit_share_accrued") return replayInvestorProfitShareAccrual(row);
 
   let def = REPLAYERS[row.event_type];
   if (!def && INVESTOR_TX_EVENT_TYPES.has(row.event_type)) {

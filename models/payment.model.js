@@ -86,6 +86,9 @@ const PaymentSchema = new Schema(
 
     // Xero BankTransaction this repayment was posted as
     xero_bank_transaction_id: { type: String, default: null },
+    // Manual Journal accruing the investor's share of this payment's interest+storage
+    // into Investor Profit Payable — see xero_sync_service.accrueInvestorProfitShare.
+    xero_investor_profit_journal_id: { type: String, default: null },
   },
   {
     timestamps: { createdAt: "created_at", updatedAt: "updated_at" },

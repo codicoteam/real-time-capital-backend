@@ -29,6 +29,10 @@ const PaymentSchema = new mongoose.Schema(
 
     // Xero BankTransaction this embedded (legacy-path) repayment was posted as
     xero_bank_transaction_id: { type: String, default: null },
+    // Manual Journal accruing the investor's share of this payment's interest+storage
+    // into Investor Profit Payable — see xero_sync_service.accrueInvestorProfitShare.
+    // Separate object from xero_bank_transaction_id above (a different Xero entity).
+    xero_investor_profit_journal_id: { type: String, default: null },
   },
   { _id: true }
 );
@@ -194,6 +198,8 @@ const LoanSchema = new mongoose.Schema(
           admin_fee_commission_amount: { type: Number, min: 0, default: 0 },
           bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
           admin_fee_bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
+          // Set once THIS top-up's admin fee has been posted to Xero as Admin Fee Income.
+          xero_admin_fee_transaction_id: { type: String, default: null },
           added_at: { type: Date, default: Date.now },
           added_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
           notes: { type: String, trim: true },
@@ -293,6 +299,10 @@ const LoanSchema = new mongoose.Schema(
 
     // Xero references — set once the corresponding event has been posted
     xero_disbursement_transaction_id: { type: String, default: null },
+    // Set once the ORIGINAL loan's admin fee has been posted to Xero as Admin Fee Income
+    // (see xero_sync_service.syncAdminFeeRecognized) — separate from admin_fee_collected,
+    // which only tracks whether the fee was recognized as RTC revenue internally.
+    xero_admin_fee_transaction_id: { type: String, default: null },
     xero_writeoff_journal_id: { type: String, default: null },
     // Set when this loan's balance is reclassified from Loans Receivable into Pawned
     // Assets Inventory (loan → "auction" status). xero_auction_reclass_amount is the

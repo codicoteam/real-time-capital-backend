@@ -382,6 +382,19 @@ class InvestorAllocationService {
           `[InvestorAllocation] Credited RTC with $${adminFeeAmount.toFixed(2)} (${loan.admin_fee_type}) admin fee for loan ${loan.loan_no}`,
         );
 
+        // Post the fee to Xero as real RTC revenue (Admin Fee Income) — NOT through the
+        // recordTransaction call above, which only fires the generic investor-transaction
+        // sync (now a deliberate no-op for admin-fee rows, see syncInvestorTransaction).
+        xeroSyncService
+          .syncAdminFeeRecognized(loan, {
+            feeAmount: adminFeeAmount,
+            feeType: loan.admin_fee_type,
+            paymentMethod: loan.admin_fee_payment_method,
+            bankAccountKey: loan.admin_fee_bank_account_key,
+            date: loan.admin_fee_collected_at,
+          })
+          .catch((err) => console.error(`[Xero] admin fee sync error for loan ${loan.loan_no}:`, err.message));
+
         // Agent's cut of this fee, if the loan is a referral — caught independently so a
         // commission failure never undoes the admin-fee credit above.
         try {

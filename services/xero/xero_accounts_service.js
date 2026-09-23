@@ -34,6 +34,8 @@ const REQUIRED_ACCOUNTS = [
   { key: "storage_income", label: "Storage Charge Income", suggested_code: "4010", xero_type: "REVENUE", manual_only: false },
   { key: "penalty_income", label: "Penalty Income", suggested_code: "4020", xero_type: "REVENUE", manual_only: false },
   { key: "asset_sale_revenue", label: "Auction / Asset Sale Revenue", suggested_code: "4030", xero_type: "REVENUE", manual_only: false },
+  { key: "admin_fee_income", label: "Admin Fee Income", suggested_code: "4040", xero_type: "REVENUE", manual_only: false },
+  { key: "investor_profit_share_expense", label: "Investor Profit Share", suggested_code: "6500", xero_type: "DIRECTCOSTS", manual_only: false },
   { key: "bad_debt_writeoffs", label: "Bad Debt Write-offs", suggested_code: "6300", xero_type: "EXPENSE", manual_only: false },
   { key: "cost_of_asset_sales", label: "Cost of Asset Sales", suggested_code: "6400", xero_type: "DIRECTCOSTS", manual_only: false },
   { key: "expense_rent", label: "Rent", suggested_code: "6100", xero_type: "OVERHEADS", manual_only: false },

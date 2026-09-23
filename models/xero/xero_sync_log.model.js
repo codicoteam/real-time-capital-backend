@@ -6,11 +6,14 @@ const XeroSyncLogSchema = new mongoose.Schema(
   {
     source_collection: {
       type: String,
-      enum: ["Loan", "Payment", "Expense", "InvestorTransaction", "BidPayment", "Auction", "Asset"],
+      enum: ["Loan", "Payment", "Expense", "InvestorTransaction", "BidPayment", "Auction", "Asset", "AgentCommission"],
       required: true,
       index: true,
     },
-    source_id: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+    // agent_commission_paid's source_id is a payout_batch_id STRING (shared by several
+    // AgentCommission rows), not a single document's ObjectId — Mixed so it can hold
+    // either shape.
+    source_id: { type: mongoose.Schema.Types.Mixed, required: true, index: true },
 
     event_type: {
       type: String,
@@ -26,6 +29,9 @@ const XeroSyncLogSchema = new mongoose.Schema(
         "investor_profit_withdrawal",
         "investor_drawing",
         "auction_sale",
+        "agent_commission_paid",
+        "admin_fee_recognized",
+        "investor_profit_share_accrued",
       ],
       required: true,
       index: true,

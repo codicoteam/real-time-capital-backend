@@ -17,6 +17,7 @@ const Auction = require("../../models/auction.model");
 const BidPayment = require("../../models/bidPayment.model");
 const Asset = require("../../models/asset.model");
 const AgentCommission = require("../../models/agent_commission.model");
+const InvestorLoanAllocation = require("../../models/investor/investor_loan_allocation.model");
 
 // Every event funnels through here: logs the attempt, never throws to the caller
 // (callers use `.catch()` fire-and-forget per this codebase's existing convention —
@@ -96,6 +97,97 @@ async function syncLoanDisbursed(loan) {
 
       const xeroId = body.bankTransactions[0].bankTransactionID;
       await Loan.updateOne({ _id: loan._id }, { $set: { xero_disbursement_transaction_id: xeroId } });
+      return xeroId;
+    },
+  );
+}
+
+// ── Admin fee recognized as RTC revenue (loan creation OR a top-up) ──────────
+// Fixed 2026-09-23: this used to be routed through the generic investor-transaction
+// path (recordTransaction → syncInvestorTransaction), which posted it as a "Capital
+// deposit" crediting Investor Capital Payable — wrong on two counts: (1) it's RTC's own
+// fee revenue, not investor capital, and (2) for a DEFERRED fee no cash has actually
+// moved yet, so posting a BankTransaction RECEIVE against a real bank account recorded a
+// cash movement that never happened. See syncInvestorTransaction's `tx.source ===
+// "admin_fee"` skip below — that path no longer posts anything for admin-fee rows.
+//
+//   Upfront: real cash WAS collected separately at signing → BankTransaction RECEIVE
+//            (Dr Bank, Cr Admin Fee Income).
+//   Deferred: no cash has moved — the fee is just added to what the customer owes →
+//             Manual Journal (Dr Loans Receivable, Cr Admin Fee Income). This is what
+//             brings Loans Receivable up to match principal+fee — syncLoanDisbursed only
+//             ever posts principal_amount, and postRepaymentToXero's proportional
+//             "principal" split already assumes the fee is baked into
+//             expected_total_repayable (see loan_service.calculateRepaymentBreakdown) —
+//             without this journal, Loans Receivable would be credited down by more than
+//             it was ever debited by.
+async function syncAdminFeeRecognized(loan, { topUpIndex = null, feeAmount, feeType, paymentMethod, bankAccountKey, date } = {}) {
+  const alreadyPosted =
+    topUpIndex == null ? loan.xero_admin_fee_transaction_id : loan.top_ups?.[topUpIndex]?.xero_admin_fee_transaction_id;
+  if (alreadyPosted) return alreadyPosted;
+  if (!feeAmount || feeAmount <= 0) return null;
+
+  return withSyncLog(
+    {
+      sourceCollection: "Loan",
+      sourceId: loan._id,
+      eventType: "admin_fee_recognized",
+      xeroEndpoint: feeType === "upfront" ? "BankTransactions" : "ManualJournals",
+      payload: { loan_no: loan.loan_no, amount: feeAmount, feeType, topUpIndex },
+    },
+    async () => {
+      const { accountingApi, tenantId } = await getAuthenticatedClient();
+      const revenueCode = await requireAccountCode("admin_fee_income");
+      let xeroId;
+
+      if (feeType === "upfront") {
+        const contactId = await getOrCreateCustomerContact(loan.customer_user._id || loan.customer_user);
+        const resolvedBankKey = bankAccountKeyForMethod(paymentMethod, { bankAccountKey });
+        const bankAccountRef = await requireBankAccountRef(resolvedBankKey);
+        const { body } = await accountingApi.createBankTransactions(tenantId, {
+          bankTransactions: [
+            {
+              type: "RECEIVE",
+              contact: { contactID: contactId },
+              date: toXeroDate(date),
+              reference: loan.loan_no,
+              status: "AUTHORISED",
+              bankAccount: bankAccountRef,
+              lineItems: [
+                {
+                  description: `Admin fee (upfront)${topUpIndex != null ? " — top-up" : ""} — ${loan.loan_no}`,
+                  quantity: 1,
+                  unitAmount: feeAmount,
+                  accountCode: revenueCode,
+                },
+              ],
+            },
+          ],
+        });
+        xeroId = body.bankTransactions[0].bankTransactionID;
+      } else {
+        const loansReceivableCode = await requireAccountCode("loans_receivable");
+        const { body } = await accountingApi.createManualJournals(tenantId, {
+          manualJournals: [
+            {
+              narration: `Admin fee (deferred)${topUpIndex != null ? " — top-up" : ""} recognized — ${loan.loan_no}`,
+              date: toXeroDate(date),
+              status: "POSTED",
+              journalLines: [
+                { lineAmount: feeAmount, accountCode: loansReceivableCode, description: "Deferred admin fee added to balance owed" },
+                { lineAmount: -feeAmount, accountCode: revenueCode, description: "Admin fee income" },
+              ],
+            },
+          ],
+        });
+        xeroId = body.manualJournals[0].manualJournalID;
+      }
+
+      if (topUpIndex == null) {
+        await Loan.updateOne({ _id: loan._id }, { $set: { xero_admin_fee_transaction_id: xeroId } });
+      } else {
+        await Loan.updateOne({ _id: loan._id }, { $set: { [`top_ups.${topUpIndex}.xero_admin_fee_transaction_id`]: xeroId } });
+      }
       return xeroId;
     },
   );
@@ -423,6 +515,71 @@ async function postRepaymentToXero({
   );
 }
 
+// ── Investor profit-share accrual — runs alongside every repayment, both paths ──────
+// Fixed 2026-09-23: postRepaymentToXero above posts the FULL gross interest+storage of
+// a payment to Interest Income/Storage Income regardless of who funded the loan — that's
+// correct as a gross revenue figure. But nothing ever posted the flip side: the
+// investor's cut of that same interest+storage is real money RTC owes them, and
+// Investor Profit Payable (the liability account for it) was only ever being DEBITED
+// (via a profit_withdrawal payout) — never CREDITED when the profit was actually earned.
+// So its Xero balance had no relationship to what's actually owed, only ever drifting
+// more negative over time.
+//
+// Manual Journal: Dr Investor Profit Share (RTC's real cost of funding through investor
+// capital), Cr Investor Profit Payable, for (interest + storage of THIS payment) × the
+// investor-side share %. That % is the SUM of every InvestorLoanAllocation row on this
+// loan (the primary investor's investor_share_pct, plus a referral co-investor's if one
+// exists) — RTC's own share (100 - that sum) is exactly what the gross Interest/Storage
+// Income figures already represent, so this never touches those accounts. Skipped
+// entirely when there's no InvestorLoanAllocation at all (RTC's own book, e.g. small_loans)
+// — there's no investor to owe anything to.
+async function accrueInvestorProfitShare(loan, { interest, storage, sourceCollection, sourceId, date }) {
+  const profitPortion = Math.round(((interest || 0) + (storage || 0)) * 100) / 100;
+  if (profitPortion <= 0) return null;
+
+  const allocations = await InvestorLoanAllocation.find({ loan_id: loan._id }).select("investor_share_pct");
+  if (allocations.length === 0) return null; // RTC's own book — nothing owed to anyone
+
+  const investorSharePct = allocations.reduce((s, a) => s + (a.investor_share_pct || 0), 0);
+  if (investorSharePct <= 0) return null;
+
+  const investorAmount = Math.round(profitPortion * (investorSharePct / 100) * 100) / 100;
+  if (investorAmount <= 0) return null;
+
+  return withSyncLog(
+    {
+      sourceCollection,
+      sourceId,
+      eventType: "investor_profit_share_accrued",
+      xeroEndpoint: "ManualJournals",
+      payload: { loan_no: loan.loan_no, profitPortion, investorSharePct, investorAmount },
+    },
+    async () => {
+      const { accountingApi, tenantId } = await getAuthenticatedClient();
+      const [expenseCode, payableCode] = await Promise.all([
+        requireAccountCode("investor_profit_share_expense"),
+        requireAccountCode("investor_profit_payable"),
+      ]);
+
+      const { body } = await accountingApi.createManualJournals(tenantId, {
+        manualJournals: [
+          {
+            narration: `Investor profit share accrued — ${loan.loan_no}`,
+            date: toXeroDate(date),
+            status: "POSTED",
+            journalLines: [
+              { lineAmount: investorAmount, accountCode: expenseCode, description: "Investor profit share" },
+              { lineAmount: -investorAmount, accountCode: payableCode, description: "Investor profit payable" },
+            ],
+          },
+        ],
+      });
+
+      return body.manualJournals[0].manualJournalID;
+    },
+  );
+}
+
 // Path 2a — the primary Payment-model repayment flow (services/payment_service.js
 // updateLoanBalance). Component split comes straight from the Payment document.
 async function syncLoanRepayment(payment, loan) {
@@ -443,6 +600,18 @@ async function syncLoanRepayment(payment, loan) {
   });
   if (xeroId) {
     await Payment.updateOne({ _id: payment._id }, { $set: { xero_bank_transaction_id: xeroId } });
+  }
+  if (!payment.xero_investor_profit_journal_id) {
+    const journalId = await accrueInvestorProfitShare(loan, {
+      interest: payment.interest_component || 0,
+      storage: payment.storage_component || 0,
+      sourceCollection: "Payment",
+      sourceId: payment._id,
+      date: payment.paid_at,
+    });
+    if (journalId) {
+      await Payment.updateOne({ _id: payment._id }, { $set: { xero_investor_profit_journal_id: journalId } });
+    }
   }
   return xeroId;
 }
@@ -484,6 +653,23 @@ async function syncLoanRepaymentLegacy(loan, paymentEntry) {
       { $set: { "payments.$.xero_bank_transaction_id": xeroId } },
     );
   }
+
+  if (paymentEntry._id && !paymentEntry.xero_investor_profit_journal_id) {
+    const journalId = await accrueInvestorProfitShare(loan, {
+      interest,
+      storage,
+      sourceCollection: "Loan",
+      sourceId: paymentEntry._id,
+      date: paymentEntry.payment_date,
+    });
+    if (journalId) {
+      await Loan.updateOne(
+        { _id: loan._id, "payments._id": paymentEntry._id },
+        { $set: { "payments.$.xero_investor_profit_journal_id": journalId } },
+      );
+    }
+  }
+
   return xeroId;
 }
 
@@ -554,6 +740,12 @@ const INVESTOR_TX_MAP = {
 async function syncInvestorTransaction(tx) {
   if (tx.xero_bank_transaction_id) return tx.xero_bank_transaction_id; // already posted
   if (tx.type === "expense") return null; // posted separately via syncExpenseApproved
+  // Fixed 2026-09-23: this used to fall through to the generic deposit/withdrawal
+  // mapping below, which posted admin fee revenue as a "Capital deposit" into Investor
+  // Capital Payable — wrong account, and (for deferred fees) a fake cash movement that
+  // never happened. Posted correctly now via syncAdminFeeRecognized instead — this row
+  // still exists purely for RTC's own internal capital-ledger bookkeeping in Mongo.
+  if (tx.source === "admin_fee") return null;
 
   const mapping = INVESTOR_TX_MAP[tx.type];
   if (!mapping) return null;
@@ -679,12 +871,14 @@ async function syncAgentCommissionPaid(batch) {
 
 module.exports = {
   syncLoanDisbursed,
+  syncAdminFeeRecognized,
   syncLoanWrittenOff,
   syncLoanMovedToAuction,
   syncAuctionSaleCompleted,
   syncAssetDisposalSale,
   syncLoanRepayment,
   syncLoanRepaymentLegacy,
+  accrueInvestorProfitShare,
   syncExpenseApproved,
   syncInvestorTransaction,
   syncAgentCommissionPaid,
