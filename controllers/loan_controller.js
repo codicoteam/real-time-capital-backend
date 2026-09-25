@@ -782,14 +782,12 @@ class LoanController {
       const rolloverData = req.body;
       const userId = req.user?.id;
 
-      if (!rolloverData.payment_amount || rolloverData.payment_amount <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Rollover payment amount is required and must be greater than 0",
-        });
-      }
-
-      const result = await loanService.rolloverLoan(id, rolloverData, userId);
+      // Payment/override validation lives in loanService.rolloverLoan (a rollover needs a
+      // payment > 0 unless an override with a reason is supplied) — one source of truth.
+      const result = await loanService.rolloverLoan(id, rolloverData, userId, {
+        ip: req.ip,
+        userAgent: req.headers["user-agent"],
+      });
 
       res.status(200).json({
         success: true,

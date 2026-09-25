@@ -967,15 +967,14 @@ router.post(
  *         application/json:
  *           schema:
  *             type: object
- *             required:
- *               - payment_amount
- *               - payment_method
  *             properties:
  *               payment_amount:
  *                 type: number
+ *                 description: Must be greater than 0 unless override is true (then 0 is allowed).
  *               payment_method:
  *                 type: string
  *                 enum: [cash, bank_transfer, mobile_money, cheque]
+ *                 description: Required whenever payment_amount > 0.
  *               payment_reference:
  *                 type: string
  *               payment_notes:
@@ -987,6 +986,20 @@ router.post(
  *                 format: date
  *               notes:
  *                 type: string
+ *               override:
+ *                 type: boolean
+ *                 description: >
+ *                   Roll over with NO payment collected (payment_amount 0). Available to every role that
+ *                   can roll over a loan. The whole amount owed above principal carries forward as
+ *                   arrears. Requires override_reason_category; logged to the audit trail against the
+ *                   caller and shown on the loan's rollover history. Does not bypass the loan-status
+ *                   eligibility check. Ignored when payment_amount > 0.
+ *               override_reason_category:
+ *                 type: string
+ *                 enum: [payment_promised, payment_pending_confirmation, hardship_extension, management_approval, data_correction, other]
+ *               override_notes:
+ *                 type: string
+ *                 description: Required when override_reason_category is "other". Max 1000 characters.
  *     responses:
  *       200:
  *         description: Loan rolled over successfully

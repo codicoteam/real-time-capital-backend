@@ -268,6 +268,30 @@ const LoanSchema = new mongoose.Schema(
     carried_forward_arrears: { type: Number, default: 0, min: 0 },
     rollover_payment_amount: { type: Number, min: 0 },
     rollover_notes: { type: String, trim: true },
+    // Set on the NEW loan when its rollover was done via OVERRIDE — i.e. the staff member
+    // bypassed the normal "a payment must be collected" rule and rolled the loan over with
+    // nothing paid. Stored as a self-contained snapshot (name/role copied in, not just an
+    // id) so the trace stays readable even if the user is later renamed or removed; the
+    // matching AuditLog entries (action "loan.rollover_override") are the compliance copy.
+    rollover_override: {
+      type: new mongoose.Schema(
+        {
+          applied: { type: Boolean, default: true },
+          by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          by_name: { type: String, trim: true },
+          by_role: { type: String, trim: true },
+          at: { type: Date, default: Date.now },
+          reason_category: { type: String, trim: true },
+          reason_label: { type: String, trim: true },
+          notes: { type: String, trim: true },
+          from_loan_no: { type: String, trim: true },
+          payment_collected: { type: Number, min: 0, default: 0 },
+          arrears_carried_forward: { type: Number, min: 0, default: 0 },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
 
     // Approval workflow for high‑value loans
     requires_super_admin_approval: { type: Boolean, default: false },

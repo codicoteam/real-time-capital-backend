@@ -35,7 +35,59 @@ const OVERRIDE_REASON_CATEGORIES = {
   other: "Other",
 };
 
+// Structured reasons for an OVERRIDE rollover (rolling a loan over with no payment
+// collected). Required so every bypass is categorized in the audit trail, not just free
+// text. Keep in sync with ROLLOVER_OVERRIDE_REASON_OPTIONS in the frontend's
+// services/loan_service/loan_service.tsx.
+const ROLLOVER_OVERRIDE_REASON_CATEGORIES = {
+  payment_promised: "Customer promised to pay shortly",
+  payment_pending_confirmation: "Payment made but not yet confirmed / received",
+  hardship_extension: "Customer hardship / extension granted",
+  management_approval: "Approved by management",
+  data_correction: "Data correction / system issue",
+  other: "Other",
+};
+const ROLLOVER_OVERRIDE_NOTES_MAX = 1000;
+
 class LoanService {
+  /**
+   * Validates the override fields of a rollover request. Only meaningful when NO payment is
+   * being collected (paymentAmount === 0) — that's the one rule an override bypasses; a
+   * rollover that does collect a payment needs no override, so override fields sent
+   * alongside one are ignored (returns null) rather than stamped onto a loan that didn't
+   * actually bypass anything. Never trusts the client's say-so beyond that: the reason
+   * must be one of the known categories, and "other" must be explained in the notes.
+   *
+   * Deliberately does NOT bypass: the loan-status eligibility check, or the "payment
+   * covers everything owed, nothing left to roll over" check — those protect against
+   * resurrecting closed loans / double-counting and are a redemption, not a rollover.
+   */
+  resolveRolloverOverride(rolloverData, paymentAmount) {
+    const { override, override_reason_category, override_notes } = rolloverData || {};
+    const requested = override === true || override === "true";
+    if (!requested || paymentAmount > 0) return null;
+
+    if (!override_reason_category || !ROLLOVER_OVERRIDE_REASON_CATEGORIES[override_reason_category]) {
+      throw {
+        status: 400,
+        message: `override_reason_category is required for an override rollover and must be one of: ${Object.keys(ROLLOVER_OVERRIDE_REASON_CATEGORIES).join(", ")}`,
+      };
+    }
+    const notes = typeof override_notes === "string" ? override_notes.trim() : "";
+    if (override_reason_category === "other" && !notes) {
+      throw { status: 400, message: 'override_notes is required when the override reason is "Other".' };
+    }
+    if (notes.length > ROLLOVER_OVERRIDE_NOTES_MAX) {
+      throw { status: 400, message: `override_notes must be ${ROLLOVER_OVERRIDE_NOTES_MAX} characters or fewer.` };
+    }
+
+    return {
+      reason_category: override_reason_category,
+      reason_label: ROLLOVER_OVERRIDE_REASON_CATEGORIES[override_reason_category],
+      notes: notes || null,
+    };
+  }
+
   /**
    * Resolves loanData.storage_charge_percent against the standard storage rate for its
    * loan_period_type. Called at both loan creation and any later edit that touches the
@@ -2317,7 +2369,7 @@ class LoanService {
    *   for payout. `requires_super_admin_approval` is still recorded for
    *   audit on high-value rollovers, but does not block activation.
    */
-  async rolloverLoan(loanId, rolloverData, userId) {
+  async rolloverLoan(loanId, rolloverData, userId, requestMeta = {}) {
     const {
       payment_amount,
       payment_method,
@@ -2329,13 +2381,25 @@ class LoanService {
       bank_account_key,
     } = rolloverData || {};
 
-    const paymentAmount = Number(payment_amount);
-    if (!paymentAmount || paymentAmount <= 0) {
-      throw { status: 400, message: "Rollover payment amount must be greater than 0" };
+    const paymentAmount = Number(payment_amount) || 0;
+    if (paymentAmount < 0) {
+      throw { status: 400, message: "Rollover payment amount cannot be negative" };
+    }
+
+    // The one rule an override bypasses: normally a rollover must collect a payment. With an
+    // override (any role that can roll over a loan may use it), the loan rolls over with
+    // nothing paid and the whole amount owed above principal carries forward as arrears —
+    // logged against the actor, with a mandatory reason. See resolveRolloverOverride.
+    const overrideInfo = this.resolveRolloverOverride(rolloverData, paymentAmount);
+    if (paymentAmount === 0 && !overrideInfo) {
+      throw {
+        status: 400,
+        message: "Rollover payment amount must be greater than 0 — or use Override to roll the loan over without a payment.",
+      };
     }
 
     const validPaymentMethods = ["cash", "bank_transfer", "mobile_money", "cheque"];
-    if (!validPaymentMethods.includes(payment_method)) {
+    if (paymentAmount > 0 && !validPaymentMethods.includes(payment_method)) {
       throw {
         status: 400,
         message: `Invalid payment method. Must be one of: ${validPaymentMethods.join(", ")}`,
@@ -2404,19 +2468,26 @@ class LoanService {
       }
 
       // ── Record the rollover payment on the OLD loan and close it out ──
-      const paymentRecord = {
-        amount: paymentAmount,
-        payment_date: new Date(),
-        payment_method,
-        status: "paid",
-        reference_no: payment_reference || `ROLLOVER-${Date.now()}`,
-        received_by: userId || oldLoan.processed_by || oldLoan.created_by,
-        notes: payment_notes || "Rollover interest payment",
-        bank_account_key: bank_account_key || null,
-      };
+      // An override rollover collects nothing, so it records NO payment at all — a $0
+      // payment entry would show up as a phantom repayment in history, reports and the
+      // Xero sync. What happened is captured by rollover_override + the audit log instead.
+      if (paymentAmount > 0) {
+        const paymentRecord = {
+          amount: paymentAmount,
+          payment_date: new Date(),
+          payment_method,
+          status: "paid",
+          reference_no: payment_reference || `ROLLOVER-${Date.now()}`,
+          received_by: userId || oldLoan.processed_by || oldLoan.created_by,
+          notes: payment_notes || "Rollover interest payment",
+          bank_account_key: bank_account_key || null,
+        };
 
-      oldLoan.payments.push(paymentRecord);
-      oldLoan.total_paid = parseFloat((oldLoan.total_paid + paymentAmount).toFixed(2));
+        oldLoan.payments.push(paymentRecord);
+        oldLoan.total_paid = parseFloat((oldLoan.total_paid + paymentAmount).toFixed(2));
+      }
+      const balanceBeforeRollover = oldLoan.current_balance;
+      const statusBeforeRollover = oldLoan.status;
       oldLoan.current_balance = 0;
       oldLoan.status = "rolled_over";
       await oldLoan.save({ session, validateModifiedOnly: true });
@@ -2433,6 +2504,30 @@ class LoanService {
         loan_id: oldLoan._id,
         is_co_investor: false,
       }).select("investor_id");
+
+      // Override trace, stamped onto the new loan as a self-contained snapshot (name/role
+      // copied in) so it stays readable on the loan's rollover history even if the user
+      // is later renamed or removed.
+      let rolloverOverrideSnapshot = null;
+      let overrideActor = null;
+      if (overrideInfo) {
+        overrideActor = userId ? await User.findById(userId).select("first_name last_name email roles") : null;
+        rolloverOverrideSnapshot = {
+          applied: true,
+          by: userId || null,
+          by_name: overrideActor
+            ? `${overrideActor.first_name || ""} ${overrideActor.last_name || ""}`.trim() || overrideActor.email
+            : "Unknown",
+          by_role: (overrideActor?.roles || []).join(", ") || null,
+          at: new Date(),
+          reason_category: overrideInfo.reason_category,
+          reason_label: overrideInfo.reason_label,
+          notes: overrideInfo.notes,
+          from_loan_no: oldLoan.loan_no,
+          payment_collected: 0,
+          arrears_carried_forward: carriedForwardArrears,
+        };
+      }
 
       const newLoanData = {
         loan_no: this.generateLoanNo(),
@@ -2464,6 +2559,7 @@ class LoanService {
         carried_forward_arrears: carriedForwardArrears,
         rollover_payment_amount: paymentAmount,
         rollover_notes: notes || "",
+        rollover_override: rolloverOverrideSnapshot,
         created_by: userId,
         processed_by: userId,
         approved_by: userId,
@@ -2569,25 +2665,109 @@ class LoanService {
             userId,
           ).catch((err) => console.error("Rollover customer notification error:", err.message));
 
-          sendLoanRolloverAdminEmail({
-            loanNo: oldLoan.loan_no,
-            newLoanNo: newLoan.loan_no,
-            customerName,
-            principalAmount: newLoan.principal_amount,
-            paymentAmount,
-            carriedForwardArrears,
-            loanPeriodType: newLoan.loan_period_type,
-            dueDate: newLoan.due_date,
-          }).catch((err) => console.error("Rollover admin email error:", err.message));
+          // An override rollover sends its own, more informative admin notification below
+          // (who overrode, why, what carried forward) — skip the plain "$0 payment" email so
+          // admins don't get two emails for one event.
+          if (!overrideInfo) {
+            sendLoanRolloverAdminEmail({
+              loanNo: oldLoan.loan_no,
+              newLoanNo: newLoan.loan_no,
+              customerName,
+              principalAmount: newLoan.principal_amount,
+              paymentAmount,
+              carriedForwardArrears,
+              loanPeriodType: newLoan.loan_period_type,
+              dueDate: newLoan.due_date,
+            }).catch((err) => console.error("Rollover admin email error:", err.message));
+          }
         }
       } catch (notifyErr) {
         console.error("Rollover notification error (non-fatal):", notifyErr.message);
       }
 
+      // ── Override trace: audit entries on BOTH loans + notify oversight roles ──
+      // Any role that can roll a loan over may use the override, so this is the check on it:
+      // every use is attributed (actor, role, IP), categorized, visible on the loan's
+      // rollover history, and pushed to admins/management. Failures here never undo the
+      // rollover itself.
+      if (overrideInfo && rolloverOverrideSnapshot) {
+        const cu = populatedNewLoan.customer_user;
+        const overrideCustomerName = cu
+          ? `${cu.first_name || ""} ${cu.last_name || ""}`.trim() || "Customer"
+          : "Unknown Client";
+        const auditMeta = {
+          loan_no: oldLoan.loan_no,
+          new_loan_no: newLoan.loan_no,
+          customer_name: overrideCustomerName,
+          reason_category: overrideInfo.reason_category,
+          reason_label: overrideInfo.reason_label,
+          override_notes: overrideInfo.notes,
+          overridden_by: rolloverOverrideSnapshot.by_name,
+          overridden_by_role: rolloverOverrideSnapshot.by_role,
+          payment_collected: 0,
+          arrears_carried_forward: carriedForwardArrears,
+        };
+
+        auditLogService
+          .logLoanAction(
+            oldLoan._id,
+            userId,
+            "rollover_override",
+            { status: statusBeforeRollover, current_balance: balanceBeforeRollover },
+            { status: "rolled_over", current_balance: 0, rolled_over_to: newLoan.loan_no },
+            requestMeta.ip,
+            requestMeta.userAgent,
+            { ...auditMeta, loan_role: "closed_by_override_rollover" },
+          )
+          .catch((err) => console.error("Rollover override audit (old loan) failed:", err.message));
+
+        auditLogService
+          .logLoanAction(
+            newLoan._id,
+            userId,
+            "rollover_override",
+            null,
+            {
+              status: newLoan.status,
+              principal_amount: newLoan.principal_amount,
+              carried_forward_arrears: carriedForwardArrears,
+              due_date: newLoan.due_date,
+            },
+            requestMeta.ip,
+            requestMeta.userAgent,
+            { ...auditMeta, loan_role: "opened_by_override_rollover" },
+          )
+          .catch((err) => console.error("Rollover override audit (new loan) failed:", err.message));
+
+        NotificationService.createNotification(
+          {
+            title: `Override Rollover — Loan #${oldLoan.loan_no}`,
+            message:
+              `${rolloverOverrideSnapshot.by_name}${rolloverOverrideSnapshot.by_role ? ` (${rolloverOverrideSnapshot.by_role})` : ""} ` +
+              `rolled over loan #${oldLoan.loan_no} (${overrideCustomerName}) into #${newLoan.loan_no} with NO payment collected. ` +
+              `Reason: ${overrideInfo.reason_label}.` +
+              `${carriedForwardArrears > 0 ? ` $${carriedForwardArrears.toFixed(2)} carried forward as arrears.` : ""}` +
+              `${overrideInfo.notes ? ` Notes: ${overrideInfo.notes}` : ""}`,
+            type: "system_notice",
+            priority: "high",
+            audience: {
+              scope: "roles",
+              roles: ["super_admin_vendor", "admin_pawn_limited", "management"],
+            },
+            channels: ["in_app", "email"],
+            entity_type: "loan",
+            entity_id: newLoan._id,
+            action_url: `/loans/${newLoan._id}`,
+            action_text: "View Loan",
+          },
+          userId,
+        ).catch((err) => console.error("Rollover override notification failed:", err.message));
+      }
+
       return {
         success: true,
         data: { old_loan: populatedOldLoan, new_loan: populatedNewLoan },
-        message: `Loan ${oldLoan.loan_no} rolled over into new loan ${newLoan.loan_no}`,
+        message: `Loan ${oldLoan.loan_no} rolled over into new loan ${newLoan.loan_no}${overrideInfo ? " (override — no payment collected)" : ""}`,
       };
     } catch (error) {
       await session.abortTransaction();
