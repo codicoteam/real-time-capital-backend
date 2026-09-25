@@ -444,6 +444,89 @@ async function syncAssetDisposalSale(asset, { costBasis, paymentMethod, bankAcco
   );
 }
 
+// ── Atomic posting claims (prevents double-posting under concurrent execution) ──────
+// Found 2026-09-23: 14 repayments had been posted to Xero as TWO separate real
+// BankTransactions each. Root cause: both syncLoanRepayment/syncLoanRepaymentLegacy only
+// ever checked `xero_bank_transaction_id` in memory before calling Xero, then wrote the
+// result back afterward — a classic read-then-write race. Two near-simultaneous calls for
+// the SAME payment (a live payment-recording call racing the 5-minute retry poller, or
+// two retry cycles overlapping across a pm2 restart, which happens often in this
+// deployment's workflow) could both read "not yet posted", both call Xero, and both
+// succeed — two real transactions for one payment. Most of the 14 turned out to already
+// be harmless (the org switch this session left the OLDER of each pair orphaned in a org
+// we're no longer connected to), but at least one was a genuine live duplicate.
+//
+// Fix: atomically CLAIM the field with a sentinel value before ever calling Xero. A
+// concurrent caller's claim attempt matches zero documents and backs off (returns null)
+// instead of proceeding to post. If the claiming process itself dies before finishing
+// (an actual crash, not just a Xero API error — those are handled by releasing the claim
+// in a `finally`), the sentinel is timestamped so the retry scheduler can recognize it as
+// stale (same 10-minute window as XeroSyncLog's own stuck-pending logic) and safely steal
+// it back.
+const POSTING_SENTINEL_PREFIX = "__POSTING__:";
+const POSTING_SENTINEL_STALE_MS = 10 * 60 * 1000;
+
+function isStalePostingSentinel(value) {
+  if (typeof value !== "string" || !value.startsWith(POSTING_SENTINEL_PREFIX)) return false;
+  const ts = Number(value.slice(POSTING_SENTINEL_PREFIX.length));
+  return Number.isFinite(ts) && Date.now() - ts > POSTING_SENTINEL_STALE_MS;
+}
+
+// True when a stored xero_bank_transaction_id value means "still needs posting" — either
+// genuinely empty, or a stale claim left behind by a crashed attempt. Used by the retry
+// scheduler in place of a raw falsy check, so a stuck claim doesn't hide a payment from
+// retry forever.
+function needsRepaymentSync(xeroBankTransactionId) {
+  return !xeroBankTransactionId || isStalePostingSentinel(xeroBankTransactionId);
+}
+
+async function claimPaymentPostingSlot(paymentId) {
+  const sentinel = POSTING_SENTINEL_PREFIX + Date.now();
+  let res = await Payment.updateOne({ _id: paymentId, xero_bank_transaction_id: null }, { $set: { xero_bank_transaction_id: sentinel } });
+  if (res.modifiedCount > 0) return sentinel;
+
+  const doc = await Payment.findById(paymentId).select("xero_bank_transaction_id");
+  if (isStalePostingSentinel(doc?.xero_bank_transaction_id)) {
+    res = await Payment.updateOne(
+      { _id: paymentId, xero_bank_transaction_id: doc.xero_bank_transaction_id },
+      { $set: { xero_bank_transaction_id: sentinel } },
+    );
+    if (res.modifiedCount > 0) return sentinel;
+  }
+  return null;
+}
+
+async function releasePaymentPostingSlot(paymentId, sentinel) {
+  await Payment.updateOne({ _id: paymentId, xero_bank_transaction_id: sentinel }, { $set: { xero_bank_transaction_id: null } });
+}
+
+async function claimEmbeddedPaymentPostingSlot(loanId, paymentEntryId) {
+  const sentinel = POSTING_SENTINEL_PREFIX + Date.now();
+  let res = await Loan.updateOne(
+    { _id: loanId, "payments._id": paymentEntryId, "payments.xero_bank_transaction_id": null },
+    { $set: { "payments.$.xero_bank_transaction_id": sentinel } },
+  );
+  if (res.modifiedCount > 0) return sentinel;
+
+  const doc = await Loan.findOne({ _id: loanId, "payments._id": paymentEntryId }, { "payments.$": 1 });
+  const current = doc?.payments?.[0]?.xero_bank_transaction_id;
+  if (isStalePostingSentinel(current)) {
+    res = await Loan.updateOne(
+      { _id: loanId, "payments._id": paymentEntryId, "payments.xero_bank_transaction_id": current },
+      { $set: { "payments.$.xero_bank_transaction_id": sentinel } },
+    );
+    if (res.modifiedCount > 0) return sentinel;
+  }
+  return null;
+}
+
+async function releaseEmbeddedPaymentPostingSlot(loanId, paymentEntryId, sentinel) {
+  await Loan.updateOne(
+    { _id: loanId, "payments._id": paymentEntryId, "payments.xero_bank_transaction_id": sentinel },
+    { $set: { "payments.$.xero_bank_transaction_id": null } },
+  );
+}
+
 // ── Event 2: Loan repayment (shared by both repayment code paths) ─────────
 // BankTransaction (RECEIVE) with one line item per component, contact = customer.
 // A RECEIVE credits each line-item account and debits the bank account — exactly
@@ -584,22 +667,32 @@ async function accrueInvestorProfitShare(loan, { interest, storage, sourceCollec
 // updateLoanBalance). Component split comes straight from the Payment document.
 async function syncLoanRepayment(payment, loan) {
   if (payment.xero_bank_transaction_id) return payment.xero_bank_transaction_id; // already posted
-  const xeroId = await postRepaymentToXero({
-    sourceCollection: "Payment",
-    sourceId: payment._id,
-    loan,
-    method: payment.method || payment.provider,
-    provider: payment.provider,
-    bankAccountKey: payment.bank_account_key,
-    date: payment.paid_at,
-    reference: payment.receipt_no || loan.loan_no,
-    principal: payment.principal_component || 0,
-    interest: payment.interest_component || 0,
-    storage: payment.storage_component || 0,
-    penalty: payment.penalty_component || 0,
-  });
-  if (xeroId) {
-    await Payment.updateOne({ _id: payment._id }, { $set: { xero_bank_transaction_id: xeroId } });
+
+  const sentinel = await claimPaymentPostingSlot(payment._id);
+  if (!sentinel) return null; // another process already claimed or completed this — back off
+
+  let xeroId = null;
+  try {
+    xeroId = await postRepaymentToXero({
+      sourceCollection: "Payment",
+      sourceId: payment._id,
+      loan,
+      method: payment.method || payment.provider,
+      provider: payment.provider,
+      bankAccountKey: payment.bank_account_key,
+      date: payment.paid_at,
+      reference: payment.receipt_no || loan.loan_no,
+      principal: payment.principal_component || 0,
+      interest: payment.interest_component || 0,
+      storage: payment.storage_component || 0,
+      penalty: payment.penalty_component || 0,
+    });
+  } finally {
+    if (xeroId) {
+      await Payment.updateOne({ _id: payment._id }, { $set: { xero_bank_transaction_id: xeroId } });
+    } else {
+      await releasePaymentPostingSlot(payment._id, sentinel);
+    }
   }
   if (!payment.xero_investor_profit_journal_id) {
     const journalId = await accrueInvestorProfitShare(loan, {
@@ -624,6 +717,12 @@ async function syncLoanRepayment(payment, loan) {
 async function syncLoanRepaymentLegacy(loan, paymentEntry) {
   if (paymentEntry.xero_bank_transaction_id) return paymentEntry.xero_bank_transaction_id; // already posted
 
+  let sentinel = null;
+  if (paymentEntry._id) {
+    sentinel = await claimEmbeddedPaymentPostingSlot(loan._id, paymentEntry._id);
+    if (!sentinel) return null; // another process already claimed or completed this — back off
+  }
+
   const total = loan.expected_total_repayable || loan.principal_amount || 1;
   const interestRatio = (loan.interest_amount || 0) / total;
   const storageRatio = (loan.storage_charge_amount || 0) / total;
@@ -633,25 +732,32 @@ async function syncLoanRepaymentLegacy(loan, paymentEntry) {
   const storage = Math.round(amount * storageRatio * 100) / 100;
   const principal = Math.round((amount - interest - storage) * 100) / 100;
 
-  const xeroId = await postRepaymentToXero({
-    sourceCollection: "Loan",
-    sourceId: loan._id,
-    loan,
-    method: paymentEntry.payment_method,
-    bankAccountKey: paymentEntry.bank_account_key,
-    date: paymentEntry.payment_date,
-    reference: loan.loan_no,
-    principal,
-    interest,
-    storage,
-    penalty: 0,
-  });
-
-  if (xeroId && paymentEntry._id) {
-    await Loan.updateOne(
-      { _id: loan._id, "payments._id": paymentEntry._id },
-      { $set: { "payments.$.xero_bank_transaction_id": xeroId } },
-    );
+  let xeroId = null;
+  try {
+    xeroId = await postRepaymentToXero({
+      sourceCollection: "Loan",
+      sourceId: loan._id,
+      loan,
+      method: paymentEntry.payment_method,
+      bankAccountKey: paymentEntry.bank_account_key,
+      date: paymentEntry.payment_date,
+      reference: loan.loan_no,
+      principal,
+      interest,
+      storage,
+      penalty: 0,
+    });
+  } finally {
+    if (paymentEntry._id) {
+      if (xeroId) {
+        await Loan.updateOne(
+          { _id: loan._id, "payments._id": paymentEntry._id },
+          { $set: { "payments.$.xero_bank_transaction_id": xeroId } },
+        );
+      } else {
+        await releaseEmbeddedPaymentPostingSlot(loan._id, paymentEntry._id, sentinel);
+      }
+    }
   }
 
   if (paymentEntry._id && !paymentEntry.xero_investor_profit_journal_id) {
@@ -882,4 +988,5 @@ module.exports = {
   syncExpenseApproved,
   syncInvestorTransaction,
   syncAgentCommissionPaid,
+  needsRepaymentSync,
 };

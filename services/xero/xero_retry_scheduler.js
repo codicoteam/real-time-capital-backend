@@ -83,7 +83,7 @@ async function replayLoanRepayment(row) {
   if (row.source_collection === "Payment") {
     const payment = await Payment.findById(row.source_id);
     if (!payment) return { outcome: "orphaned" };
-    if (payment.xero_bank_transaction_id) {
+    if (!xeroSyncService.needsRepaymentSync(payment.xero_bank_transaction_id)) {
       return { outcome: "already_synced", xeroId: payment.xero_bank_transaction_id };
     }
     const loan = await Loan.findById(payment.loan);
@@ -94,11 +94,13 @@ async function replayLoanRepayment(row) {
 
   // Legacy embedded-array path (loan_service.js processPayment). The log row's source_id
   // is the Loan, not a specific payment — sync every embedded payment on that loan still
-  // missing an xero_bank_transaction_id, not just the one behind this particular row, since
-  // a single failed log entry can be hiding more than one unsynced payment on the same loan.
+  // missing an xero_bank_transaction_id (or holding a stale posting claim from a crashed
+  // attempt — see xeroSyncService.needsRepaymentSync), not just the one behind this
+  // particular row, since a single failed log entry can be hiding more than one unsynced
+  // payment on the same loan.
   const loan = await Loan.findById(row.source_id);
   if (!loan) return { outcome: "orphaned" };
-  const unsynced = (loan.payments || []).filter((p) => !p.xero_bank_transaction_id);
+  const unsynced = (loan.payments || []).filter((p) => xeroSyncService.needsRepaymentSync(p.xero_bank_transaction_id));
   if (unsynced.length === 0) return { outcome: "already_synced" };
 
   const xeroIds = [];

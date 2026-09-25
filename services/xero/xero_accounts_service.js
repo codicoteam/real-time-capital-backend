@@ -13,7 +13,7 @@ const REQUIRED_ACCOUNTS = [
   // Real bank accounts, matched by NAME (exact strings as created in Xero — see the
   // user's own bank accounts page). manual_only accounts must be real Type=BANK
   // accounts in Xero; we never auto-create these against a live paid org.
-  { key: "bank_real_time_capital", label: "Real Time Capital", suggested_code: "1010", xero_type: "BANK", manual_only: true },
+  { key: "bank_real_time_capital", label: "Real Time Capital Bank A/c", suggested_code: "1010", xero_type: "BANK", manual_only: true },
   { key: "ecocash_real_time_capital", label: "Real Time Capital Ecocash", suggested_code: "1020", xero_type: "BANK", manual_only: true },
   // NOTE the trailing space before the closing paren in both labels below — that's
   // not a typo, it's the exact name as created in the user's live Xero org (name
@@ -25,7 +25,7 @@ const REQUIRED_ACCOUNTS = [
   // PayNow's merchant settlement account — a different legal entity (Designit Media),
   // used automatically for every app/PayNow-originated payment, and also selectable
   // manually (e.g. to correct a mis-posted entry).
-  { key: "designit_media", label: "Designit Media Pvt Ltd", suggested_code: "1030", xero_type: "BANK", manual_only: true },
+  { key: "designit_media", label: "Designit Media Pvt Ltd Bank A/c", suggested_code: "1030", xero_type: "BANK", manual_only: true },
   { key: "loans_receivable", label: "Loans Receivable", suggested_code: "1100", xero_type: "CURRENT", manual_only: false },
   { key: "pawned_assets_inventory", label: "Pawned Assets Inventory", suggested_code: "1200", xero_type: "CURRENT", manual_only: false },
   { key: "investor_capital_payable", label: "Investor Capital Payable", suggested_code: "2000", xero_type: "CURRLIAB", manual_only: false },
