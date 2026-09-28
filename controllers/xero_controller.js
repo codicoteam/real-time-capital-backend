@@ -140,6 +140,9 @@ const xeroController = {
       if (!row) return res.status(404).json({ success: false, message: "Sync log entry not found." });
       row.status = "pending";
       row.next_retry_at = new Date();
+      // A person clicking Retry is a fresh decision — without this an exhausted row (attempts
+      // at the auto-retry cap) was skipped by the poller and the click silently did nothing.
+      row.attempts = 0;
       await row.save();
       res.json({ success: true, log: row });
     } catch (error) {

@@ -2,6 +2,7 @@
 
 const { getAuthenticatedClient } = require("./xero_client_service");
 const { parseXeroError } = require("./xero_mapping_helpers");
+const { XeroPermanentSyncError } = require("./xero_errors");
 const User = require("../../models/user.model");
 const Investor = require("../../models/investor/investor.model");
 
@@ -23,7 +24,7 @@ async function findExistingByContactNumber(accountingApi, tenantId, contactNumbe
 // transaction that needs it. Result cached onto User.xero_contact_id.
 async function getOrCreateCustomerContact(userId) {
   const user = await User.findById(userId).select("first_name last_name email phone xero_contact_id");
-  if (!user) throw new Error(`User ${userId} not found for Xero contact sync.`);
+  if (!user) throw new XeroPermanentSyncError(`User ${userId} not found for Xero contact sync.`);
   if (user.xero_contact_id) return user.xero_contact_id;
 
   const { accountingApi, tenantId } = await getAuthenticatedClient();
@@ -58,7 +59,7 @@ async function getOrCreateCustomerContact(userId) {
 // capital/profit ledger reconciles like any other creditor).
 async function getOrCreateInvestorContact(investorId) {
   const investor = await Investor.findById(investorId).select("name email phone xero_contact_id");
-  if (!investor) throw new Error(`Investor ${investorId} not found for Xero contact sync.`);
+  if (!investor) throw new XeroPermanentSyncError(`Investor ${investorId} not found for Xero contact sync.`);
   if (investor.xero_contact_id) return investor.xero_contact_id;
 
   const { accountingApi, tenantId } = await getAuthenticatedClient();

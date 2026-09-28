@@ -24,9 +24,9 @@ const BidPayment = require("../../models/bidPayment.model");
 const InvestorTransaction = require("../../models/investor/investor_transaction.model");
 const AgentCommission = require("../../models/agent_commission.model");
 const xeroSyncService = require("./xero_sync_service");
+const { MAX_AUTO_ATTEMPTS, nextRetryAt } = require("./xero_errors");
 
 const FIVE_MIN_MS = 5 * 60 * 1000;
-const MAX_AUTO_ATTEMPTS = 8; // beyond this, leave it failed for a human to look at rather than retrying forever
 const STUCK_PENDING_AFTER_MS = 10 * 60 * 1000; // a real Xero call finishes in seconds — a "pending" row older than this was orphaned by a process restart, not still in flight
 
 // One entry per XeroSyncLog.event_type whose source is a single document with its own
@@ -247,11 +247,6 @@ async function replayRow(row) {
   return xeroId ? { outcome: "synced", xeroId } : { outcome: "failed" };
 }
 
-function nextBackoff(attempts) {
-  const minutes = Math.min(60, 5 * Math.pow(2, attempts));
-  return new Date(Date.now() + minutes * 60 * 1000);
-}
-
 async function retryOutstandingXeroSyncs() {
   const now = new Date();
   const stuckPendingCutoff = new Date(now.getTime() - STUCK_PENDING_AFTER_MS);
@@ -278,11 +273,23 @@ async function retryOutstandingXeroSyncs() {
   const tally = { synced: 0, already_synced: 0, orphaned: 0, failed: 0, unsupported: 0, partially_synced: 0 };
 
   for (const row of rows) {
+    // The replay's own sync call (withSyncLog) updates this row — status, attempts, backoff or
+    // dead-letter — when it runs. ctx.consumed tells us whether it did; if it didn't (the record
+    // was already synced, or gone), the outcome is applied here instead.
+    const ctx = { row, consumed: false };
     try {
-      const result = await replayRow(row);
+      const result = await xeroSyncService.runWithRetryRow(ctx, () => replayRow(row));
       tally[result.outcome] = (tally[result.outcome] || 0) + 1;
 
       if (result.outcome === "unsupported") continue; // don't burn an attempt on something we can't replay
+
+      if (ctx.consumed) {
+        if (result.outcome === "partially_synced") {
+          row.last_error = "Partially synced — some payments on this loan still failed; check newer log rows for this loan.";
+          await row.save();
+        }
+        continue;
+      }
 
       if (result.outcome === "synced" || result.outcome === "partially_synced") {
         row.status = "success";
@@ -300,7 +307,7 @@ async function retryOutstandingXeroSyncs() {
         row.last_error = "Source record no longer exists (deleted test/corrected data) — no longer actionable.";
       } else {
         row.status = "failed";
-        row.next_retry_at = nextBackoff(row.attempts + 1);
+        row.next_retry_at = nextRetryAt(row.attempts + 1);
       }
       row.attempts += 1;
       await row.save();
@@ -309,7 +316,7 @@ async function retryOutstandingXeroSyncs() {
       row.status = "failed";
       row.attempts += 1;
       row.last_error = err.message;
-      row.next_retry_at = nextBackoff(row.attempts);
+      row.next_retry_at = err.permanent ? null : nextRetryAt(row.attempts);
       await row.save().catch(() => {});
       console.error(`[XeroRetry] Row ${row._id} threw during replay:`, err.message);
     }

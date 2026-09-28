@@ -1,5 +1,6 @@
 "use strict";
 
+const { AsyncLocalStorage } = require("async_hooks");
 const { getAuthenticatedClient } = require("./xero_client_service");
 const { requireAccountCode, requireBankAccountRef } = require("./xero_accounts_service");
 const {
@@ -8,6 +9,7 @@ const {
   getOrCreateInternalContact,
 } = require("./xero_contact_service");
 const { bankAccountKeyForMethod, expenseAccountKeyForCategory, toXeroDate, parseXeroError } = require("./xero_mapping_helpers");
+const { MAX_AUTO_ATTEMPTS, nextRetryAt } = require("./xero_errors");
 const XeroSyncLog = require("../../models/xero/xero_sync_log.model");
 const Loan = require("../../models/loan.model");
 const Payment = require("../../models/payment.model");
@@ -19,11 +21,32 @@ const Asset = require("../../models/asset.model");
 const AgentCommission = require("../../models/agent_commission.model");
 const InvestorLoanAllocation = require("../../models/investor/investor_loan_allocation.model");
 
-// Every event funnels through here: logs the attempt, never throws to the caller
-// (callers use `.catch()` fire-and-forget per this codebase's existing convention —
-// see loan_service.js lines ~1122-1139), and schedules a retry on failure.
-async function withSyncLog({ sourceCollection, sourceId, eventType, xeroEndpoint, payload }, fn) {
-  const log = await XeroSyncLog.create({
+// The retry poller runs a replay inside runWithRetryRow so the sync it triggers updates the
+// very log row being retried, instead of opening a brand-new row for every attempt (which
+// made each failed retry spawn another failed row that was itself retried — one orphaned
+// $5,000 deposit produced 72,000+ identical failed rows in five days).
+const retryRowContext = new AsyncLocalStorage();
+function runWithRetryRow(ctx, fn) {
+  return retryRowContext.run(ctx, fn);
+}
+
+async function openSyncLog({ sourceCollection, sourceId, eventType, xeroEndpoint, payload }) {
+  const ctx = retryRowContext.getStore();
+  if (ctx && !ctx.consumed && ctx.row.event_type === eventType) {
+    ctx.consumed = true;
+    ctx.row.status = "pending";
+    ctx.row.next_retry_at = null;
+    return ctx.row.save();
+  }
+  // Any other caller (a fresh trigger, a manual re-run) re-uses the failed row for the same
+  // event on the same record rather than stacking a duplicate next to it.
+  const existing = await XeroSyncLog.findOneAndUpdate(
+    { source_collection: sourceCollection, source_id: sourceId, event_type: eventType, status: "failed", payload },
+    { $set: { status: "pending", next_retry_at: null } },
+    { sort: { created_at: 1 }, new: true },
+  );
+  if (existing) return existing;
+  return XeroSyncLog.create({
     source_collection: sourceCollection,
     source_id: sourceId,
     event_type: eventType,
@@ -31,20 +54,31 @@ async function withSyncLog({ sourceCollection, sourceId, eventType, xeroEndpoint
     status: "pending",
     payload,
   });
+}
+
+// Every event funnels through here: logs the attempt, never throws to the caller
+// (callers use `.catch()` fire-and-forget per this codebase's existing convention —
+// see loan_service.js lines ~1122-1139), and schedules a retry on failure.
+async function withSyncLog({ sourceCollection, sourceId, eventType, xeroEndpoint, payload }, fn) {
+  const log = await openSyncLog({ sourceCollection, sourceId, eventType, xeroEndpoint, payload });
 
   try {
     const xeroId = await fn();
     log.status = "success";
     log.xero_id = xeroId;
+    log.last_error = null;
+    log.next_retry_at = null;
     log.attempts += 1;
     await log.save();
     return xeroId;
   } catch (err) {
     const { message } = parseXeroError(err);
     log.status = "failed";
-    log.last_error = message;
-    log.attempts += 1;
-    log.next_retry_at = new Date(Date.now() + 5 * 60 * 1000);
+    log.attempts = err.permanent ? Math.max(log.attempts + 1, MAX_AUTO_ATTEMPTS) : log.attempts + 1;
+    log.last_error = err.permanent
+      ? `${message} Not retried automatically — fix the source data, then use Retry.`
+      : message;
+    log.next_retry_at = err.permanent ? null : nextRetryAt(log.attempts);
     await log.save();
     console.error(`[Xero] ${eventType} sync failed for ${sourceCollection} ${sourceId}:`, message);
     return null;
@@ -976,6 +1010,7 @@ async function syncAgentCommissionPaid(batch) {
 }
 
 module.exports = {
+  runWithRetryRow,
   syncLoanDisbursed,
   syncAdminFeeRecognized,
   syncLoanWrittenOff,
