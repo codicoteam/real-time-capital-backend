@@ -823,6 +823,7 @@ class InvestorController {
           principal: alloc.principal_amount,
           isCoInvestor: alloc.is_co_investor || false,
           repaymentSchedule: mapRepaymentSchedule(alloc),
+          rolloverTrace: mapRolloverTrace(alloc),
           restructuresAllocationId: alloc.restructures_allocation_id ? alloc.restructures_allocation_id.toString() : null,
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
@@ -1139,6 +1140,7 @@ class InvestorController {
           principal: alloc.principal_amount,
           isCoInvestor: alloc.is_co_investor || false,
           repaymentSchedule: mapRepaymentSchedule(alloc),
+          rolloverTrace: mapRolloverTrace(alloc),
           restructuresAllocationId: alloc.restructures_allocation_id ? alloc.restructures_allocation_id.toString() : null,
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
@@ -1810,6 +1812,28 @@ function mapRepaymentSchedule(alloc) {
     paidDate: i.paid_date ? new Date(i.paid_date).toISOString().slice(0, 10) : null,
     paidAmount: i.paid_amount,
   }));
+}
+
+function mapRolloverTrace(alloc) {
+  const t = alloc.rollover_trace;
+  if (!t || !Array.isArray(t.periods) || t.periods.length === 0) return null;
+  const day = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+  return {
+    rolledOverAt: day(t.rolled_over_at),
+    chargedThrough: day(t.charged_through),
+    interestRatePercent: t.interest_rate_percent ?? null,
+    storageChargePercent: t.storage_charge_percent ?? null,
+    note: t.note || null,
+    periods: t.periods.map((p) => ({
+      n: p.n,
+      from: day(p.from),
+      to: day(p.to),
+      base: p.base,
+      charge: p.charge,
+      status: p.status,
+      paidOn: day(p.paid_on),
+    })),
+  };
 }
 
 function mapRtcTransaction(tx) {

@@ -126,6 +126,38 @@ const InvestorLoanAllocationSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Set when the borrower's loan was rolled over (paid one month, principal carried
+    // forward) and any later unpaid months were compounded onto the total owed. The
+    // headline figures on this row (loan_term_months, total_interest_receivable,
+    // investor_profit, rtc_revenue, maturity_date) already reflect the compounded
+    // total; this is the month-by-month trace behind them so the UI can show why.
+    // Per-month `base` is the total owed at the start of that month.
+    rollover_trace: {
+      type: new mongoose.Schema(
+        {
+          rolled_over_at: { type: Date },
+          charged_through: { type: Date },
+          interest_rate_percent: { type: Number },
+          storage_charge_percent: { type: Number },
+          note: { type: String, trim: true },
+          periods: [
+            {
+              _id: false,
+              n: { type: Number, required: true },
+              from: { type: Date, required: true },
+              to: { type: Date, required: true },
+              base: { type: Number, required: true },
+              charge: { type: Number, required: true },
+              status: { type: String, enum: ["paid", "unpaid"], required: true },
+              paid_on: { type: Date, default: null },
+            },
+          ],
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
+
     // Fixed installment plan for a restructured/court-ordered recovery (e.g. a
     // defaulted loan where the borrower is now repaying a settled amount on a
     // schedule). Each installment's actual receipt is recorded separately as an
