@@ -17,9 +17,19 @@ const AgentCommissionSchema = new mongoose.Schema(
     customer_user: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
 
     commission_type: { type: String, enum: ["admin_fee", "interest"], required: true, index: true },
-    source_event: { type: String, enum: ["loan_creation", "top_up", "payment"], required: true },
+    // "rollover" marks interest commission accrued on a rollover payment specifically —
+    // distinguishes it in reporting from an ordinary mid-term "payment". Still carries a
+    // real payment_id (the rollover cycle's own payments[]._id), so the existing
+    // (loan_id, commission_type, payment_id) unique index below already covers it.
+    source_event: { type: String, enum: ["loan_creation", "top_up", "payment", "rollover"], required: true },
     top_up_index: { type: Number, default: null }, // set when source_event === "top_up"
-    payment_id: { type: mongoose.Schema.Types.ObjectId, default: null }, // Loan.payments[]._id or Payment._id, when source_event === "payment"
+    rollover_cycle_no: { type: Number, default: null }, // set when source_event === "rollover"
+    payment_id: { type: mongoose.Schema.Types.ObjectId, default: null }, // Loan.payments[]._id or Payment._id, when source_event === "payment"/"rollover"
+
+    // Set by the rollover-chain migration when this row's loan_id was re-pointed from a
+    // now-retired loan to the surviving one — original_loan_no also kept for search/audit.
+    original_loan_id: { type: mongoose.Schema.Types.ObjectId, ref: "Loan", default: null },
+    original_loan_no: { type: String, trim: true, default: null },
 
     // The RTC revenue this commission is a cut of, and the rate actually applied — both
     // snapshotted at accrual time so a later rate change on the loan never rewrites history.

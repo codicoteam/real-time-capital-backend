@@ -126,12 +126,55 @@ const InvestorLoanAllocationSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Set when the borrower's loan was rolled over (paid one month, principal carried
-    // forward) and any later unpaid months were compounded onto the total owed. The
-    // headline figures on this row (loan_term_months, total_interest_receivable,
-    // investor_profit, rtc_revenue, maturity_date) already reflect the compounded
-    // total; this is the month-by-month trace behind them so the UI can show why.
-    // Per-month `base` is the total owed at the start of that month.
+    // ── Rollover history (redesigned 2026-09-30) ───────────────────────────────
+    // One entry per rollover cycle on the underlying loan — mirrors Loan.rollover_cycles
+    // so the investor-facing card and the pawn-side history always agree. Populated by
+    // investor_allocation_service.recordRolloverCycle (live rollovers) and by the
+    // rollover-chain migration script (historical chains). `base` is the total owed at
+    // the start of that cycle (principal + any compounded arrears).
+    rollover_cycles: {
+      type: [
+        {
+          _id: false,
+          cycle_no: { type: Number, required: true },
+          rolled_over_at: { type: Date },
+          from: { type: Date },
+          to: { type: Date },
+          prev_principal: { type: Number, min: 0 },
+          new_principal: { type: Number, min: 0 },
+          interest_rate_percent: { type: Number },
+          storage_charge_percent: { type: Number },
+          loan_period_key: { type: String, enum: ["two_week", "one_month"] },
+          base: { type: Number, min: 0 },
+          charge: { type: Number, min: 0 },
+          payment_collected: { type: Number, min: 0, default: 0 },
+          arrears_carried_forward: { type: Number, min: 0, default: 0 },
+          status: { type: String, enum: ["paid", "partial", "unpaid"], required: true },
+          paid_on: { type: Date, default: null },
+          investor_share_pct: { type: Number, default: null },
+          investor_profit: { type: Number, default: null },
+          rtc_revenue: { type: Number, default: null },
+        },
+      ],
+      default: [],
+    },
+
+    // Set on an allocation retired by the rollover-chain migration (its later cycles'
+    // data was folded into the surviving allocation named here instead).
+    merged_into_allocation_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "InvestorLoanAllocation",
+      default: null,
+    },
+    // The original (pre-migration) loan this allocation was created for, kept for audit
+    // once loan_id itself is left pointing at whichever loan the migration decided —
+    // see the migration script for exactly how loan_id/loan_no are handled per row.
+    original_loan_id: { type: mongoose.Schema.Types.ObjectId, ref: "Loan", default: null },
+
+    // ── Deprecated (pre-2026-09-30 model) ───────────────────────────────────────
+    // A single hand-built trace for exactly one loan (LON26086621), predating
+    // rollover_cycles above. Kept read-only so that loan's already-shipped UI keeps
+    // working until the migration converts it into a real rollover_cycles entry.
     rollover_trace: {
       type: new mongoose.Schema(
         {

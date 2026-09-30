@@ -32,6 +32,8 @@ const XeroSyncLogSchema = new mongoose.Schema(
         "agent_commission_paid",
         "admin_fee_recognized",
         "investor_profit_share_accrued",
+        "loan_rollover",
+        "loan_rollover_auction_reversal",
       ],
       required: true,
       index: true,
@@ -43,6 +45,12 @@ const XeroSyncLogSchema = new mongoose.Schema(
       required: true,
     },
     xero_id: { type: String, default: null },
+
+    // Set by the rollover-chain migration on a row whose source_id belonged to a loan or
+    // payment later retired/merged into another loan — an annotation, not a rewrite of
+    // source_id itself, so the retry scheduler's existing "already synced" / "orphaned"
+    // logic for that original row is left exactly as it was.
+    root_loan_id: { type: mongoose.Schema.Types.ObjectId, ref: "Loan", default: null },
 
     status: {
       type: String,

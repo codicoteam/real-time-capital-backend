@@ -21,6 +21,13 @@ const PaymentSchema = new mongoose.Schema(
     received_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     notes: { type: String, trim: true },
 
+    // "rollover" marks the payment collected at the moment a loan was rolled over —
+    // needed so the legacy Xero repayment replay loop (xero_retry_scheduler.js) can
+    // skip these and route them through syncLoanRollover's own correct posting instead
+    // of proportionally splitting them like an ordinary repayment.
+    kind: { type: String, enum: ["repayment", "rollover"], default: "repayment" },
+    rollover_cycle_no: { type: Number, default: null },
+
     // Which real Xero bank account this repayment was recorded against — staff-picked
     // (with a role-based default) for manually-recorded payments; unset for anything
     // not yet passing one through, in which case Xero sync falls back to inferring
@@ -252,14 +259,190 @@ const LoanSchema = new mongoose.Schema(
         "defaulted",       // failed to repay → asset moved to auction
         "written_off",
         "cancelled",
-        "rolled_over",     // closed via rollover → balance moved to a new loan on the same asset
+        // A rollover is history on a loan, never its status — a loan can be rolled over
+        // AND currently active/overdue/in_grace at the same time. "merged" is the only
+        // rollover-adjacent status left: it marks a document RETIRED by the one-time
+        // rollover-chain migration (2026-09-30) — its data now lives on the surviving
+        // loan named in merged_into_loan, kept here (not deleted) so old references
+        // (a bookmarked loan_no, a Xero transaction description) stay traceable.
+        "merged",
       ],
       default: "draft",
       index: true,
     },
 
-    // Rollover chain — set when this loan was closed by rolling it into a new loan,
-    // or when this loan itself was created by rolling over a previous one.
+    // ── Rollover history (redesigned 2026-09-30) ──────────────────────────────────
+    // A rollover no longer creates a new Loan document — it appends a cycle record to
+    // THIS one. Top-level fields above (principal_amount, interest_amount,
+    // storage_charge_amount, expected_total_repayable, current_balance, loan_period_type,
+    // due_date, repayment_breakdown, carried_forward_arrears, status) always describe the
+    // CURRENT/latest cycle; rollover_cycles[] is the full history behind them. See
+    // loan_service.rolloverLoan / computeCycleBreakdown.
+    original_start_date: { type: Date, default: null }, // this loan's very first start_date, set once
+    original_principal_amount: { type: Number, min: 0, default: null }, // this loan's very first principal, set once
+    // Paid toward the CURRENT cycle only — resets to 0 on every rollover, drives the
+    // repayment-progress bar. total_paid (above) stays the lifetime sum across all cycles.
+    current_cycle_paid: { type: Number, default: 0, min: 0 },
+    // = rollover_cycles.length. Indexed and read directly rather than recomputed, since
+    // it gates the approval requirement on every rollover attempt.
+    rollover_count: { type: Number, default: 0, min: 0, index: true },
+    // Every loan_no this loan absorbed via the rollover-chain migration — lets staff find
+    // the surviving loan by searching an old, now-retired number.
+    retired_loan_nos: { type: [String], default: [], index: true },
+    // Set on a document RETIRED by the migration (status "merged") — points at the one
+    // surviving loan its data was folded into.
+    merged_into_loan: { type: mongoose.Schema.Types.ObjectId, ref: "Loan", default: null },
+    merged_at: { type: Date, default: null },
+
+    rollover_cycles: {
+      type: [
+        new mongoose.Schema(
+          {
+            cycle_no: { type: Number, required: true },
+            // "migrated" cycles were reconstructed from a pre-redesign separate Loan
+            // document by the one-time migration script, not produced by a live rollover.
+            source: { type: String, enum: ["live", "migrated"], default: "live" },
+            retired_loan_id: { type: mongoose.Schema.Types.ObjectId, ref: "Loan", default: null },
+            retired_loan_no: { type: String, trim: true, default: null },
+
+            // The cycle being closed, as it stood right before this rollover.
+            prev_principal: { type: Number, min: 0 },
+            prev_balance: { type: Number, min: 0 },
+            prev_status: { type: String, trim: true },
+            prev_due_date: { type: Date },
+            prev_loan_period_type: { type: String, trim: true },
+            owed_breakdown: {
+              interest: { type: Number, min: 0, default: 0 },
+              storage: { type: Number, min: 0, default: 0 },
+              penalty: { type: Number, min: 0, default: 0 },
+              deferred_admin_fee: { type: Number, min: 0, default: 0 },
+              prior_arrears_interest: { type: Number, min: 0, default: 0 },
+              prior_arrears_storage: { type: Number, min: 0, default: 0 },
+            },
+
+            // The payment collected at rollover (absent on an override).
+            payment: {
+              amount: { type: Number, min: 0, default: 0 },
+              method: { type: String, enum: ["cash", "bank_transfer", "mobile_money", "cheque", null], default: null },
+              reference_no: { type: String, trim: true },
+              notes: { type: String, trim: true },
+              bank_account_key: { type: String, enum: [...XERO_BANK_ACCOUNT_KEYS, null], default: null },
+              received_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+              payment_entry_id: { type: mongoose.Schema.Types.ObjectId, default: null }, // matching loan.payments[]._id
+            },
+            // How that payment was actually applied — the corrected version of the old
+            // proportional Xero split, now also counting arrears correctly as
+            // interest/storage rather than folding them into principal.
+            payment_split: {
+              interest: { type: Number, min: 0, default: 0 },
+              storage: { type: Number, min: 0, default: 0 },
+              penalty: { type: Number, min: 0, default: 0 },
+              arrears_interest: { type: Number, min: 0, default: 0 },
+              arrears_storage: { type: Number, min: 0, default: 0 },
+              principal_receivable: { type: Number, min: 0, default: 0 }, // excess that reduced principal
+            },
+
+            arrears_carried_forward: { type: Number, min: 0, default: 0 },
+            arrears_breakdown: {
+              interest: { type: Number, min: 0, default: 0 },
+              storage: { type: Number, min: 0, default: 0 },
+              penalty: { type: Number, min: 0, default: 0 },
+            },
+
+            // The new cycle's terms.
+            new_principal: { type: Number, min: 0 },
+            loan_period_type: { type: String, enum: LOAN_PERIOD_TYPES },
+            interest_rate_percent: { type: Number },
+            storage_charge_percent: { type: Number },
+            penalty_percent: { type: Number },
+            grace_days: { type: Number },
+            interest_period_days: { type: Number },
+            // principal + any carried-forward arrears compounded into it (confirmed
+            // 2026-09-30: a cycle's charge is taken on the total owed, not principal alone).
+            interest_base: { type: Number, min: 0 },
+            interest_amount: { type: Number, min: 0 },
+            storage_charge_amount: { type: Number, min: 0 },
+            expected_total_repayable: { type: Number, min: 0 },
+            start_date: { type: Date },
+            due_date: { type: Date },
+
+            performed_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+            performed_by_name: { type: String, trim: true },
+            performed_by_role: { type: String, trim: true },
+            performed_at: { type: Date, default: Date.now },
+            notes: { type: String, trim: true },
+
+            // Reused shape from the old top-level rollover_override field.
+            override: {
+              applied: { type: Boolean, default: false },
+              by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+              by_name: { type: String, trim: true },
+              by_role: { type: String, trim: true },
+              at: { type: Date, default: null },
+              reason_category: { type: String, trim: true },
+              reason_label: { type: String, trim: true },
+              notes: { type: String, trim: true },
+            },
+            approval: {
+              required: { type: Boolean, default: false },
+              request_id: { type: mongoose.Schema.Types.ObjectId, default: null },
+              approved_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+              approved_by_name: { type: String, trim: true },
+              approved_at: { type: Date, default: null },
+              notes: { type: String, trim: true },
+            },
+
+            xero_bank_transaction_id: { type: String, default: null },
+            xero_auction_reversal_journal_id: { type: String, default: null },
+            // Snapshot of this cycle's investor split, so the loan's own rollover history
+            // and the investor module's per-cycle view always agree.
+            investor_share_pct_snapshot: { type: Number, default: null },
+            investor_profit: { type: Number, default: null },
+            rtc_revenue: { type: Number, default: null },
+          },
+          { _id: true },
+        ),
+      ],
+      default: [],
+    },
+
+    // Requested when a loan at the 3-rollover cap needs approval before its next rollover
+    // can proceed — a separate gate from requires_super_admin_approval/approval_status
+    // above, which are already used for loan-origination approval and must not be reused
+    // here. Null when there is no open request. See loan_service.requestRolloverApproval.
+    pending_rollover_approval: {
+      type: new mongoose.Schema(
+        {
+          request_id: { type: mongoose.Schema.Types.ObjectId, default: () => new mongoose.Types.ObjectId() },
+          status: {
+            type: String,
+            enum: ["pending", "approved", "rejected", "consumed", "expired", "cancelled"],
+            default: "pending",
+          },
+          requested_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          requested_by_name: { type: String, trim: true },
+          requested_at: { type: Date, default: Date.now },
+          reason: { type: String, trim: true },
+          proposed_payment_amount: { type: Number, min: 0, default: null },
+          proposed_loan_period_type: { type: String, enum: [...LOAN_PERIOD_TYPES, null], default: null },
+          requested_admins: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+          decided_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+          decided_by_name: { type: String, trim: true },
+          decided_at: { type: Date, default: null },
+          decision_notes: { type: String, trim: true },
+          expires_at: { type: Date, default: null }, // approved + 72h
+          consumed_by_cycle_no: { type: Number, default: null },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
+
+    // ── Deprecated rollover fields (pre-2026-09-30 model) ──────────────────────────
+    // Kept, read-only on live code paths, for one release of backward compatibility and
+    // for the migration script itself to read from. is_rollover is now DERIVED
+    // (rollover_count > 0) rather than independently set. New code should use
+    // rollover_cycles/rollover_count/retired_loan_nos above instead of these.
     is_rollover: { type: Boolean, default: false },
     rollover_of: { type: mongoose.Schema.Types.ObjectId, ref: "Loan", index: true },
     rolled_over_to: { type: mongoose.Schema.Types.ObjectId, ref: "Loan" },
@@ -268,11 +451,6 @@ const LoanSchema = new mongoose.Schema(
     carried_forward_arrears: { type: Number, default: 0, min: 0 },
     rollover_payment_amount: { type: Number, min: 0 },
     rollover_notes: { type: String, trim: true },
-    // Set on the NEW loan when its rollover was done via OVERRIDE — i.e. the staff member
-    // bypassed the normal "a payment must be collected" rule and rolled the loan over with
-    // nothing paid. Stored as a self-contained snapshot (name/role copied in, not just an
-    // id) so the trace stays readable even if the user is later renamed or removed; the
-    // matching AuditLog entries (action "loan.rollover_override") are the compliance copy.
     rollover_override: {
       type: new mongoose.Schema(
         {
