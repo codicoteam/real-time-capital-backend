@@ -809,7 +809,7 @@ class InvestorController {
           else if (alloc.loan_status_override === "Auctioned") deploymentStatus = "completed";
           else if (alloc.loan_status_override === "Court Order") deploymentStatus = "defaulted";
         } else {
-          if (["redeemed", "defaulted", "written_off", "rolled_over"].includes(loanStatus)) {
+          if (["redeemed", "defaulted", "written_off", "merged"].includes(loanStatus)) {
             deploymentStatus = "completed";
           } else if (["draft", "pending_approval", "approved"].includes(loanStatus)) {
             deploymentStatus = "expected";
@@ -824,6 +824,7 @@ class InvestorController {
           isCoInvestor: alloc.is_co_investor || false,
           repaymentSchedule: mapRepaymentSchedule(alloc),
           rolloverTrace: mapRolloverTrace(alloc),
+          rolloverCycles: mapRolloverCycles(alloc, isAdmin),
           restructuresAllocationId: alloc.restructures_allocation_id ? alloc.restructures_allocation_id.toString() : null,
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
@@ -1126,7 +1127,7 @@ class InvestorController {
           else if (alloc.loan_status_override === "Auctioned") deploymentStatus = "completed";
           else if (alloc.loan_status_override === "Court Order") deploymentStatus = "defaulted";
         } else {
-          if (["redeemed", "defaulted", "written_off", "rolled_over"].includes(loanStatus)) {
+          if (["redeemed", "defaulted", "written_off", "merged"].includes(loanStatus)) {
             deploymentStatus = "completed";
           } else if (["draft", "pending_approval", "approved"].includes(loanStatus)) {
             deploymentStatus = "expected";
@@ -1141,6 +1142,7 @@ class InvestorController {
           isCoInvestor: alloc.is_co_investor || false,
           repaymentSchedule: mapRepaymentSchedule(alloc),
           rolloverTrace: mapRolloverTrace(alloc),
+          rolloverCycles: mapRolloverCycles(alloc, true), // this whole endpoint is admin-only
           restructuresAllocationId: alloc.restructures_allocation_id ? alloc.restructures_allocation_id.toString() : null,
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
@@ -1814,6 +1816,9 @@ function mapRepaymentSchedule(alloc) {
   }));
 }
 
+// Deprecated (pre-2026-09-30 model) — a single hand-built trace that only ever existed
+// for one loan (LON26086621). Kept so that loan's already-shipped card keeps working;
+// mapRolloverCycles below is what every real rollover produces now.
 function mapRolloverTrace(alloc) {
   const t = alloc.rollover_trace;
   if (!t || !Array.isArray(t.periods) || t.periods.length === 0) return null;
@@ -1834,6 +1839,36 @@ function mapRolloverTrace(alloc) {
       paidOn: day(p.paid_on),
     })),
   };
+}
+
+// Real, per-cycle rollover history (redesigned 2026-09-30) — mirrors Loan.rollover_cycles,
+// built by investor_allocation_service.recordRolloverCycle on every live rollover (and by
+// the rollover-chain migration for historical ones). `includeRtc` gates RTC's own share
+// and whether a cycle needed admin approval — never shown to a real investor's own view.
+function mapRolloverCycles(alloc, includeRtc) {
+  const cycles = alloc.rollover_cycles;
+  if (!Array.isArray(cycles) || cycles.length === 0) return [];
+  const day = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+  return cycles.map((c) => ({
+    cycleNo: c.cycle_no,
+    rolledOverAt: day(c.rolled_over_at),
+    from: day(c.from),
+    to: day(c.to),
+    prevPrincipal: c.prev_principal,
+    newPrincipal: c.new_principal,
+    interestRatePercent: c.interest_rate_percent ?? null,
+    storageChargePercent: c.storage_charge_percent ?? null,
+    periodKey: c.loan_period_key || null,
+    base: c.base,
+    charge: c.charge,
+    paymentCollected: c.payment_collected || 0,
+    arrearsCarriedForward: c.arrears_carried_forward || 0,
+    status: c.status,
+    paidOn: day(c.paid_on),
+    investorSharePct: c.investor_share_pct ?? null,
+    investorProfit: c.investor_profit ?? null,
+    ...(includeRtc ? { rtcRevenue: c.rtc_revenue ?? null } : {}),
+  }));
 }
 
 function mapRtcTransaction(tx) {
