@@ -23,6 +23,8 @@ const mapPeriodToTermKey = (loan_period_type) => {
   return loan_period_type;
 };
 
+const round2 = (n) => parseFloat((Number(n) || 0).toFixed(2));
+
 class InvestorAllocationService {
 
   async getProfitSplitConfig() {
@@ -544,17 +546,18 @@ class InvestorAllocationService {
   /**
    * Update allocation status when the underlying loan status changes.
    * active → "redeemed" / "defaulted" / "written_off" / "cancelled"
+   *
+   * A rollover is no longer a terminal loan status (2026-09-30 redesign) — it's history
+   * on a loan that keeps its ONE allocation for life (see recordRolloverCycle below), so
+   * "rolled_over" is intentionally not in terminalCompleted any more. Applies to every
+   * non-merged allocation on the loan (previously only whichever one findOne happened to
+   * return), since a loan can carry both a primary and a co-investor allocation.
    */
   async syncAllocationStatus(loanId, loanStatus) {
-    const allocation = await InvestorLoanAllocation.findOne({ loan_id: loanId });
-    if (!allocation || allocation.status !== "active") return null;
+    const allocations = await InvestorLoanAllocation.find({ loan_id: loanId, merged_into_allocation_id: null, status: "active" });
+    if (!allocations.length) return null;
 
-    // "rolled_over" closes out THIS allocation the same way a redemption does — the old
-    // loan cycle is done and its capital is no longer "active" here. The new cycle gets
-    // its own allocation via assignLoan() (called separately by rolloverLoan()); without
-    // this, the old allocation stayed "active" forever and double-counted its principal
-    // in getDeployedCapitalMap alongside the new cycle's allocation.
-    const terminalCompleted = ["redeemed", "partially_paid", "rolled_over"];
+    const terminalCompleted = ["redeemed", "partially_paid"];
     const terminalDefaulted = ["defaulted", "written_off", "auction"];
     const terminalCancelled = ["cancelled"];
 
@@ -563,13 +566,106 @@ class InvestorAllocationService {
     else if (terminalDefaulted.includes(loanStatus)) newStatus = "defaulted";
     else if (terminalCancelled.includes(loanStatus)) newStatus = "cancelled";
 
-    if (newStatus) {
+    if (!newStatus) return allocations[0] || null;
+
+    for (const allocation of allocations) {
       allocation.status = newStatus;
       allocation.completed_at = new Date();
       await allocation.save();
     }
+    return allocations[0];
+  }
 
-    return allocation;
+  /**
+   * Extends a loan's existing allocation(s) with one more rollover cycle, instead of
+   * closing one allocation and creating another the way the pre-2026-09-30 rollover did.
+   * A loan keeps exactly one allocation (plus an optional co-investor row) for its whole
+   * life now, so this is the only place rollover profit gets recorded going forward.
+   * Idempotent per (allocation, cycle_no).
+   */
+  async recordRolloverCycle(loanId, cycleNo) {
+    const loan = await Loan.findById(loanId).select("loan_no rollover_cycles");
+    if (!loan) return { success: false, message: "Loan not found." };
+    const cycle = (loan.rollover_cycles || []).find((c) => c.cycle_no === cycleNo);
+    if (!cycle) return { success: false, message: `Cycle ${cycleNo} not found on loan ${loan.loan_no}.` };
+
+    const allocations = await InvestorLoanAllocation.find({ loan_id: loanId, merged_into_allocation_id: null });
+    if (!allocations.length) {
+      // small_loans (RTC-only) and any other loan with no investor funding it — nothing to record.
+      return { success: false, message: "No investor allocation for this loan." };
+    }
+
+    const termKey = mapPeriodToTermKey(cycle.loan_period_type);
+    const profitConfig = await this.getProfitSplitConfig();
+    const termConfig = profitConfig[termKey] || DEFAULT_PROFIT_SPLIT[termKey];
+    const cycleProfit = Math.max(0, round2((cycle.interest_amount || 0) + (cycle.storage_charge_amount || 0)));
+
+    const primary = allocations.find((a) => !a.is_co_investor) || null;
+    const coInvestors = allocations.filter((a) => a.is_co_investor);
+
+    // Each co-investor's agreed cut stays stable across cycles (it was fixed at the
+    // referral relationship's own terms, not re-negotiated every rollover).
+    const coProfits = coInvestors.map((a) => ({ id: String(a._id), profit: round2(cycleProfit * ((a.investor_share_pct || 0) / 100)) }));
+    const coProfitSum = round2(coProfits.reduce((s, x) => s + x.profit, 0));
+
+    let primarySharePct = null;
+    let primaryProfit = 0;
+    if (primary) {
+      const investor = await Investor.findById(primary.investor_id).select("profit_share_override");
+      primarySharePct = investor?.profit_share_override?.[termKey] ?? primary.investor_share_pct ?? termConfig.investor_share;
+      primaryProfit = round2(cycleProfit * (primarySharePct / 100));
+    }
+    // RTC gets exactly what's left — guarantees primaryProfit + Σ co-investor profits +
+    // rtcRevenue always reconciles to cycleProfit, the same invariant assignLoan() keeps.
+    const rtcRevenue = round2(Math.max(0, cycleProfit - primaryProfit - coProfitSum));
+
+    const cumulativeTotalLoanProfit = round2((allocations[0].total_loan_profit || 0) + cycleProfit);
+    const chargedThrough = cycle.due_date;
+    const status = cycle.override?.applied ? "unpaid" : cycle.arrears_carried_forward > 0 ? "partial" : "paid";
+
+    for (const alloc of allocations) {
+      if ((alloc.rollover_cycles || []).some((c) => c.cycle_no === cycleNo)) continue; // already recorded
+
+      const isPrimary = primary && String(alloc._id) === String(primary._id);
+      const sharePct = isPrimary ? primarySharePct : alloc.investor_share_pct;
+      const profit = isPrimary ? primaryProfit : coProfits.find((x) => x.id === String(alloc._id))?.profit || 0;
+      const rtcForRow = isPrimary ? rtcRevenue : 0;
+
+      alloc.rollover_cycles.push({
+        cycle_no: cycleNo,
+        rolled_over_at: cycle.performed_at,
+        from: cycle.prev_due_date || null,
+        to: chargedThrough,
+        prev_principal: cycle.prev_principal,
+        new_principal: cycle.new_principal,
+        interest_rate_percent: cycle.interest_rate_percent,
+        storage_charge_percent: cycle.storage_charge_percent,
+        loan_period_key: termKey,
+        base: cycle.interest_base,
+        charge: round2((cycle.interest_amount || 0) + (cycle.storage_charge_amount || 0)),
+        payment_collected: cycle.payment?.amount || 0,
+        arrears_carried_forward: cycle.arrears_carried_forward || 0,
+        status,
+        paid_on: cycle.payment ? cycle.performed_at : null,
+        investor_share_pct: sharePct,
+        investor_profit: profit,
+        rtc_revenue: rtcForRow,
+      });
+
+      alloc.principal_amount = cycle.new_principal;
+      alloc.loan_period_key = termKey;
+      alloc.maturity_date = chargedThrough;
+      alloc.total_loan_profit = cumulativeTotalLoanProfit;
+      alloc.investor_profit = round2((alloc.investor_profit || 0) + profit);
+      alloc.rtc_revenue = round2((alloc.rtc_revenue || 0) + rtcForRow);
+      // Fixes a found bug: a loan whose allocation defaulted purely because it reached
+      // auction must go back to active once the rollover pulls it back out of auction.
+      if (alloc.status === "defaulted") alloc.status = "active";
+
+      await alloc.save();
+    }
+
+    return { success: true, cycle_no: cycleNo, cycle_profit: cycleProfit };
   }
 
   // ─── QUERIES ─────────────────────────────────────────────────────────────────

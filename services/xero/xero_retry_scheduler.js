@@ -97,10 +97,15 @@ async function replayLoanRepayment(row) {
   // missing an xero_bank_transaction_id (or holding a stale posting claim from a crashed
   // attempt — see xeroSyncService.needsRepaymentSync), not just the one behind this
   // particular row, since a single failed log entry can be hiding more than one unsynced
-  // payment on the same loan.
+  // payment on the same loan. Rollover payments (kind:"rollover") are excluded — they post
+  // through syncLoanRollover/replayLoanRollover instead, which splits them correctly
+  // (interest/storage/penalty first, then principal) rather than this loop's generic
+  // whole-loan ratio, which would misattribute them.
   const loan = await Loan.findById(row.source_id);
   if (!loan) return { outcome: "orphaned" };
-  const unsynced = (loan.payments || []).filter((p) => xeroSyncService.needsRepaymentSync(p.xero_bank_transaction_id));
+  const unsynced = (loan.payments || []).filter(
+    (p) => p.kind !== "rollover" && xeroSyncService.needsRepaymentSync(p.xero_bank_transaction_id),
+  );
   if (unsynced.length === 0) return { outcome: "already_synced" };
 
   const xeroIds = [];
@@ -112,6 +117,36 @@ async function replayLoanRepayment(row) {
   }
   if (xeroIds.length === 0) return { outcome: "failed" };
   return { outcome: anyFailed ? "partially_synced" : "synced", xeroId: xeroIds.join(",") };
+}
+
+// loan_rollover / loan_rollover_auction_reversal's source_id is a rollover_cycles[]
+// subdocument id, not the Loan's own id — doesn't fit the generic REPLAYERS map, same
+// reason loan_repayment gets its own function above.
+async function replayLoanRollover(row) {
+  const loan = await Loan.findOne({ "rollover_cycles._id": row.source_id });
+  if (!loan) return { outcome: "orphaned" };
+  const cycle = loan.rollover_cycles.id(row.source_id);
+  if (!cycle) return { outcome: "orphaned" };
+  if (cycle.xero_bank_transaction_id) return { outcome: "already_synced", xeroId: cycle.xero_bank_transaction_id };
+  const xeroId = await xeroSyncService.syncLoanRollover(loan, row.source_id);
+  return xeroId ? { outcome: "synced", xeroId } : { outcome: "failed" };
+}
+
+async function replayRolloverAuctionReversal(row) {
+  const loan = await Loan.findOne({ "rollover_cycles._id": row.source_id });
+  if (!loan) return { outcome: "orphaned" };
+  const cycle = loan.rollover_cycles.id(row.source_id);
+  if (!cycle) return { outcome: "orphaned" };
+  if (cycle.xero_auction_reversal_journal_id) {
+    return { outcome: "already_synced", xeroId: cycle.xero_auction_reversal_journal_id };
+  }
+  // The amount was only ever known at the moment of the original rollover (rolloverLoan()
+  // clears loan.xero_auction_reclass_amount in the same write that creates this log row)
+  // — nothing left to retry with if that row's own payload didn't carry it forward.
+  const amount = row.payload?.reversal_amount;
+  if (!amount) return { outcome: "orphaned" };
+  const xeroId = await xeroSyncService.syncRolloverAuctionReversal(loan, row.source_id, amount);
+  return xeroId ? { outcome: "synced", xeroId } : { outcome: "failed" };
 }
 
 // agent_commission_paid's source_id is a payout_batch_id (a string shared by several
@@ -225,6 +260,8 @@ async function replayInvestorProfitShareAccrual(row) {
 
 async function replayRow(row) {
   if (row.event_type === "loan_repayment") return replayLoanRepayment(row);
+  if (row.event_type === "loan_rollover") return replayLoanRollover(row);
+  if (row.event_type === "loan_rollover_auction_reversal") return replayRolloverAuctionReversal(row);
   if (row.event_type === "agent_commission_paid") return replayAgentCommissionPayout(row);
   if (row.event_type === "admin_fee_recognized") return replayAdminFeeRecognized(row);
   if (row.event_type === "investor_profit_share_accrued") return replayInvestorProfitShareAccrual(row);

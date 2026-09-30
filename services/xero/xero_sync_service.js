@@ -317,6 +317,157 @@ async function syncLoanMovedToAuction(loan) {
   );
 }
 
+// ── Event: Rollover reverses an auction reclass (redesign 2026-09-30) ─────
+// syncLoanMovedToAuction above moves a loan's balance from Loans Receivable into Pawned
+// Assets Inventory. Rolling that loan over pulls the asset back out of auction, so the
+// reclass must reverse the same way — this posts the opposite journal. rolloverLoan()
+// already cleared the loan's own xero_auction_reclass_journal_id/_amount by the time this
+// runs (so a later real auction can reclass again without looking "already synced"), so
+// the amount to reverse is passed in explicitly rather than read off the loan.
+async function syncRolloverAuctionReversal(loan, cycleId, reclassAmount) {
+  if (!reclassAmount || reclassAmount <= 0) return null;
+  const cycle = (loan.rollover_cycles || []).find((c) => String(c._id) === String(cycleId));
+  if (cycle?.xero_auction_reversal_journal_id) return cycle.xero_auction_reversal_journal_id; // already posted
+
+  return withSyncLog(
+    {
+      sourceCollection: "Loan",
+      sourceId: cycleId,
+      eventType: "loan_rollover_auction_reversal",
+      xeroEndpoint: "ManualJournals",
+      payload: { loan_no: loan.loan_no, reversal_amount: reclassAmount },
+    },
+    async () => {
+      const { accountingApi, tenantId } = await getAuthenticatedClient();
+      const [inventoryCode, loansReceivableCode] = await Promise.all([
+        requireAccountCode("pawned_assets_inventory"),
+        requireAccountCode("loans_receivable"),
+      ]);
+
+      const { body } = await accountingApi.createManualJournals(tenantId, {
+        manualJournals: [
+          {
+            narration: `Loan rolled over — reversing auction reclass — ${loan.loan_no}`,
+            date: toXeroDate(new Date()),
+            status: "POSTED",
+            journalLines: [
+              { lineAmount: -reclassAmount, accountCode: inventoryCode, description: "Pawned assets inventory" },
+              { lineAmount: reclassAmount, accountCode: loansReceivableCode, description: "Loans receivable" },
+            ],
+          },
+        ],
+      });
+
+      const xeroId = body.manualJournals[0].manualJournalID;
+      await Loan.updateOne(
+        { _id: loan._id, "rollover_cycles._id": cycleId },
+        { $set: { "rollover_cycles.$.xero_auction_reversal_journal_id": xeroId } },
+      );
+      return xeroId;
+    },
+  );
+}
+
+// ── Event: Loan rollover payment (redesign 2026-09-30) ────────────────────
+// BankTransaction (RECEIVE), same shape as postRepaymentToXero's — but split using the
+// payment_split loan_service.rolloverLoan already computed (interest/storage/penalty
+// first, including any carried-forward arrears' own share of those, then principal),
+// NOT the generic proportional ratio postRepaymentToXero's other callers use. A rollover
+// payment is deliberately applied in that specific order (clear what's owed above
+// principal before anything reduces principal), so it needs its own split, not the
+// whole-loan ratio. Skipped entirely on an override / $0 payment.
+async function syncLoanRollover(loan, cycleId) {
+  const cycle = (loan.rollover_cycles || []).find((c) => String(c._id) === String(cycleId));
+  if (!cycle || !cycle.payment || !cycle.payment.amount) return null;
+  if (cycle.xero_bank_transaction_id) return cycle.xero_bank_transaction_id; // already posted
+
+  const sentinel = await claimRolloverCyclePostingSlot(loan._id, cycleId);
+  if (!sentinel) return null; // another process already claimed or completed this — back off
+
+  const split = cycle.payment_split || {};
+  const principal = Math.round((split.principal_receivable || 0) * 100) / 100;
+  const interest = Math.round(((split.interest || 0) + (split.arrears_interest || 0)) * 100) / 100;
+  const storage = Math.round(((split.storage || 0) + (split.arrears_storage || 0)) * 100) / 100;
+  const penalty = Math.round((split.penalty || 0) * 100) / 100;
+
+  let xeroId = null;
+  try {
+    xeroId = await withSyncLog(
+      {
+        sourceCollection: "Loan",
+        sourceId: cycleId,
+        eventType: "loan_rollover",
+        xeroEndpoint: "BankTransactions",
+        payload: { loan_no: loan.loan_no, cycle_no: cycle.cycle_no, principal, interest, storage, penalty },
+      },
+      async () => {
+        const { accountingApi, tenantId } = await getAuthenticatedClient();
+        const contactId = await getOrCreateCustomerContact(loan.customer_user._id || loan.customer_user);
+        const bankAccountKey = bankAccountKeyForMethod(cycle.payment.method, { bankAccountKey: cycle.payment.bank_account_key });
+
+        const componentAccounts = [
+          { amount: principal, key: "loans_receivable", label: "Principal repayment" },
+          { amount: interest, key: "interest_income", label: "Interest" },
+          { amount: storage, key: "storage_income", label: "Storage charge" },
+          { amount: penalty, key: "penalty_income", label: "Penalty" },
+        ].filter((c) => c.amount > 0);
+        if (componentAccounts.length === 0) return null;
+
+        const [bankAccountRef, ...componentCodes] = await Promise.all([
+          requireBankAccountRef(bankAccountKey),
+          ...componentAccounts.map((c) => requireAccountCode(c.key)),
+        ]);
+
+        const lineItems = componentAccounts.map((c, i) => ({
+          description: `Rollover ${cycle.cycle_no} — ${c.label} — ${loan.loan_no}`,
+          quantity: 1,
+          unitAmount: c.amount,
+          accountCode: componentCodes[i],
+        }));
+
+        const { body } = await accountingApi.createBankTransactions(tenantId, {
+          bankTransactions: [
+            {
+              type: "RECEIVE",
+              contact: { contactID: contactId },
+              date: toXeroDate(cycle.performed_at),
+              reference: cycle.payment.reference_no || loan.loan_no,
+              status: "AUTHORISED",
+              bankAccount: bankAccountRef,
+              lineItems,
+            },
+          ],
+        });
+        return body.bankTransactions[0].bankTransactionID;
+      },
+    );
+  } finally {
+    if (xeroId) {
+      await Loan.updateOne({ _id: loan._id, "rollover_cycles._id": cycleId }, { $set: { "rollover_cycles.$.xero_bank_transaction_id": xeroId } });
+      if (cycle.payment.payment_entry_id) {
+        await Loan.updateOne(
+          { _id: loan._id, "payments._id": cycle.payment.payment_entry_id },
+          { $set: { "payments.$.xero_bank_transaction_id": xeroId } },
+        );
+      }
+    } else {
+      await releaseRolloverCyclePostingSlot(loan._id, cycleId, sentinel);
+    }
+  }
+
+  if (xeroId) {
+    await accrueInvestorProfitShare(loan, {
+      interest,
+      storage,
+      sourceCollection: "Loan",
+      sourceId: cycle.payment.payment_entry_id || cycleId,
+      date: cycle.performed_at,
+    });
+  }
+
+  return xeroId;
+}
+
 // ── Event 7: Auction sale completed (payment cleared) ─────────────────────
 // BankTransaction (RECEIVE) for the full sale proceeds, contact = winning bidder, coded
 // to Asset Sale Revenue. Plus a Manual Journal matching cost of sale against whatever was
@@ -558,6 +709,34 @@ async function releaseEmbeddedPaymentPostingSlot(loanId, paymentEntryId, sentine
   await Loan.updateOne(
     { _id: loanId, "payments._id": paymentEntryId, "payments.xero_bank_transaction_id": sentinel },
     { $set: { "payments.$.xero_bank_transaction_id": null } },
+  );
+}
+
+// Same claim pattern, for a loan's rollover_cycles[] subdocument instead of payments[].
+async function claimRolloverCyclePostingSlot(loanId, cycleId) {
+  const sentinel = POSTING_SENTINEL_PREFIX + Date.now();
+  let res = await Loan.updateOne(
+    { _id: loanId, "rollover_cycles._id": cycleId, "rollover_cycles.xero_bank_transaction_id": null },
+    { $set: { "rollover_cycles.$.xero_bank_transaction_id": sentinel } },
+  );
+  if (res.modifiedCount > 0) return sentinel;
+
+  const doc = await Loan.findOne({ _id: loanId, "rollover_cycles._id": cycleId }, { "rollover_cycles.$": 1 });
+  const current = doc?.rollover_cycles?.[0]?.xero_bank_transaction_id;
+  if (isStalePostingSentinel(current)) {
+    res = await Loan.updateOne(
+      { _id: loanId, "rollover_cycles._id": cycleId, "rollover_cycles.xero_bank_transaction_id": current },
+      { $set: { "rollover_cycles.$.xero_bank_transaction_id": sentinel } },
+    );
+    if (res.modifiedCount > 0) return sentinel;
+  }
+  return null;
+}
+
+async function releaseRolloverCyclePostingSlot(loanId, cycleId, sentinel) {
+  await Loan.updateOne(
+    { _id: loanId, "rollover_cycles._id": cycleId, "rollover_cycles.xero_bank_transaction_id": sentinel },
+    { $set: { "rollover_cycles.$.xero_bank_transaction_id": null } },
   );
 }
 
@@ -1015,6 +1194,8 @@ module.exports = {
   syncAdminFeeRecognized,
   syncLoanWrittenOff,
   syncLoanMovedToAuction,
+  syncLoanRollover,
+  syncRolloverAuctionReversal,
   syncAuctionSaleCompleted,
   syncAssetDisposalSale,
   syncLoanRepayment,

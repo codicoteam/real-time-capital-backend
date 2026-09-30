@@ -2,6 +2,33 @@ const loanService = require("../services/loan_service");
 const agentCommissionService = require("../services/agent_commission_service");
 const mongoose = require("mongoose");
 
+const STAFF_ROLES = ["loan_officer_processor", "loan_officer_approval", "admin_pawn_limited", "super_admin_vendor", "management"];
+
+// A customer or agent reaches GET /loans/:id directly (see loan_router.js) — strip staff
+// identity, override reasoning and approval-workflow detail out of the rollover history
+// before it ever leaves the server, the same way the legacy rollover_override field
+// already needed to be kept off their view. Everyone else (staff) sees it all.
+function redactRolloverDetailForRole(loanDoc, roles) {
+  if (!loanDoc) return loanDoc;
+  const isStaff = Array.isArray(roles) && roles.some((r) => STAFF_ROLES.includes(r));
+  if (isStaff) return loanDoc;
+
+  const loan = typeof loanDoc.toObject === "function" ? loanDoc.toObject() : { ...loanDoc };
+  loan.rollover_override = null;
+  loan.pending_rollover_approval = loan.pending_rollover_approval
+    ? { status: loan.pending_rollover_approval.status, expires_at: loan.pending_rollover_approval.expires_at || null }
+    : null;
+  loan.rollover_cycles = (loan.rollover_cycles || []).map((cycle) => {
+    const { performed_by, performed_by_name, performed_by_role, override, approval, ...rest } = cycle;
+    if (rest.payment) {
+      const { received_by, notes, ...paymentRest } = rest.payment;
+      rest.payment = paymentRest;
+    }
+    return rest;
+  });
+  return loan;
+}
+
 class LoanController {
   /**
    * Create a new loan
@@ -87,11 +114,12 @@ class LoanController {
       }
 
       const result = await loanService.getLoanById(id);
+      const data = redactRolloverDetailForRole(result.data, req.user?.roles);
 
       res.status(200).json({
         success: true,
         message: result.message,
-        data: result.data,
+        data,
       });
     } catch (error) {
       const status = error.status || 500;
@@ -799,9 +827,53 @@ class LoanController {
       res.status(status).json({
         success: false,
         message: error.message || "Failed to roll over loan",
+        code: error.code,
         errors: error.errors,
         detail: error.detail,
       });
+    }
+  }
+
+  /**
+   * Request admin approval for a loan's 4th+ rollover.
+   */
+  async requestRolloverApproval(req, res) {
+    try {
+      const { id } = req.params;
+      const result = await loanService.requestRolloverApproval(id, req.body, req.user?.id);
+      res.status(200).json({ success: true, message: result.message, data: result.data });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({ success: false, message: error.message || "Failed to request rollover approval.", detail: error.detail });
+    }
+  }
+
+  /**
+   * An admin approves or rejects a pending rollover approval request.
+   */
+  async decideRolloverApproval(req, res) {
+    try {
+      const { id, requestId } = req.params;
+      const { decision, notes } = req.body;
+      const result = await loanService.decideRolloverApproval(id, requestId, decision, notes, req.user?.id);
+      res.status(200).json({ success: true, message: result.message, data: result.data });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({ success: false, message: error.message || "Failed to decide rollover approval.", detail: error.detail });
+    }
+  }
+
+  /**
+   * Withdraw a still-pending rollover approval request.
+   */
+  async cancelRolloverApproval(req, res) {
+    try {
+      const { id, requestId } = req.params;
+      const result = await loanService.cancelRolloverApproval(id, requestId, req.user?.id);
+      res.status(200).json({ success: true, message: result.message });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({ success: false, message: error.message || "Failed to cancel rollover approval.", detail: error.detail });
     }
   }
 
@@ -811,8 +883,10 @@ class LoanController {
   async getRolloverChain(req, res) {
     try {
       const { id } = req.params;
+      const roles = req.user?.roles || [];
+      const role = roles.includes("customer") ? "customer" : roles.includes("agent") && !roles.some((r) => STAFF_ROLES.includes(r)) ? "agent" : null;
 
-      const result = await loanService.getRolloverChain(id);
+      const result = await loanService.getRolloverChain(id, role);
 
       res.status(200).json({
         success: true,

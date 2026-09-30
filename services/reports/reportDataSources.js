@@ -99,7 +99,7 @@ const AGING_BUCKETS = ["current", "in_grace", "1-30", "31-60", "61-90", "90+"];
 async function getLoanAgingBuckets(asOfDate = new Date()) {
   const loans = await Loan.find({
     current_balance: { $gt: 0 },
-    status: { $nin: ["draft", "pending_approval", "cancelled", "redeemed", "written_off", "rolled_over"] },
+    status: { $nin: ["draft", "pending_approval", "cancelled", "redeemed", "written_off", "merged"] },
   })
     .populate("customer_user", "first_name last_name email phone")
     .populate("asset", "asset_no title")

@@ -1020,6 +1020,19 @@ router.post(
   loanController.adminOverride,
 );
 
+/**
+ * @swagger
+ * /api/v1/loans/{id}/rollover:
+ *   post:
+ *     summary: Roll a loan over (append a rollover cycle to the same loan)
+ *     description: >
+ *       Returns 409 {code: "ROLLOVER_APPROVAL_REQUIRED"} once the loan has already rolled
+ *       over 3 times, until an admin approves a pending request — see
+ *       /rollover/request-approval and /rollover/approval/{requestId}/decide.
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ */
 router.post(
   "/:id/rollover",
   requireRoles(
@@ -1029,6 +1042,34 @@ router.post(
     "super_admin_vendor",
   ),
   loanController.rolloverLoan,
+);
+
+router.post(
+  "/:id/rollover/request-approval",
+  requireRoles(
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "admin_pawn_limited",
+    "super_admin_vendor",
+  ),
+  loanController.requestRolloverApproval,
+);
+
+router.post(
+  "/:id/rollover/approval/:requestId/decide",
+  requireRoles("super_admin_vendor", "admin_pawn_limited"),
+  loanController.decideRolloverApproval,
+);
+
+router.post(
+  "/:id/rollover/approval/:requestId/cancel",
+  requireRoles(
+    "loan_officer_processor",
+    "loan_officer_approval",
+    "admin_pawn_limited",
+    "super_admin_vendor",
+  ),
+  loanController.cancelRolloverApproval,
 );
 
 /**

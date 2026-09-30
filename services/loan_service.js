@@ -49,6 +49,26 @@ const ROLLOVER_OVERRIDE_REASON_CATEGORIES = {
 };
 const ROLLOVER_OVERRIDE_NOTES_MAX = 1000;
 
+// A loan can roll over 3 times freely; the 4th+ needs a separate admin approval before
+// rolloverLoan() will perform it — see requestRolloverApproval/decideRolloverApproval.
+const ROLLOVER_FREE_LIMIT = 3;
+const ROLLOVER_APPROVAL_VALID_HOURS = 72;
+const ROLLOVER_APPROVER_ROLES = ["super_admin_vendor", "admin_pawn_limited"];
+
+const r2 = (n) => parseFloat((Number(n) || 0).toFixed(2));
+
+// The flat, once-per-cycle charge shared by loan creation (calculateRepaymentBreakdown)
+// and every rollover cycle (rolloverLoan) — never prorated by literal day-count. `base`
+// is whatever the caller has already decided belongs in it (principal alone, principal +
+// a deferred fee, or — for a rollover, per the compounding rule confirmed 2026-09-30 —
+// principal + any arrears carried into this cycle).
+function computeFlatCycleCharge(base, interestRatePercent, storageRatePercent) {
+  const interestAmount = r2(base * (interestRatePercent / 100));
+  const storageChargeAmount = r2(base * (storageRatePercent / 100));
+  const expectedTotalRepayable = r2(base + interestAmount + storageChargeAmount);
+  return { interestAmount, storageChargeAmount, expectedTotalRepayable };
+}
+
 class LoanService {
   /**
    * Validates the override fields of a rollover request. Only meaningful when NO payment is
@@ -2354,20 +2374,22 @@ class LoanService {
   }
 
   /**
-   * Roll over a loan: the customer pays down the interest/storage owed on the
-   * current loan (in full or in part) instead of the collateral going to
-   * auction. The current loan is closed with status "rolled_over" and a new
-   * loan cycle is opened on the SAME asset (and, when present, the same
-   * application — so collateral photos/details carry over with no re-upload).
+   * Roll over a loan: the customer pays down the interest/storage owed on the current
+   * loan (in full or in part) instead of the collateral going to auction. Redesigned
+   * 2026-09-30 — this APPENDS a cycle to the SAME loan document (same _id, same loan_no)
+   * instead of creating a new one; see models/loan.model.js's rollover_cycles /
+   * pending_rollover_approval fields. The asset and its application never re-point,
+   * since there's no longer a separate document for them to point at.
    *
-   * - Payment beyond what was owed above principal reduces the new loan's principal.
-   * - A shortfall (payment less than what was owed above principal) becomes
-   *   carried_forward_arrears on the new loan, added on top of its fresh
-   *   interest/storage charge.
-   * - The new loan skips the disbursement/approval workflow and goes straight
-   *   to "active" — no new cash is disbursed, so there is nothing to approve
-   *   for payout. `requires_super_admin_approval` is still recorded for
-   *   audit on high-value rollovers, but does not block activation.
+   * - Payment beyond what was owed above principal reduces the new cycle's principal.
+   * - A shortfall becomes carried_forward_arrears, which COMPOUNDS into the next cycle's
+   *   interest_base (confirmed 2026-09-30) — the charge is taken on (principal + arrears),
+   *   not principal alone, so the amount owed grows the longer a client goes unpaid.
+   * - "rolled_over" is no longer a loan status — the loan always lands on "active" or
+   *   "overdue", exactly as if nothing else had happened, since a rollover is history on
+   *   the loan, not a state it's in.
+   * - A loan may roll over ROLLOVER_FREE_LIMIT (3) times freely; the next one requires a
+   *   prior, approved, unexpired request — see requestRolloverApproval/decideRolloverApproval.
    */
   async rolloverLoan(loanId, rolloverData, userId, requestMeta = {}) {
     const {
@@ -2415,19 +2437,37 @@ class LoanService {
     session.startTransaction();
 
     try {
-      const oldLoan = await Loan.findById(loanId).session(session);
-      if (!oldLoan) {
+      const loan = await Loan.findById(loanId).session(session);
+      if (!loan) {
         throw { status: 404, message: `Loan with ID ${loanId} not found` };
       }
 
-      if (!ROLLOVER_ELIGIBLE_STATUSES.includes(oldLoan.status)) {
+      if (!ROLLOVER_ELIGIBLE_STATUSES.includes(loan.status)) {
         throw {
           status: 400,
-          message: `Cannot roll over a loan with status: ${oldLoan.status}. Loan must be active, overdue, in_grace, partially_paid, or auction.`,
+          message: `Cannot roll over a loan with status: ${loan.status}. Loan must be active, overdue, in_grace, partially_paid, or auction.`,
         };
       }
 
-      const loanPeriodType = new_loan_period_type || oldLoan.loan_period_type;
+      // ── 3-rollover cap — the 4th+ needs a prior, approved, unexpired, unconsumed
+      // request. See requestRolloverApproval/decideRolloverApproval below. ──
+      const currentRolloverCount = loan.rollover_count || 0;
+      let consumedApproval = null;
+      if (currentRolloverCount >= ROLLOVER_FREE_LIMIT) {
+        const pending = loan.pending_rollover_approval;
+        const isApproved = !!pending && pending.status === "approved";
+        const notExpired = isApproved && (!pending.expires_at || pending.expires_at.getTime() > Date.now());
+        if (!isApproved || !notExpired) {
+          throw {
+            status: 409,
+            code: "ROLLOVER_APPROVAL_REQUIRED",
+            message: `Loan ${loan.loan_no} has already rolled over ${currentRolloverCount} times. An admin must approve the next rollover before it can proceed — use Request Rollover Approval.`,
+          };
+        }
+        consumedApproval = pending;
+      }
+
+      const loanPeriodType = new_loan_period_type || loan.loan_period_type;
       const period = LOAN_PERIODS[loanPeriodType];
       if (!period) {
         throw {
@@ -2437,15 +2477,18 @@ class LoanService {
       }
 
       // ── Split the rollover payment between what was owed above principal and any excess ──
-      const owedAbovePrincipal = Math.max(0, oldLoan.current_balance - oldLoan.principal_amount);
+      // Unchanged from the original design: a payment first clears everything owed above
+      // principal; anything left over reduces principal; a shortfall carries forward as
+      // arrears — which, per the compounding rule below, earns its own charge next cycle.
+      const owedAbovePrincipal = Math.max(0, loan.current_balance - loan.principal_amount);
       let carriedForwardArrears = 0;
-      let newPrincipal = oldLoan.principal_amount;
+      let newPrincipal = loan.principal_amount;
 
       if (paymentAmount >= owedAbovePrincipal) {
         const excess = paymentAmount - owedAbovePrincipal;
-        newPrincipal = parseFloat((oldLoan.principal_amount - excess).toFixed(2));
+        newPrincipal = r2(loan.principal_amount - excess);
       } else {
-        carriedForwardArrears = parseFloat((owedAbovePrincipal - paymentAmount).toFixed(2));
+        carriedForwardArrears = r2(owedAbovePrincipal - paymentAmount);
       }
 
       if (newPrincipal <= 0) {
@@ -2456,219 +2499,334 @@ class LoanService {
         };
       }
 
-      // ── If the loan was already sent to auction, cancel that auction listing ──
-      // The rollover reverses the auction decision: the customer is paying interest
-      // and continuing the pawn, so the asset must be pulled out of the auction queue.
-      if (oldLoan.status === "auction") {
+      // ── How the payment (up to owedAbovePrincipal) actually applies — interest, storage
+      // and penalty first (in proportion to what each represents of the amount owed above
+      // principal), any unpaid deferred admin fee next, then principal. Drives both the
+      // Xero posting and agent-commission accrual below. Carried-forward arrears from an
+      // EARLIER rollover are never a separate bucket here — compounding (further down)
+      // already folded them into this cycle's own interest_amount/storage_charge_amount,
+      // so this same split is already correct for them with no special-casing needed.
+      const deferredFeeUnpaid = loan.admin_fee_type === "deferred" && !loan.admin_fee_collected ? loan.admin_fee_amount || 0 : 0;
+      const penaltyOwed = (loan.repayment_breakdown && loan.repayment_breakdown.penalty_amount) || 0;
+      const interestOwed = loan.interest_amount || 0;
+      const storageOwed = loan.storage_charge_amount || 0;
+      const appliedToOwed = Math.min(paymentAmount, owedAbovePrincipal);
+      const ratioBase = Math.max(0, appliedToOwed - deferredFeeUnpaid);
+      const ratioDenom = interestOwed + storageOwed + penaltyOwed || 1;
+      const interestPortion = r2(ratioBase * (interestOwed / ratioDenom));
+      const storagePortion = r2(ratioBase * (storageOwed / ratioDenom));
+      const penaltyPortion = r2(ratioBase - interestPortion - storagePortion);
+      const principalPortion = r2(paymentAmount - interestPortion - storagePortion - penaltyPortion);
+
+      let arrearsInterest = 0;
+      let arrearsStorage = 0;
+      let arrearsPenalty = 0;
+      if (carriedForwardArrears > 0) {
+        arrearsInterest = r2(carriedForwardArrears * (interestOwed / ratioDenom));
+        arrearsStorage = r2(carriedForwardArrears * (storageOwed / ratioDenom));
+        arrearsPenalty = r2(carriedForwardArrears - arrearsInterest - arrearsStorage);
+      }
+
+      // ── If the loan is in auction, cancel the listing and clear its Xero auction
+      // reclass — the balance was moved from Loans Receivable into Pawned Assets Inventory
+      // when it entered auction; a rollover reverses that decision, so Xero must too
+      // (posted as a reversal journal after commit — see syncRolloverAuctionReversal). ──
+      let auctionReclassAmountToReverse = null;
+      if (loan.status === "auction") {
         await Auction.findOneAndUpdate(
-          { asset: oldLoan.asset, status: { $in: ["draft", "live"] } },
+          { asset: loan.asset, status: { $in: ["draft", "live"] } },
           { $set: { status: "cancelled" } },
           { session },
         );
+        if (loan.xero_auction_reclass_journal_id) {
+          auctionReclassAmountToReverse = loan.xero_auction_reclass_amount || null;
+          loan.xero_auction_reclass_journal_id = null;
+          loan.xero_auction_reclass_amount = null;
+        }
       }
 
-      // ── Record the rollover payment on the OLD loan and close it out ──
-      // An override rollover collects nothing, so it records NO payment at all — a $0
-      // payment entry would show up as a phantom repayment in history, reports and the
-      // Xero sync. What happened is captured by rollover_override + the audit log instead.
+      const actor = userId ? await User.findById(userId).select("first_name last_name email roles") : null;
+      const actorName = actor ? `${actor.first_name || ""} ${actor.last_name || ""}`.trim() || actor.email : "Unknown";
+      const actorRole = (actor?.roles || []).join(", ") || null;
+
+      let overrideSnapshot = { applied: false };
+      if (overrideInfo) {
+        overrideSnapshot = {
+          applied: true,
+          by: userId || null,
+          by_name: actorName,
+          by_role: actorRole,
+          at: new Date(),
+          reason_category: overrideInfo.reason_category,
+          reason_label: overrideInfo.reason_label,
+          notes: overrideInfo.notes,
+        };
+      }
+
+      // ── Record the payment collected at rollover (none on an override — a $0 entry
+      // would show up as a phantom repayment in history, reports and Xero) ──
+      let paymentEntryId = null;
       if (paymentAmount > 0) {
-        const paymentRecord = {
+        loan.payments.push({
           amount: paymentAmount,
           payment_date: new Date(),
           payment_method,
           status: "paid",
           reference_no: payment_reference || `ROLLOVER-${Date.now()}`,
-          received_by: userId || oldLoan.processed_by || oldLoan.created_by,
-          notes: payment_notes || "Rollover interest payment",
+          received_by: userId || loan.processed_by || loan.created_by,
+          notes: payment_notes || "Rollover payment",
           bank_account_key: bank_account_key || null,
-        };
-
-        oldLoan.payments.push(paymentRecord);
-        oldLoan.total_paid = parseFloat((oldLoan.total_paid + paymentAmount).toFixed(2));
+          kind: "rollover",
+          rollover_cycle_no: currentRolloverCount + 1,
+        });
+        paymentEntryId = loan.payments[loan.payments.length - 1]._id;
+        loan.total_paid = r2(loan.total_paid + paymentAmount);
+        loan.current_cycle_paid = r2((loan.current_cycle_paid || 0) + paymentAmount);
       }
-      const balanceBeforeRollover = oldLoan.current_balance;
-      const statusBeforeRollover = oldLoan.status;
-      oldLoan.current_balance = 0;
-      oldLoan.status = "rolled_over";
-      await oldLoan.save({ session, validateModifiedOnly: true });
 
-      // ── Build and save the new loan cycle ──
+      // ── Snapshot the cycle being closed, then build the new one ──
+      const prevPrincipal = loan.principal_amount;
+      const prevBalance = loan.current_balance;
+      const prevStatus = loan.status;
+      const prevDueDate = loan.due_date;
+      const prevLoanPeriodType = loan.loan_period_type;
+
       const rolloverStart = start_date ? new Date(start_date) : new Date();
       const dueDate = new Date(rolloverStart);
       dueDate.setDate(dueDate.getDate() + period.days);
 
-      // The new loan cycle keeps the SAME investor who funded the old one by default —
-      // assignLoan() (called after commit, below) honors preferred_investor_id and only
-      // falls back to auto-assignment if that investor's gone stale in the meantime.
-      const oldAllocation = await InvestorLoanAllocation.findOne({
-        loan_id: oldLoan._id,
-        is_co_investor: false,
-      }).select("investor_id");
+      // Compounding, confirmed 2026-09-30: interest/storage are charged on (new principal +
+      // any arrears carried into this cycle), never principal alone — so the amount owed
+      // genuinely grows the longer a client goes without paying, matching the rule already
+      // applied by hand to LON26086621 earlier, now standard for every rollover.
+      const interestBase = r2(newPrincipal + carriedForwardArrears);
+      const { interestAmount, storageChargeAmount, expectedTotalRepayable } = computeFlatCycleCharge(
+        interestBase,
+        period.interest_rate_percent,
+        period.storage_charge_percent,
+      );
+      const loanPeriodDaysActual = Math.ceil((dueDate - rolloverStart) / (1000 * 60 * 60 * 24));
 
-      // Override trace, stamped onto the new loan as a self-contained snapshot (name/role
-      // copied in) so it stays readable on the loan's rollover history even if the user
-      // is later renamed or removed.
-      let rolloverOverrideSnapshot = null;
-      let overrideActor = null;
-      if (overrideInfo) {
-        overrideActor = userId ? await User.findById(userId).select("first_name last_name email roles") : null;
-        rolloverOverrideSnapshot = {
-          applied: true,
-          by: userId || null,
-          by_name: overrideActor
-            ? `${overrideActor.first_name || ""} ${overrideActor.last_name || ""}`.trim() || overrideActor.email
-            : "Unknown",
-          by_role: (overrideActor?.roles || []).join(", ") || null,
-          at: new Date(),
-          reason_category: overrideInfo.reason_category,
-          reason_label: overrideInfo.reason_label,
-          notes: overrideInfo.notes,
-          from_loan_no: oldLoan.loan_no,
-          payment_collected: 0,
-          arrears_carried_forward: carriedForwardArrears,
-        };
-      }
-
-      const newLoanData = {
-        loan_no: this.generateLoanNo(),
-        customer_user: oldLoan.customer_user,
-        application: oldLoan.application,
-        asset: oldLoan.asset,
-        collateral_category: oldLoan.collateral_category,
-        principal_amount: newPrincipal,
-        currency: oldLoan.currency,
+      const cycleNo = currentRolloverCount + 1;
+      const cycleRecord = {
+        cycle_no: cycleNo,
+        source: "live",
+        prev_principal: prevPrincipal,
+        prev_balance: prevBalance,
+        prev_status: prevStatus,
+        prev_due_date: prevDueDate,
+        prev_loan_period_type: prevLoanPeriodType,
+        owed_breakdown: {
+          interest: interestOwed,
+          storage: storageOwed,
+          penalty: penaltyOwed,
+          deferred_admin_fee: deferredFeeUnpaid,
+        },
+        payment:
+          paymentAmount > 0
+            ? {
+                amount: paymentAmount,
+                method: payment_method,
+                reference_no: payment_reference || null,
+                notes: payment_notes || null,
+                bank_account_key: bank_account_key || null,
+                received_by: userId || loan.processed_by || loan.created_by,
+                payment_entry_id: paymentEntryId,
+              }
+            : undefined,
+        payment_split: {
+          interest: interestPortion,
+          storage: storagePortion,
+          penalty: penaltyPortion,
+          arrears_interest: arrearsInterest,
+          arrears_storage: arrearsStorage,
+          principal_receivable: principalPortion,
+        },
+        arrears_carried_forward: carriedForwardArrears,
+        arrears_breakdown: { interest: arrearsInterest, storage: arrearsStorage, penalty: arrearsPenalty },
+        new_principal: newPrincipal,
         loan_period_type: loanPeriodType,
         interest_rate_percent: period.interest_rate_percent,
         storage_charge_percent: period.storage_charge_percent,
-        interest_period_days: period.days,
         penalty_percent: period.penalty_percent,
         grace_days: period.grace_days,
-        repayment_type: "once_off",
+        interest_period_days: period.days,
+        interest_base: interestBase,
+        interest_amount: interestAmount,
+        storage_charge_amount: storageChargeAmount,
+        expected_total_repayable: expectedTotalRepayable,
         start_date: rolloverStart,
         due_date: dueDate,
-        status: "active",
-        disbursement_date: rolloverStart,
-        disbursed_by: userId,
-        disbursement_notes: `Rollover — no new funds disbursed; renewed from loan ${oldLoan.loan_no}`,
-        approval_status: "approved",
-        requires_super_admin_approval: newPrincipal > 500,
-        is_rollover: true,
-        rollover_of: oldLoan._id,
-        root_loan: oldLoan.root_loan || oldLoan._id,
-        rollover_generation: (oldLoan.rollover_generation || 0) + 1,
-        carried_forward_arrears: carriedForwardArrears,
-        rollover_payment_amount: paymentAmount,
-        rollover_notes: notes || "",
-        rollover_override: rolloverOverrideSnapshot,
-        created_by: userId,
-        processed_by: userId,
-        approved_by: userId,
-        preferred_investor_id: oldAllocation?.investor_id || undefined,
-        // Referral commission terms carry forward unchanged — a rollover isn't a new deal
-        // with the agent, it's a continuation of the same one. admin_fee_commission_amount
-        // is deliberately NOT copied: rollovers get no new admin fee, same as admin_fee_pct
-        // itself never being copied.
-        is_referral_loan: oldLoan.is_referral_loan,
-        referral_agent_id: oldLoan.referral_agent_id,
-        admin_fee_commission_pct: oldLoan.admin_fee_commission_pct,
-        interest_commission_enabled: oldLoan.interest_commission_enabled,
-        interest_commission_pct: oldLoan.interest_commission_pct,
-        referral_set_by: oldLoan.referral_set_by,
-        referral_set_by_role: oldLoan.referral_set_by_role,
-        referral_set_at: oldLoan.referral_set_at,
-        referral_notes: oldLoan.referral_notes
-          ? `Carried over from rollover of ${oldLoan.loan_no}. ${oldLoan.referral_notes}`
-          : oldLoan.is_referral_loan
-            ? `Carried over from rollover of ${oldLoan.loan_no}.`
-            : null,
+        performed_by: userId || null,
+        performed_by_name: actorName,
+        performed_by_role: actorRole,
+        performed_at: new Date(),
+        notes: notes || "",
+        override: overrideSnapshot,
+        approval: consumedApproval
+          ? {
+              required: true,
+              request_id: consumedApproval.request_id,
+              approved_by: consumedApproval.decided_by,
+              approved_by_name: consumedApproval.decided_by_name,
+              approved_at: consumedApproval.decided_at,
+              notes: consumedApproval.decision_notes,
+            }
+          : { required: false },
       };
 
-      this.calculateRepaymentBreakdown(newLoanData);
-      if (carriedForwardArrears > 0) {
-        newLoanData.expected_total_repayable = parseFloat(
-          (newLoanData.expected_total_repayable + carriedForwardArrears).toFixed(2),
-        );
-        newLoanData.current_balance = newLoanData.expected_total_repayable;
-        if (newLoanData.repayment_breakdown) {
-          newLoanData.repayment_breakdown.carried_forward_arrears = carriedForwardArrears;
-        }
+      loan.rollover_cycles.push(cycleRecord);
+      const newCycleId = loan.rollover_cycles[loan.rollover_cycles.length - 1]._id;
+      loan.rollover_count = cycleNo;
+
+      if (!loan.original_start_date) loan.original_start_date = loan.start_date;
+      if (loan.original_principal_amount == null) loan.original_principal_amount = prevPrincipal;
+
+      // ── Move the loan's top-level fields onto the new cycle ──
+      loan.principal_amount = newPrincipal;
+      loan.loan_period_type = loanPeriodType;
+      loan.interest_rate_percent = period.interest_rate_percent;
+      loan.storage_charge_percent = period.storage_charge_percent;
+      loan.penalty_percent = period.penalty_percent;
+      loan.grace_days = period.grace_days;
+      loan.interest_period_days = period.days;
+      loan.interest_amount = interestAmount;
+      loan.storage_charge_amount = storageChargeAmount;
+      loan.expected_total_repayable = expectedTotalRepayable;
+      loan.current_balance = expectedTotalRepayable;
+      loan.current_cycle_paid = 0;
+      loan.start_date = rolloverStart;
+      loan.due_date = dueDate;
+      loan.carried_forward_arrears = carriedForwardArrears;
+      // Rebuilt clean — no stale penalty_* keys carried forward from a prior cycle.
+      loan.repayment_breakdown = {
+        principal_amount: newPrincipal,
+        admin_fee_pct: 0,
+        admin_fee_amount: 0,
+        admin_fee_type: null,
+        interest_base: interestBase,
+        loan_period_days: loanPeriodDaysActual,
+        interest_period_days: period.days,
+        number_of_periods: 1,
+        interest_rate_percent: period.interest_rate_percent,
+        interest_amount: interestAmount,
+        storage_charge_percent: period.storage_charge_percent,
+        storage_charge_amount: storageChargeAmount,
+        expected_total_repayable: expectedTotalRepayable,
+        carried_forward_arrears: carriedForwardArrears,
+        rollover_cycle_no: cycleNo,
+        calculation_note:
+          carriedForwardArrears > 0
+            ? "Total = (Principal + Arrears carried forward) + ((Principal + Arrears) × Interest%) + ((Principal + Arrears) × Storage%). Unpaid interest/storage from the previous cycle compounds into this one's charge."
+            : "Total = Principal + (Principal × Interest%) + (Principal × Storage%).",
+      };
+      // A rollover always leaves the loan on a real, live status — never the old
+      // "rolled_over" terminal status — reflecting whether the new due date already passed.
+      loan.status = dueDate.getTime() < Date.now() ? "overdue" : "active";
+
+      // Deprecated chain fields, kept readable for one release — now pointing at THIS
+      // loan, since there is no separate document any more.
+      loan.is_rollover = true;
+      loan.rollover_generation = cycleNo;
+      loan.rollover_payment_amount = paymentAmount;
+      loan.rollover_notes = notes || "";
+      loan.rollover_override = overrideInfo
+        ? { ...overrideSnapshot, from_loan_no: loan.loan_no, payment_collected: 0, arrears_carried_forward: carriedForwardArrears }
+        : null;
+
+      if (consumedApproval) {
+        loan.pending_rollover_approval.status = "consumed";
+        loan.pending_rollover_approval.consumed_by_cycle_no = cycleNo;
       }
 
-      const [newLoan] = await Loan.create([newLoanData], { session });
+      await loan.save({ session, validateModifiedOnly: true });
 
-      oldLoan.rolled_over_to = newLoan._id;
-      await oldLoan.save({ session, validateModifiedOnly: true });
-
-      // ── Move the SAME asset onto the new loan; collateral never leaves storage ──
-      await Asset.findByIdAndUpdate(
-        oldLoan.asset,
-        { status: "pawned", active_loan: newLoan._id },
-        { session },
-      );
-
-      // ── Keep the application's loan pointer on the current, open loan ──
-      if (oldLoan.application) {
-        await LoanApplication.findByIdAndUpdate(
-          oldLoan.application,
-          { $set: { loan_id: newLoan._id, loan_created: true, status: "loan_created" } },
-          { session },
-        );
-      }
+      // The asset never leaves storage and never re-points — it's still the same loan.
+      await Asset.findByIdAndUpdate(loan.asset, { status: "pawned", active_loan: loan._id }, { session });
 
       await session.commitTransaction();
 
-      // Re-run investor profit-split allocation for the new loan cycle — a rolled-over
-      // loan previously got NO InvestorLoanAllocation at all (it's created directly with
-      // status "active", bypassing the normal updateLoanStatus → assignLoan path), which
-      // left RTC's revenue share undetermined for that cycle. Fire-and-forget, same
-      // pattern updateLoanStatus already uses when a loan goes active.
-      investorAllocationService
-        .assignLoan(newLoan._id)
-        .catch((err) => console.error(`[InvestorAllocation] Rollover assign error for loan ${newLoan.loan_no}:`, err.message));
+      // Every rollover gets an audit log entry now — previously only an override did.
+      auditLogService
+        .logLoanAction(
+          loan._id,
+          userId,
+          overrideInfo ? "rollover_override" : "rollover",
+          { status: prevStatus, current_balance: prevBalance, principal_amount: prevPrincipal, rollover_count: currentRolloverCount },
+          {
+            status: loan.status,
+            current_balance: loan.current_balance,
+            principal_amount: loan.principal_amount,
+            rollover_count: loan.rollover_count,
+            due_date: loan.due_date,
+          },
+          requestMeta.ip,
+          requestMeta.userAgent,
+          {
+            loan_no: loan.loan_no,
+            cycle_no: cycleNo,
+            payment_amount: paymentAmount,
+            arrears_carried_forward: carriedForwardArrears,
+            ...(overrideInfo
+              ? {
+                  reason_category: overrideInfo.reason_category,
+                  reason_label: overrideInfo.reason_label,
+                  override_notes: overrideInfo.notes,
+                  overridden_by: actorName,
+                  overridden_by_role: actorRole,
+                }
+              : {}),
+          },
+        )
+        .catch((err) => console.error("Rollover audit log failed:", err.message));
 
-      // Close out the OLD loan's allocation now that its capital has rolled into the new
-      // cycle's own allocation above — without this it stayed "active" forever and its
-      // principal was double-counted against the new allocation in every deployed-capital
-      // total (getDeployedCapitalMap, investor available-balance, etc.).
+      // One loan, one allocation for its whole life now — extend it with this cycle
+      // instead of closing one allocation and opening another.
       investorAllocationService
-        .syncAllocationStatus(oldLoan._id, "rolled_over")
-        .catch((err) => console.error(`[InvestorAllocation] Rollover old-allocation close error for loan ${oldLoan.loan_no}:`, err.message));
+        .recordRolloverCycle(loan._id, cycleNo)
+        .catch((err) => console.error(`[InvestorAllocation] Rollover cycle record error for loan ${loan.loan_no}:`, err.message));
 
-      const populatedOldLoan = await Loan.findById(oldLoan._id).populate([
-        { path: "customer_user", select: "first_name last_name email phone" },
-        { path: "asset", select: "asset_no title status asset_images" },
-      ]);
-      const populatedNewLoan = await Loan.findById(newLoan._id).populate([
-        { path: "customer_user", select: "first_name last_name email phone" },
-        { path: "asset", select: "asset_no title category status asset_images" },
-        { path: "application", select: "application_no collateral_category collateral_description collateral_images small_loan_details motor_vehicle_details jewellery_details" },
-        { path: "created_by", select: "first_name last_name email roles" },
-      ]);
+      // Xero: post the rollover payment (skipped on an override / $0 payment) and reverse
+      // any auction reclass this loan was carrying.
+      if (paymentAmount > 0) {
+        xeroSyncService
+          .syncLoanRollover(loan, newCycleId)
+          .catch((err) => console.error(`[Xero] Rollover sync error for loan ${loan.loan_no}:`, err.message));
+      }
+      if (auctionReclassAmountToReverse) {
+        xeroSyncService
+          .syncRolloverAuctionReversal(loan, newCycleId, auctionReclassAmountToReverse)
+          .catch((err) => console.error(`[Xero] Rollover auction-reversal sync error for loan ${loan.loan_no}:`, err.message));
+      }
+
+      // Agent commission — a rollover payment previously never accrued interest commission
+      // at all. The exact interest portion is passed in rather than left to re-derive from
+      // generic ratios, which assume the whole payment spans principal too (it doesn't here).
+      if (paymentAmount > 0 && interestPortion > 0) {
+        agentCommissionService
+          .accrueInterestCommission(loan, paymentAmount, paymentEntryId, { interestPortion })
+          .catch((err) => console.error(`[AgentCommission] Rollover accrual error for loan ${loan.loan_no}:`, err.message));
+      }
 
       // ── Notifications (outside the transaction — non-critical) ──
       try {
-        const customer = populatedNewLoan.customer_user;
+        const customer = await User.findById(loan.customer_user).select("first_name last_name email phone");
         if (customer && customer._id) {
           const customerName = `${customer.first_name || ""} ${customer.last_name || ""}`.trim() || "Customer";
           const frontendUrl = process.env.FRONTEND_URL || "https://www.rtcapital.co.zw/";
           await NotificationService.createNotification(
             {
               title: "Loan Rolled Over",
-              message: `Your loan ${oldLoan.loan_no} has been rolled over into a new loan ${newLoan.loan_no}. New due date: ${dueDate.toDateString()}.`,
+              message: `Your loan ${loan.loan_no} was renewed (rollover ${cycleNo}). New due date: ${dueDate.toDateString()}.`,
               type: "loan_disbursed",
               priority: "high",
               audience: { scope: "user", user_id: customer._id },
               channels: ["in_app", "email", "sms"],
               entity_type: "loan",
-              entity_id: newLoan._id,
+              entity_id: loan._id,
               action_text: "View Loan Details",
-              action_url: `${frontendUrl}/customer/loans/${newLoan._id}`,
-              data: {
-                old_loan_id: oldLoan._id,
-                old_loan_no: oldLoan.loan_no,
-                new_loan_id: newLoan._id,
-                new_loan_no: newLoan.loan_no,
-              },
+              action_url: `${frontendUrl}/customer/loans/${loan._id}`,
+              data: { loan_id: loan._id, loan_no: loan.loan_no, cycle_no: cycleNo },
             },
             userId,
           ).catch((err) => console.error("Rollover customer notification error:", err.message));
@@ -2678,104 +2836,52 @@ class LoanService {
           // admins don't get two emails for one event.
           if (!overrideInfo) {
             sendLoanRolloverAdminEmail({
-              loanNo: oldLoan.loan_no,
-              newLoanNo: newLoan.loan_no,
+              loanNo: loan.loan_no,
+              newLoanNo: loan.loan_no,
               customerName,
-              principalAmount: newLoan.principal_amount,
+              principalAmount: loan.principal_amount,
               paymentAmount,
               carriedForwardArrears,
-              loanPeriodType: newLoan.loan_period_type,
-              dueDate: newLoan.due_date,
+              loanPeriodType: loan.loan_period_type,
+              dueDate: loan.due_date,
             }).catch((err) => console.error("Rollover admin email error:", err.message));
+          } else {
+            NotificationService.createNotification(
+              {
+                title: `Override Rollover — Loan #${loan.loan_no}`,
+                message:
+                  `${actorName}${actorRole ? ` (${actorRole})` : ""} rolled over loan #${loan.loan_no} (${customerName}, cycle ${cycleNo}) with NO payment collected. ` +
+                  `Reason: ${overrideInfo.reason_label}.` +
+                  `${carriedForwardArrears > 0 ? ` $${carriedForwardArrears.toFixed(2)} carried forward as arrears.` : ""}` +
+                  `${overrideInfo.notes ? ` Notes: ${overrideInfo.notes}` : ""}`,
+                type: "system_notice",
+                priority: "high",
+                audience: { scope: "roles", roles: ["super_admin_vendor", "admin_pawn_limited", "management"] },
+                channels: ["in_app", "email"],
+                entity_type: "loan",
+                entity_id: loan._id,
+                action_url: `/loans/${loan._id}`,
+                action_text: "View Loan",
+              },
+              userId,
+            ).catch((err) => console.error("Override rollover notification failed:", err.message));
           }
         }
       } catch (notifyErr) {
         console.error("Rollover notification error (non-fatal):", notifyErr.message);
       }
 
-      // ── Override trace: audit entries on BOTH loans + notify oversight roles ──
-      // Any role that can roll a loan over may use the override, so this is the check on it:
-      // every use is attributed (actor, role, IP), categorized, visible on the loan's
-      // rollover history, and pushed to admins/management. Failures here never undo the
-      // rollover itself.
-      if (overrideInfo && rolloverOverrideSnapshot) {
-        const cu = populatedNewLoan.customer_user;
-        const overrideCustomerName = cu
-          ? `${cu.first_name || ""} ${cu.last_name || ""}`.trim() || "Customer"
-          : "Unknown Client";
-        const auditMeta = {
-          loan_no: oldLoan.loan_no,
-          new_loan_no: newLoan.loan_no,
-          customer_name: overrideCustomerName,
-          reason_category: overrideInfo.reason_category,
-          reason_label: overrideInfo.reason_label,
-          override_notes: overrideInfo.notes,
-          overridden_by: rolloverOverrideSnapshot.by_name,
-          overridden_by_role: rolloverOverrideSnapshot.by_role,
-          payment_collected: 0,
-          arrears_carried_forward: carriedForwardArrears,
-        };
-
-        auditLogService
-          .logLoanAction(
-            oldLoan._id,
-            userId,
-            "rollover_override",
-            { status: statusBeforeRollover, current_balance: balanceBeforeRollover },
-            { status: "rolled_over", current_balance: 0, rolled_over_to: newLoan.loan_no },
-            requestMeta.ip,
-            requestMeta.userAgent,
-            { ...auditMeta, loan_role: "closed_by_override_rollover" },
-          )
-          .catch((err) => console.error("Rollover override audit (old loan) failed:", err.message));
-
-        auditLogService
-          .logLoanAction(
-            newLoan._id,
-            userId,
-            "rollover_override",
-            null,
-            {
-              status: newLoan.status,
-              principal_amount: newLoan.principal_amount,
-              carried_forward_arrears: carriedForwardArrears,
-              due_date: newLoan.due_date,
-            },
-            requestMeta.ip,
-            requestMeta.userAgent,
-            { ...auditMeta, loan_role: "opened_by_override_rollover" },
-          )
-          .catch((err) => console.error("Rollover override audit (new loan) failed:", err.message));
-
-        NotificationService.createNotification(
-          {
-            title: `Override Rollover — Loan #${oldLoan.loan_no}`,
-            message:
-              `${rolloverOverrideSnapshot.by_name}${rolloverOverrideSnapshot.by_role ? ` (${rolloverOverrideSnapshot.by_role})` : ""} ` +
-              `rolled over loan #${oldLoan.loan_no} (${overrideCustomerName}) into #${newLoan.loan_no} with NO payment collected. ` +
-              `Reason: ${overrideInfo.reason_label}.` +
-              `${carriedForwardArrears > 0 ? ` $${carriedForwardArrears.toFixed(2)} carried forward as arrears.` : ""}` +
-              `${overrideInfo.notes ? ` Notes: ${overrideInfo.notes}` : ""}`,
-            type: "system_notice",
-            priority: "high",
-            audience: {
-              scope: "roles",
-              roles: ["super_admin_vendor", "admin_pawn_limited", "management"],
-            },
-            channels: ["in_app", "email"],
-            entity_type: "loan",
-            entity_id: newLoan._id,
-            action_url: `/loans/${newLoan._id}`,
-            action_text: "View Loan",
-          },
-          userId,
-        ).catch((err) => console.error("Rollover override notification failed:", err.message));
-      }
+      const populatedLoan = await Loan.findById(loan._id).populate([
+        { path: "customer_user", select: "first_name last_name email phone" },
+        { path: "asset", select: "asset_no title status asset_images" },
+      ]);
 
       return {
         success: true,
-        data: { old_loan: populatedOldLoan, new_loan: populatedNewLoan },
-        message: `Loan ${oldLoan.loan_no} rolled over into new loan ${newLoan.loan_no}${overrideInfo ? " (override — no payment collected)" : ""}`,
+        // old_loan/new_loan both point at the SAME loan now — kept for one release so a
+        // stale cached frontend build doesn't break. New code should read data.loan/data.cycle.
+        data: { loan: populatedLoan, cycle: cycleRecord, old_loan: populatedLoan, new_loan: populatedLoan },
+        message: `Loan ${loan.loan_no} rolled over (cycle ${cycleNo})${overrideInfo ? " — override, no payment collected" : ""}`,
       };
     } catch (error) {
       await session.abortTransaction();
@@ -2786,43 +2892,181 @@ class LoanService {
   }
 
   /**
-   * Get the full rollover chain for a loan (root loan through every renewal),
-   * ordered oldest to newest.
+   * Request admin approval for a loan's 4th+ rollover. No money changes hands here — the
+   * actual rollover (payment collection) only happens after an admin approves this.
    */
-  async getRolloverChain(loanId) {
+  async requestRolloverApproval(loanId, { reason, proposed_payment_amount, proposed_loan_period_type } = {}, requesterId) {
+    const loan = await Loan.findById(loanId);
+    if (!loan) throw { status: 404, message: `Loan with ID ${loanId} not found` };
+
+    if ((loan.rollover_count || 0) < ROLLOVER_FREE_LIMIT) {
+      throw { status: 400, message: `Loan ${loan.loan_no} hasn't reached the ${ROLLOVER_FREE_LIMIT}-rollover cap yet — no approval is needed.` };
+    }
+    if (loan.pending_rollover_approval && ["pending", "approved"].includes(loan.pending_rollover_approval.status)) {
+      throw { status: 400, message: "A rollover approval request is already open for this loan." };
+    }
+    if (!reason || !reason.trim()) {
+      throw { status: 400, message: "A reason is required to request rollover approval." };
+    }
+
+    const requester = requesterId ? await User.findById(requesterId).select("first_name last_name email") : null;
+    const requesterName = requester ? `${requester.first_name || ""} ${requester.last_name || ""}`.trim() || requester.email : "Unknown";
+    const approvers = await User.find({ roles: { $in: ROLLOVER_APPROVER_ROLES }, status: "active" }).select("_id email phone first_name last_name");
+
+    loan.pending_rollover_approval = {
+      request_id: new mongoose.Types.ObjectId(),
+      status: "pending",
+      requested_by: requesterId || null,
+      requested_by_name: requesterName,
+      requested_at: new Date(),
+      reason: reason.trim(),
+      proposed_payment_amount: proposed_payment_amount != null ? Number(proposed_payment_amount) : null,
+      proposed_loan_period_type: proposed_loan_period_type || null,
+      requested_admins: approvers.map((a) => a._id),
+    };
+    await loan.save({ validateModifiedOnly: true });
+
+    auditLogService
+      .logLoanAction(loan._id, requesterId, "rollover_approval_requested", null, { reason: reason.trim(), rollover_count: loan.rollover_count }, null, null, { loan_no: loan.loan_no })
+      .catch((err) => console.error("Rollover approval request audit failed:", err.message));
+
+    const frontendUrl = process.env.FRONTEND_URL || "https://www.rtcapital.co.zw/";
+    for (const a of approvers) {
+      if (a.email) {
+        await sendEmail({
+          to: a.email,
+          subject: `Rollover approval needed: ${loan.loan_no}`,
+          text: `${requesterName} is requesting approval to roll over loan ${loan.loan_no} again — it has already rolled over ${loan.rollover_count} times. Reason: ${reason.trim()}. Review: ${frontendUrl}/loans/${loan._id}`,
+        }).catch((err) => console.error(`Rollover approval email to ${a.email} failed:`, err.message));
+      }
+    }
+    NotificationService.createNotification(
+      {
+        title: `Rollover Approval Needed — Loan #${loan.loan_no}`,
+        message: `${requesterName} wants to roll loan #${loan.loan_no} over again (already rolled over ${loan.rollover_count} times). Reason: ${reason.trim()}`,
+        type: "system_notice",
+        priority: "high",
+        audience: { scope: "roles", roles: ROLLOVER_APPROVER_ROLES },
+        channels: ["in_app", "email"],
+        entity_type: "loan",
+        entity_id: loan._id,
+        action_url: `/loans/${loan._id}`,
+        action_text: "Review Request",
+      },
+      requesterId,
+    ).catch((err) => console.error("Rollover approval notification failed:", err.message));
+
+    return { success: true, message: "Rollover approval requested.", data: { request_id: loan.pending_rollover_approval.request_id } };
+  }
+
+  /**
+   * An admin approves or rejects a pending rollover approval request.
+   */
+  async decideRolloverApproval(loanId, requestId, decision, decisionNotes, deciderId) {
+    if (!["approve", "reject"].includes(decision)) {
+      throw { status: 400, message: 'decision must be "approve" or "reject".' };
+    }
+    const loan = await Loan.findById(loanId);
+    if (!loan) throw { status: 404, message: `Loan with ID ${loanId} not found` };
+
+    const pending = loan.pending_rollover_approval;
+    if (!pending || String(pending.request_id) !== String(requestId) || pending.status !== "pending") {
+      throw { status: 404, message: "No pending rollover approval request with that ID for this loan." };
+    }
+
+    const decider = deciderId ? await User.findById(deciderId).select("first_name last_name email roles") : null;
+    if (!decider || !ROLLOVER_APPROVER_ROLES.some((r) => (decider.roles || []).includes(r))) {
+      throw { status: 403, message: `Only ${ROLLOVER_APPROVER_ROLES.join(" or ")} can decide a rollover approval request.` };
+    }
+    const deciderName = `${decider.first_name || ""} ${decider.last_name || ""}`.trim() || decider.email;
+
+    pending.status = decision === "approve" ? "approved" : "rejected";
+    pending.decided_by = deciderId;
+    pending.decided_by_name = deciderName;
+    pending.decided_at = new Date();
+    pending.decision_notes = decisionNotes || null;
+    if (decision === "approve") {
+      pending.expires_at = new Date(Date.now() + ROLLOVER_APPROVAL_VALID_HOURS * 60 * 60 * 1000);
+    }
+    await loan.save({ validateModifiedOnly: true });
+
+    auditLogService
+      .logLoanAction(loan._id, deciderId, `rollover_approval_${decision === "approve" ? "approved" : "rejected"}`, { status: "pending" }, { status: pending.status, notes: decisionNotes || null }, null, null, { loan_no: loan.loan_no })
+      .catch((err) => console.error("Rollover approval decision audit failed:", err.message));
+
+    if (pending.requested_by) {
+      const requester = await User.findById(pending.requested_by).select("email");
+      if (requester?.email) {
+        await sendEmail({
+          to: requester.email,
+          subject: `Rollover request ${decision === "approve" ? "approved" : "rejected"}: ${loan.loan_no}`,
+          text:
+            decision === "approve"
+              ? `${deciderName} approved your rollover request for loan ${loan.loan_no}. You can now complete the rollover — the approval expires in ${ROLLOVER_APPROVAL_VALID_HOURS} hours.`
+              : `${deciderName} rejected your rollover request for loan ${loan.loan_no}.${decisionNotes ? ` Reason: ${decisionNotes}` : ""}`,
+        }).catch((err) => console.error("Rollover decision email failed:", err.message));
+      }
+    }
+
+    return { success: true, message: `Rollover request ${pending.status}.`, data: { status: pending.status, expires_at: pending.expires_at || null } };
+  }
+
+  /**
+   * The requester (or an approver) withdraws a still-pending rollover approval request.
+   */
+  async cancelRolloverApproval(loanId, requestId, userId) {
+    const loan = await Loan.findById(loanId);
+    if (!loan) throw { status: 404, message: `Loan with ID ${loanId} not found` };
+    const pending = loan.pending_rollover_approval;
+    if (!pending || String(pending.request_id) !== String(requestId) || pending.status !== "pending") {
+      throw { status: 404, message: "No pending rollover approval request with that ID for this loan." };
+    }
+    pending.status = "cancelled";
+    pending.decided_by = userId || null;
+    pending.decided_at = new Date();
+    await loan.save({ validateModifiedOnly: true });
+    return { success: true, message: "Rollover approval request cancelled." };
+  }
+
+  /**
+   * A loan's own rollover history — trivial now that a rollover no longer spans separate
+   * documents. Kept as its own endpoint (deprecated) for one release; new frontend code
+   * should just read loan.rollover_cycles off the normal loan-detail response instead.
+   * `role` redacts staff/override/approval detail for a customer or agent caller — same
+   * redaction getLoan() applies (see loan_controller.js).
+   */
+  async getRolloverChain(loanId, role) {
     try {
-      const loan = await Loan.findById(loanId).select("root_loan rollover_of");
+      const loan = await Loan.findById(loanId).select(
+        "loan_no rollover_count retired_loan_nos rollover_cycles merged_into_loan status",
+      );
       if (!loan) {
         throw { status: 404, message: `Loan with ID ${loanId} not found` };
       }
 
-      let rootId = loan.root_loan || loan._id;
-
-      // Fall back to walking rollover_of for loans that predate the root_loan field
-      if (!loan.root_loan && loan.rollover_of) {
-        let cursor = await Loan.findById(loan.rollover_of).select("root_loan rollover_of");
-        while (cursor) {
-          rootId = cursor._id;
-          if (!cursor.rollover_of) break;
-          cursor = await Loan.findById(cursor.rollover_of).select("root_loan rollover_of");
+      const restricted = role === "customer" || role === "agent";
+      const cycles = (loan.rollover_cycles || []).map((c) => {
+        const cycle = c.toObject ? c.toObject() : c;
+        if (!restricted) return cycle;
+        const { performed_by, performed_by_name, performed_by_role, override, approval, ...rest } = cycle;
+        if (rest.payment) {
+          const { received_by, notes, ...paymentRest } = rest.payment;
+          rest.payment = paymentRest;
         }
-      }
-
-      const chain = await Loan.find({
-        $or: [{ _id: rootId }, { root_loan: rootId }],
-      })
-        .sort({ rollover_generation: 1 })
-        .populate([
-          { path: "customer_user", select: "first_name last_name email" },
-          { path: "asset", select: "asset_no title status" },
-          { path: "processed_by", select: "first_name last_name email" },
-          { path: "created_by", select: "first_name last_name email" },
-        ]);
+        return rest;
+      });
 
       return {
         success: true,
-        data: chain,
-        message: "Rollover chain retrieved successfully",
+        data: {
+          loan_id: loan._id,
+          loan_no: loan.loan_no,
+          retired_loan_nos: loan.retired_loan_nos || [],
+          rollover_count: loan.rollover_count || 0,
+          merged_into_loan: loan.merged_into_loan || null,
+          cycles,
+        },
+        message: "Rollover history retrieved successfully",
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -2830,29 +3074,37 @@ class LoanService {
   }
 
   /**
-   * Per-loan-processor rollover performance stats.
+   * Per-loan-processor rollover performance stats — now aggregated across every loan's
+   * rollover_cycles[] entries rather than counting separate is_rollover:true documents.
    */
   async getRolloverPerformanceStats(filters = {}) {
     try {
-      const match = { is_rollover: true };
-      if (filters.created_from || filters.created_to) {
-        match.created_at = {};
-        if (filters.created_from) match.created_at.$gte = new Date(filters.created_from);
-        if (filters.created_to) match.created_at.$lte = new Date(filters.created_to);
-      }
+      const match = { "rollover_cycles.0": { $exists: true } };
+      const dateFilter = {};
+      if (filters.created_from) dateFilter.$gte = new Date(filters.created_from);
+      if (filters.created_to) dateFilter.$lte = new Date(filters.created_to);
 
-      const stats = await Loan.aggregate([
+      const pipeline = [
         { $match: match },
+        { $unwind: "$rollover_cycles" },
+      ];
+      if (dateFilter.$gte || dateFilter.$lte) {
+        pipeline.push({ $match: { "rollover_cycles.performed_at": dateFilter } });
+      }
+      pipeline.push(
         {
           $group: {
-            _id: "$created_by",
+            _id: "$rollover_cycles.performed_by",
             count: { $sum: 1 },
-            total_principal: { $sum: "$principal_amount" },
-            total_arrears: { $sum: "$carried_forward_arrears" },
+            total_principal: { $sum: "$rollover_cycles.new_principal" },
+            total_arrears: { $sum: "$rollover_cycles.arrears_carried_forward" },
+            total_collected: { $sum: { $ifNull: ["$rollover_cycles.payment.amount", 0] } },
           },
         },
         { $sort: { count: -1 } },
-      ]);
+      );
+
+      const stats = await Loan.aggregate(pipeline);
 
       const processorIds = stats.map((s) => s._id).filter(Boolean);
       const processors = await User.find({ _id: { $in: processorIds } })
@@ -2865,6 +3117,7 @@ class LoanService {
         rollover_count: s.count,
         total_principal_renewed: s.total_principal,
         total_arrears_carried: s.total_arrears,
+        total_collected: s.total_collected,
       }));
 
       return {
@@ -2895,7 +3148,9 @@ class LoanService {
       ],
       overdue: ["in_grace", "auction", "redeemed", "closed", "partially_paid"],
       in_grace: ["auction", "redeemed", "closed", "overdue"],
-      auction: ["sold", "closed", "rolled_over"],
+      // "rolled_over" removed 2026-09-30 — a rollover no longer changes the loan's own
+      // status (see rolloverLoan) and this map is never consulted for it anyway.
+      auction: ["sold", "closed"],
       sold: ["closed"],
       redeemed: ["closed"],
       partially_paid: ["active", "overdue", "redeemed", "closed"],

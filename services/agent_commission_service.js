@@ -135,6 +135,7 @@ class AgentCommissionService {
     const allocation = await InvestorLoanAllocation.findOne({
       loan_id: loan._id,
       is_co_investor: false,
+      merged_into_allocation_id: null,
     }).select("investor_share_pct");
     if (!allocation) {
       console.warn(
@@ -154,15 +155,27 @@ class AgentCommissionService {
    * never a front-loaded expected total, and automatically reflects top-ups because
    * loan.interest_amount/expected_total_repayable are already mutated in place by
    * LoanService.topUpLoan.
+   *
+   * A rollover payment doesn't follow that same whole-loan ratio (it's applied
+   * interest/storage/penalty first, then principal — see loan_service.rolloverLoan), so
+   * its caller passes the already-computed interestPortion directly here instead of
+   * letting it be re-derived, which would otherwise under- or over-count it.
    */
-  async accrueInterestCommission(loan, paymentAmount, paymentId) {
+  async accrueInterestCommission(loan, paymentAmount, paymentId, { interestPortion: explicitInterestPortion } = {}) {
     if (!loan.is_referral_loan || !loan.interest_commission_enabled || !loan.referral_agent_id) return null;
     if (!loan.interest_commission_pct || loan.interest_commission_pct <= 0) return null;
     if (!paymentAmount || paymentAmount <= 0) return null;
 
-    const total = loan.expected_total_repayable || loan.principal_amount || 1;
-    const interestRatio = (loan.interest_amount || 0) / total;
-    const interestPortion = round2(paymentAmount * interestRatio);
+    let interestPortion;
+    let sourceEvent = "payment";
+    if (explicitInterestPortion != null) {
+      interestPortion = round2(explicitInterestPortion);
+      sourceEvent = "rollover";
+    } else {
+      const total = loan.expected_total_repayable || loan.principal_amount || 1;
+      const interestRatio = (loan.interest_amount || 0) / total;
+      interestPortion = round2(paymentAmount * interestRatio);
+    }
     if (interestPortion <= 0) return null;
 
     const rtcSharePct = await this.getRtcInterestSharePct(loan);
@@ -180,7 +193,8 @@ class AgentCommissionService {
         loan_no: loan.loan_no,
         customer_user: loan.customer_user,
         commission_type: "interest",
-        source_event: "payment",
+        source_event: sourceEvent,
+        rollover_cycle_no: sourceEvent === "rollover" ? loan.rollover_count : null,
         payment_id: paymentId || null,
         basis_amount: rtcInterestRevenue,
         commission_pct: loan.interest_commission_pct,
