@@ -2626,6 +2626,14 @@ class LoanService {
         .assignLoan(newLoan._id)
         .catch((err) => console.error(`[InvestorAllocation] Rollover assign error for loan ${newLoan.loan_no}:`, err.message));
 
+      // Close out the OLD loan's allocation now that its capital has rolled into the new
+      // cycle's own allocation above — without this it stayed "active" forever and its
+      // principal was double-counted against the new allocation in every deployed-capital
+      // total (getDeployedCapitalMap, investor available-balance, etc.).
+      investorAllocationService
+        .syncAllocationStatus(oldLoan._id, "rolled_over")
+        .catch((err) => console.error(`[InvestorAllocation] Rollover old-allocation close error for loan ${oldLoan.loan_no}:`, err.message));
+
       const populatedOldLoan = await Loan.findById(oldLoan._id).populate([
         { path: "customer_user", select: "first_name last_name email phone" },
         { path: "asset", select: "asset_no title status asset_images" },

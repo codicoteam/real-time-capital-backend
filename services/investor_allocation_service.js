@@ -549,7 +549,12 @@ class InvestorAllocationService {
     const allocation = await InvestorLoanAllocation.findOne({ loan_id: loanId });
     if (!allocation || allocation.status !== "active") return null;
 
-    const terminalCompleted = ["redeemed", "partially_paid"];
+    // "rolled_over" closes out THIS allocation the same way a redemption does — the old
+    // loan cycle is done and its capital is no longer "active" here. The new cycle gets
+    // its own allocation via assignLoan() (called separately by rolloverLoan()); without
+    // this, the old allocation stayed "active" forever and double-counted its principal
+    // in getDeployedCapitalMap alongside the new cycle's allocation.
+    const terminalCompleted = ["redeemed", "partially_paid", "rolled_over"];
     const terminalDefaulted = ["defaulted", "written_off", "auction"];
     const terminalCancelled = ["cancelled"];
 
