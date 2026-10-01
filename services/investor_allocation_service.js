@@ -674,7 +674,9 @@ class InvestorAllocationService {
    * Get all allocations for a single investor, populated with full loan + borrower + asset data.
    */
   async getInvestorAllocations(investorId, { page = 1, limit = 50, status } = {}) {
-    const filter = { investor_id: investorId };
+    // Excludes "cancelled" by default — see getAllAllocations for why (a rollover-chain
+    // merge leaves the retired allocation cancelled, pointing at the surviving one).
+    const filter = { investor_id: investorId, status: { $ne: "cancelled" } };
     if (status) filter.status = status;
 
     const skip = (Number(page) - 1) * Number(limit);
@@ -937,7 +939,11 @@ class InvestorAllocationService {
    * full (matching filters), merged and sorted in JS, then sliced once for skip/limit.
    */
   async getAllAllocations({ page = 1, limit = 50, status, investorId } = {}) {
-    const filter = {};
+    // Excludes "cancelled" by default — a rollover-chain merge leaves the retired
+    // allocation(s) in that state, with merged_into_allocation_id pointing at the one
+    // surviving allocation that now carries the full rollover_cycles history. Without
+    // this, a merged loan shows up twice here (once live, once as a dead duplicate).
+    const filter = { status: { $ne: "cancelled" } };
     if (status) filter.status = status;
     if (investorId) filter.investor_id = investorId;
 

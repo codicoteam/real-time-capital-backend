@@ -489,8 +489,13 @@ class LoanService {
       if (filters.status) query.status = filters.status;
       if (filters.collateral_category)
         query.collateral_category = filters.collateral_category;
-      if (filters.loan_no)
-        query.loan_no = { $regex: filters.loan_no, $options: "i" };
+      // A loan number from BEFORE the rollover-chain migration now lives under
+      // retired_loan_nos on whichever loan absorbed it — search both so an old,
+      // bookmarked loan number still finds the surviving loan.
+      if (filters.loan_no) {
+        const loanNoRegex = { $regex: filters.loan_no, $options: "i" };
+        query.$or = [{ loan_no: loanNoRegex }, { retired_loan_nos: loanNoRegex }];
+      }
       if (filters.approval_status)
         query.approval_status = filters.approval_status;
       if (filters.requires_super_admin_approval !== undefined) {
@@ -923,8 +928,13 @@ class LoanService {
       if (filters.status) query.status = filters.status;
       if (filters.collateral_category)
         query.collateral_category = filters.collateral_category;
-      if (filters.loan_no)
-        query.loan_no = { $regex: filters.loan_no, $options: "i" };
+      // A loan number from BEFORE the rollover-chain migration now lives under
+      // retired_loan_nos on whichever loan absorbed it — search both so an old,
+      // bookmarked loan number still finds the surviving loan.
+      if (filters.loan_no) {
+        const loanNoRegex = { $regex: filters.loan_no, $options: "i" };
+        query.$or = [{ loan_no: loanNoRegex }, { retired_loan_nos: loanNoRegex }];
+      }
       if (filters.approval_status)
         query.approval_status = filters.approval_status;
 
