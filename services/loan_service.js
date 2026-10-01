@@ -486,7 +486,12 @@ class LoanService {
       const query = { customer_user: { $in: customerIds } };
 
       // Apply additional filters
+      // Excludes "merged" by default — a rollover-chain merge retires the old loan
+      // document once its history is folded into the surviving loan's rollover_cycles;
+      // without this a merged loan still lists as its own row, duplicating the loan it
+      // belongs to. An explicit status filter (e.g. an audit view) can still ask for it.
       if (filters.status) query.status = filters.status;
+      else query.status = { $ne: "merged" };
       if (filters.collateral_category)
         query.collateral_category = filters.collateral_category;
       // A loan number from BEFORE the rollover-chain migration now lives under
@@ -648,7 +653,9 @@ class LoanService {
       }
 
       const loanStats = await Loan.aggregate([
-        { $match: { customer_user: { $in: customerIds } } },
+        // Exclude "merged" — its principal/balance already live on the surviving loan
+        // of its rollover chain, so counting both would double the agent's totals.
+        { $match: { customer_user: { $in: customerIds }, status: { $ne: "merged" } } },
         {
           $group: {
             _id: null,
@@ -925,7 +932,12 @@ class LoanService {
       const query = {};
 
       if (filters.customer_user) query.customer_user = filters.customer_user;
+      // Excludes "merged" by default — a rollover-chain merge retires the old loan
+      // document once its history is folded into the surviving loan's rollover_cycles;
+      // without this a merged loan still lists as its own row, duplicating the loan it
+      // belongs to. An explicit status filter (e.g. an audit view) can still ask for it.
       if (filters.status) query.status = filters.status;
+      else query.status = { $ne: "merged" };
       if (filters.collateral_category)
         query.collateral_category = filters.collateral_category;
       // A loan number from BEFORE the rollover-chain migration now lives under
@@ -1022,7 +1034,9 @@ class LoanService {
       const query = {};
 
       if (filters.customer_user) query.customer_user = filters.customer_user;
+      // See getLoansPaginated — exclude retired/merged rollover-chain documents by default.
       if (filters.status) query.status = filters.status;
+      else query.status = { $ne: "merged" };
       if (filters.collateral_category)
         query.collateral_category = filters.collateral_category;
 
@@ -1729,18 +1743,23 @@ class LoanService {
    */
   async getLoanStats() {
     try {
-      const total = await Loan.countDocuments();
+      // "merged" documents are retired rollover-chain history — their principal/count
+      // already live on the surviving loan, so every stat below excludes them to avoid
+      // double-counting a loan that rolled over.
+      const total = await Loan.countDocuments({ status: { $ne: "merged" } });
 
       const byStatus = await Loan.aggregate([
+        { $match: { status: { $ne: "merged" } } },
         { $group: { _id: "$status", count: { $sum: 1 } } },
       ]);
 
       const byCategory = await Loan.aggregate([
+        { $match: { status: { $ne: "merged" } } },
         { $group: { _id: "$collateral_category", count: { $sum: 1 } } },
       ]);
 
       const totalPrincipal = await Loan.aggregate([
-        { $match: { principal_amount: { $gt: 0 } } },
+        { $match: { principal_amount: { $gt: 0 }, status: { $ne: "merged" } } },
         { $group: { _id: null, total: { $sum: "$principal_amount" } } },
       ]);
 
@@ -1760,6 +1779,7 @@ class LoanService {
       });
 
       const byApprovalStatus = await Loan.aggregate([
+        { $match: { status: { $ne: "merged" } } },
         { $group: { _id: "$approval_status", count: { $sum: 1 } } },
       ]);
 
