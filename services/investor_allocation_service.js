@@ -1506,9 +1506,12 @@ class InvestorAllocationService {
       // allocation itself — only manually-seeded CSV rows do. Without this populate, the
       // date fallbacks below silently land on allocated_at (when the SWRR assignment ran,
       // e.g. days after real disbursement) instead of the loan's actual start/due date.
-      InvestorLoanAllocation.find({ investor_id: investorId }).populate({
+      // Excludes "cancelled" — a rollover-chain merge leaves the retired allocation(s) in
+      // that state, pointing at the one surviving allocation; without this, a merged loan's
+      // original funding shows up twice (see getAllAllocations for the same fix).
+      InvestorLoanAllocation.find({ investor_id: investorId, status: { $ne: "cancelled" } }).populate({
         path: "loan_id",
-        select: "start_date due_date",
+        select: "start_date due_date original_principal_amount original_start_date rollover_cycles",
       }),
       InvestorMonthlyInterest.find({ investor_id: investorId }),
       // linked_allocation_id excludes visibility-only registry deeds (see getAllAllocations) —
@@ -1545,14 +1548,37 @@ class InvestorAllocationService {
       // back. Only the primary funder's row should show loan_funded/loan_repaid; the
       // co-investor only ever sees their profit share, never the principal.
       if (!a.is_co_investor && a.principal_amount > 0) {
+        // a.principal_amount is mutated on every rollover (set to that cycle's new,
+        // usually smaller, principal) — the one-time cash that actually went OUT the door
+        // is the loan's original_principal_amount. loan_repaid below intentionally keeps
+        // using the current principal_amount: whatever a rollover already paid down is
+        // booked separately as its own "principal returned" entry just below, so the two
+        // together net back to the original amount funded.
+        const fundedAmount = a.loan_id?.original_principal_amount ?? a.principal_amount;
         entries.push({
-          date: a.loan_date || realLoanStart || a.allocated_at,
+          date: a.loan_id?.original_start_date || a.loan_date || realLoanStart || a.allocated_at,
           type: "loan_funded",
           label: loanLabel,
-          amount: a.principal_amount,
+          amount: fundedAmount,
           direction: "out",
           loan_no: a.loan_no || null,
         });
+        // Principal a rollover payment paid down (the excess left over once that term's
+        // interest/storage was covered) — real capital coming back, distinct from the
+        // profit booked on the cycle's own interest/storage below.
+        for (const c of a.loan_id?.rollover_cycles || []) {
+          const reduction = c.payment_split?.principal_receivable || 0;
+          if (reduction > 0) {
+            entries.push({
+              date: c.performed_at || a.loan_id?.start_date,
+              type: "loan_principal_returned",
+              label: `${loanLabel} — rollover ${c.cycle_no}`,
+              amount: reduction,
+              direction: "in",
+              loan_no: a.loan_no || null,
+            });
+          }
+        }
         if (a.status === "completed") {
           entries.push({
             date: completionDate,
