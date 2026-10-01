@@ -824,7 +824,7 @@ class InvestorController {
           isCoInvestor: alloc.is_co_investor || false,
           repaymentSchedule: mapRepaymentSchedule(alloc),
           rolloverTrace: mapRolloverTrace(alloc),
-          rolloverCycles: mapRolloverCycles(alloc, isAdmin),
+          rolloverCycles: mapRolloverCycles(alloc, isAdmin, loan),
           restructuresAllocationId: alloc.restructures_allocation_id ? alloc.restructures_allocation_id.toString() : null,
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
@@ -1142,7 +1142,7 @@ class InvestorController {
           isCoInvestor: alloc.is_co_investor || false,
           repaymentSchedule: mapRepaymentSchedule(alloc),
           rolloverTrace: mapRolloverTrace(alloc),
-          rolloverCycles: mapRolloverCycles(alloc, true), // this whole endpoint is admin-only
+          rolloverCycles: mapRolloverCycles(alloc, true, loan), // this whole endpoint is admin-only
           restructuresAllocationId: alloc.restructures_allocation_id ? alloc.restructures_allocation_id.toString() : null,
           borrowerName: borrower
             ? `${borrower.first_name || ""} ${borrower.last_name || ""}`.trim()
@@ -1845,30 +1845,64 @@ function mapRolloverTrace(alloc) {
 // built by investor_allocation_service.recordRolloverCycle on every live rollover (and by
 // the rollover-chain migration for historical ones). `includeRtc` gates RTC's own share
 // and whether a cycle needed admin approval — never shown to a real investor's own view.
-function mapRolloverCycles(alloc, includeRtc) {
+// `loan` (alloc.loan_id, populated with its own rollover_cycles) supplies the owed/payment
+// breakdown for the term that just closed — the allocation's own cycle entry only keeps
+// the profit split and the new term's forward terms, not how the payment was actually
+// applied, so without this a viewer can't see why the payment and the profit differ.
+function mapRolloverCycles(alloc, includeRtc, loan) {
   const cycles = alloc.rollover_cycles;
   if (!Array.isArray(cycles) || cycles.length === 0) return [];
   const day = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
-  return cycles.map((c) => ({
-    cycleNo: c.cycle_no,
-    rolledOverAt: day(c.rolled_over_at),
-    from: day(c.from),
-    to: day(c.to),
-    prevPrincipal: c.prev_principal,
-    newPrincipal: c.new_principal,
-    interestRatePercent: c.interest_rate_percent ?? null,
-    storageChargePercent: c.storage_charge_percent ?? null,
-    periodKey: c.loan_period_key || null,
-    base: c.base,
-    charge: c.charge,
-    paymentCollected: c.payment_collected || 0,
-    arrearsCarriedForward: c.arrears_carried_forward || 0,
-    status: c.status,
-    paidOn: day(c.paid_on),
-    investorSharePct: c.investor_share_pct ?? null,
-    investorProfit: c.investor_profit ?? null,
-    ...(includeRtc ? { rtcRevenue: c.rtc_revenue ?? null } : {}),
-  }));
+  const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+  const loanCycles = Array.isArray(loan?.rollover_cycles) ? loan.rollover_cycles : [];
+  return cycles.map((c) => {
+    const loanCycle = loanCycles.find((lc) => lc.cycle_no === c.cycle_no);
+    const owed = loanCycle?.owed_breakdown || null;
+    const split = loanCycle?.payment_split || null;
+    const owedTotal = owed
+      ? r2(
+          (owed.interest || 0) + (owed.storage || 0) + (owed.penalty || 0) +
+            (owed.deferred_admin_fee || 0) + (owed.prior_arrears_interest || 0) + (owed.prior_arrears_storage || 0),
+        )
+      : null;
+    return {
+      cycleNo: c.cycle_no,
+      rolledOverAt: day(c.rolled_over_at),
+      from: day(c.from),
+      to: day(c.to),
+      prevPrincipal: c.prev_principal,
+      newPrincipal: c.new_principal,
+      interestRatePercent: c.interest_rate_percent ?? null,
+      storageChargePercent: c.storage_charge_percent ?? null,
+      periodKey: c.loan_period_key || null,
+      base: c.base,
+      charge: c.charge,
+      paymentCollected: c.payment_collected || 0,
+      arrearsCarriedForward: c.arrears_carried_forward || 0,
+      status: c.status,
+      paidOn: day(c.paid_on),
+      investorSharePct: c.investor_share_pct ?? null,
+      investorProfit: c.investor_profit ?? null,
+      ...(includeRtc ? { rtcRevenue: c.rtc_revenue ?? null } : {}),
+      // What was actually owed on the term that just closed, and how the payment covering
+      // it was applied — interest/storage realized as profit (split above), any excess
+      // applied straight to principal, is never shared.
+      owedOnClosingTerm: owedTotal,
+      owedBreakdown: owed
+        ? { interest: owed.interest || 0, storage: owed.storage || 0, penalty: owed.penalty || 0, deferredAdminFee: owed.deferred_admin_fee || 0 }
+        : null,
+      paymentSplit: split
+        ? {
+            interest: split.interest || 0,
+            storage: split.storage || 0,
+            penalty: split.penalty || 0,
+            arrearsInterest: split.arrears_interest || 0,
+            arrearsStorage: split.arrears_storage || 0,
+            principalReduction: split.principal_receivable || 0,
+          }
+        : null,
+    };
+  });
 }
 
 function mapRtcTransaction(tx) {

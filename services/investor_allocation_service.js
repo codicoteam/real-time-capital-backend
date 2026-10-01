@@ -598,7 +598,17 @@ class InvestorAllocationService {
     const termKey = mapPeriodToTermKey(cycle.loan_period_type);
     const profitConfig = await this.getProfitSplitConfig();
     const termConfig = profitConfig[termKey] || DEFAULT_PROFIT_SPLIT[termKey];
-    const cycleProfit = Math.max(0, round2((cycle.interest_amount || 0) + (cycle.storage_charge_amount || 0)));
+    // Cash-received-only (confirmed design): the profit this rollover event earns is the
+    // interest+storage actually COLLECTED in the rollover payment — what was owed on the
+    // term that just closed, plus any carried-forward arrears' interest/storage now paid
+    // off — never cycle.interest_amount/storage_charge_amount, which is the NEW term's
+    // forward charge and isn't realized until it's later collected itself. Principal,
+    // including any excess the payment left over, is pure capital and is never split.
+    const ps = cycle.payment_split || {};
+    const cycleProfit = Math.max(
+      0,
+      round2((ps.interest || 0) + (ps.storage || 0) + (ps.arrears_interest || 0) + (ps.arrears_storage || 0)),
+    );
 
     const primary = allocations.find((a) => !a.is_co_investor) || null;
     const coInvestors = allocations.filter((a) => a.is_co_investor);
@@ -641,6 +651,12 @@ class InvestorAllocationService {
         interest_rate_percent: cycle.interest_rate_percent,
         storage_charge_percent: cycle.storage_charge_percent,
         loan_period_key: termKey,
+        // "base"/"charge" describe the NEW term just opened (principal + arrears, and what
+        // it will cost once it's paid) — forward-looking, not yet realized. The profit
+        // actually split just above (cycleProfit → investor_profit/rtc_revenue) is instead
+        // what was realized THIS event: interest+storage owed on the term that just closed,
+        // paid for out of this rollover's payment. Full owed/payment breakdown for that is
+        // on the loan's own rollover_cycles entry (same cycle_no), not duplicated here.
         base: cycle.interest_base,
         charge: round2((cycle.interest_amount || 0) + (cycle.storage_charge_amount || 0)),
         payment_collected: cycle.payment?.amount || 0,
@@ -689,7 +705,7 @@ class InvestorAllocationService {
         .populate({
           path: "loan_id",
           select:
-            "loan_no principal_amount loan_period_type interest_amount storage_charge_amount expected_total_repayable start_date due_date status collateral_category",
+            "loan_no principal_amount loan_period_type interest_amount storage_charge_amount expected_total_repayable start_date due_date status collateral_category rollover_cycles",
           populate: [
             {
               path: "customer_user",
@@ -962,7 +978,7 @@ class InvestorAllocationService {
         .populate({
           path: "loan_id",
           select:
-            "loan_no principal_amount loan_period_type start_date due_date status collateral_category",
+            "loan_no principal_amount loan_period_type start_date due_date status collateral_category rollover_cycles",
           populate: [
             { path: "customer_user", select: "first_name last_name national_id_number phone" },
             { path: "asset", select: "title asset_images" },
