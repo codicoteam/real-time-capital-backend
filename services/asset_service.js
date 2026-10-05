@@ -70,7 +70,11 @@ class AssetService {
         },
         {
           path: "active_loan",
-          select: "loan_no principal_amount current_balance status due_date",
+          select: "loan_no principal_amount current_balance status start_date due_date customer_user",
+          populate: {
+            path: "customer_user",
+            select: "first_name last_name phone email",
+          },
         },
       ]);
 

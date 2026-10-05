@@ -86,8 +86,13 @@ const requireRoles = (...allowedRoles) => {
     }
 
     const userRoles = Array.isArray(req.user.roles) ? req.user.roles : [];
+    // Super admin is a superset of the other admin roles, so every admin-only route
+    // grants it access without listing it on each route.
+    const effectiveRoles = userRoles.includes("super_admin_vendor")
+      ? [...userRoles, "admin_pawn_limited", "management"]
+      : userRoles;
 
-    const hasRole = userRoles.some((role) =>
+    const hasRole = effectiveRoles.some((role) =>
       allowedRoles.includes(role)
     );
 
