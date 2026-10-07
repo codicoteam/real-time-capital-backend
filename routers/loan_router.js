@@ -901,11 +901,7 @@ router.post(
  */
 router.post(
   "/:id/waive-penalty",
-  requireRoles(
-    "loan_officer_processor",
-    "super_admin_vendor",
-    "admin_pawn_limited",
-  ),
+  requireRoles("super_admin_vendor", "admin_pawn_limited"),
   loanController.waivePenalty,
 );
 
@@ -945,6 +941,82 @@ router.post(
   "/:id/reverse-penalty-waiver",
   requireRoles("super_admin_vendor"),
   loanController.reversePenaltyWaiver,
+);
+
+/**
+ * @swagger
+ * /api/v1/loans/{id}/freeze-interest:
+ *   post:
+ *     summary: Freeze a loan's balance — stop the automatic grace-period penalty and block rollover. Admin only.
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Interest frozen successfully
+ *       400:
+ *         description: Already frozen, or no reason given
+ *       404:
+ *         description: Loan not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.post(
+  "/:id/freeze-interest",
+  requireRoles("super_admin_vendor", "admin_pawn_limited"),
+  loanController.freezeInterest,
+);
+
+/**
+ * @swagger
+ * /api/v1/loans/{id}/unfreeze-interest:
+ *   post:
+ *     summary: Undo freezeInterest. Admin only.
+ *     tags: [Loans]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Interest unfrozen successfully
+ *       400:
+ *         description: Not frozen
+ *       404:
+ *         description: Loan not found
+ *       401:
+ *         description: Unauthorized
+ */
+router.post(
+  "/:id/unfreeze-interest",
+  requireRoles("super_admin_vendor", "admin_pawn_limited"),
+  loanController.unfreezeInterest,
 );
 
 /**

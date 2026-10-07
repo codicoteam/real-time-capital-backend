@@ -82,6 +82,7 @@ const NotificationSchema = new Schema(
         "repayment_received",
         "loan_closed",
         "penalty_waived",
+        "interest_frozen",
         // Collateral lifecycle
         "collateral_received",
         "collateral_verified",

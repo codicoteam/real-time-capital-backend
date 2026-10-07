@@ -1277,7 +1277,7 @@ class LoanService {
       // When entering grace period: apply penalty the day AFTER the due date.
       // e.g. due July 15 → penalty applied July 16 onward.
       // Penalty is only applied once (guard against double-application).
-      if (status === "in_grace") {
+      if (status === "in_grace" && !loan.interest_frozen) {
         const existingBreakdown = loan.repayment_breakdown || {};
         if (!existingBreakdown.penalty_applied) {
           const dayAfterDue = new Date(loan.due_date);
@@ -2106,7 +2106,14 @@ class LoanService {
    * Nothing is posted to Xero for this — cash-basis: the waived amount is money that
    * was never going to be collected, so no ledger transaction exists to sync.
    */
-  async waivePenalty(loanId, { reason } = {}, userId, requestMeta = {}) {
+  /**
+   * Override the penalty on a loan — charge the customer a reduced amount instead of
+   * the full penalty (e.g. "good client, let them off easy"). `overrideAmount` omitted
+   * or 0 is a full waive (the original, all-or-nothing behavior); any value up to the
+   * original penalty charges that reduced amount instead. reversePenaltyWaiver() undoes
+   * either case the same way, since it just restores whatever was forgiven.
+   */
+  async waivePenalty(loanId, { reason, overrideAmount } = {}, userId, requestMeta = {}) {
     try {
       const loan = await Loan.findById(loanId);
       if (!loan) {
@@ -2116,7 +2123,7 @@ class LoanService {
       if (loan.penalty_waived) {
         throw {
           status: 400,
-          message: "Penalty has already been waived for this loan",
+          message: "An override has already been applied to this loan's penalty",
         };
       }
 
@@ -2140,13 +2147,30 @@ class LoanService {
       if (!penaltyAmount || penaltyAmount <= 0) {
         throw {
           status: 400,
-          message: "This loan has no applied penalty to waive",
+          message: "This loan has no applied penalty to override",
         };
       }
 
-      // Only the unpaid portion still sitting in current_balance can be waived —
+      let finalPenaltyAmount = 0;
+      if (overrideAmount !== undefined && overrideAmount !== null && overrideAmount !== "") {
+        finalPenaltyAmount = parseFloat(Number(overrideAmount).toFixed(2));
+        if (!Number.isFinite(finalPenaltyAmount) || finalPenaltyAmount < 0) {
+          throw { status: 400, message: "Override amount must be 0 or a positive number." };
+        }
+        if (finalPenaltyAmount > penaltyAmount) {
+          throw {
+            status: 400,
+            message: `Override amount cannot exceed the original penalty of $${penaltyAmount.toLocaleString()}.`,
+          };
+        }
+      }
+
+      // Only the unpaid portion still sitting in current_balance can be forgiven —
       // never waive more than the customer currently owes.
-      const waivedAmount = Math.min(penaltyAmount, loan.current_balance);
+      const waivedAmount = Math.min(
+        parseFloat((penaltyAmount - finalPenaltyAmount).toFixed(2)),
+        loan.current_balance
+      );
       const newBalance = parseFloat(
         Math.max(0, loan.current_balance - waivedAmount).toFixed(2)
       );
@@ -2213,11 +2237,15 @@ class LoanService {
         )
         .catch((err) => console.error("Penalty waiver audit log failed:", err.message));
 
+      const isFullWaive = finalPenaltyAmount <= 0;
+
       // In-app + email notification to admins/loan processors/management.
       NotificationService.createNotification(
         {
-          title: `Penalty Waived — Loan #${updatedLoan.loan_no}`,
-          message: `${actorName}${actorRole ? ` (${actorRole})` : ""} waived a $${waivedAmount.toLocaleString()} penalty for ${customerName} on loan #${updatedLoan.loan_no}.${reason ? ` Reason: ${reason}` : ""}`,
+          title: `Penalty ${isFullWaive ? "Waived" : "Overridden"} — Loan #${updatedLoan.loan_no}`,
+          message: isFullWaive
+            ? `${actorName}${actorRole ? ` (${actorRole})` : ""} waived a $${waivedAmount.toLocaleString()} penalty for ${customerName} on loan #${updatedLoan.loan_no}.${reason ? ` Reason: ${reason}` : ""}`
+            : `${actorName}${actorRole ? ` (${actorRole})` : ""} reduced the penalty for ${customerName} on loan #${updatedLoan.loan_no} from $${penaltyAmount.toLocaleString()} to $${finalPenaltyAmount.toLocaleString()} (forgave $${waivedAmount.toLocaleString()}).${reason ? ` Reason: ${reason}` : ""}`,
           type: "penalty_waived",
           priority: "high",
           audience: {
@@ -2252,7 +2280,9 @@ class LoanService {
       return {
         success: true,
         data: updatedLoan,
-        message: `Penalty of $${waivedAmount.toLocaleString()} waived successfully`,
+        message: isFullWaive
+          ? `Penalty of $${waivedAmount.toLocaleString()} waived successfully`
+          : `Penalty overridden to $${finalPenaltyAmount.toLocaleString()} (reduced from $${penaltyAmount.toLocaleString()})`,
       };
     } catch (error) {
       throw this.handleMongoError(error);
@@ -2393,6 +2423,164 @@ class LoanService {
   }
 
   /**
+   * Freeze a loan's interest — stops the automatic penalty-on-grace-period charge from
+   * being applied and blocks rollover, so current_balance stays exactly where it is until
+   * someone unfreezes it. Storage/interest are already fixed at origination for every
+   * loan (they never accrue daily), so the one-time grace-period penalty is the only
+   * automatic growth there is to stop. Does not touch loan.status — staff change that
+   * separately if they want to (e.g. to defaulted).
+   */
+  async freezeInterest(loanId, { reason } = {}, userId, requestMeta = {}) {
+    try {
+      const loan = await Loan.findById(loanId);
+      if (!loan) {
+        throw { status: 404, message: `Loan with ID ${loanId} not found` };
+      }
+      if (loan.interest_frozen) {
+        throw { status: 400, message: "This loan's interest is already frozen." };
+      }
+      if (!reason || !reason.trim()) {
+        throw { status: 400, message: "A reason is required to freeze interest." };
+      }
+
+      const actor = await User.findById(userId).select("first_name last_name email roles");
+      const actorName = actor
+        ? `${actor.first_name || ""} ${actor.last_name || ""}`.trim() || actor.email
+        : "Unknown";
+      const actorRole = actor?.roles?.[0] || null;
+
+      const before = { interest_frozen: loan.interest_frozen, current_balance: loan.current_balance };
+
+      loan.interest_frozen = true;
+      loan.interest_frozen_by = userId || null;
+      loan.interest_frozen_by_role = actorRole;
+      loan.interest_frozen_at = new Date();
+      loan.interest_frozen_reason = reason.trim();
+      loan.interest_freeze_history.push({
+        action: "frozen",
+        by: userId || null,
+        by_name: actorName,
+        by_role: actorRole,
+        at: new Date(),
+        reason: reason.trim(),
+        balance_at_action: loan.current_balance,
+      });
+
+      await loan.save();
+
+      auditLogService
+        .logLoanAction(
+          loanId,
+          userId,
+          "interest_frozen",
+          before,
+          { interest_frozen: true, current_balance: loan.current_balance },
+          requestMeta.ip,
+          requestMeta.userAgent,
+          { loan_no: loan.loan_no, frozen_by: actorName, frozen_by_role: actorRole, reason: reason.trim() },
+        )
+        .catch((err) => console.error("Interest freeze audit log failed:", err.message));
+
+      NotificationService.createNotification(
+        {
+          title: `Interest Frozen — Loan #${loan.loan_no}`,
+          message: `${actorName}${actorRole ? ` (${actorRole})` : ""} froze loan #${loan.loan_no}'s balance at $${loan.current_balance.toLocaleString()}. Reason: ${reason.trim()}`,
+          type: "interest_frozen",
+          priority: "high",
+          audience: {
+            scope: "roles",
+            roles: ["super_admin_vendor", "admin_pawn_limited", "loan_officer_processor", "loan_officer_approval", "management"],
+          },
+          channels: ["in_app", "email"],
+          entity_type: "loan",
+          entity_id: loanId,
+          action_url: `/loans/${loanId}`,
+          action_text: "View Loan",
+        },
+        userId,
+      ).catch((err) => console.error("Interest freeze notification failed:", err.message));
+
+      return { success: true, data: loan, message: `Interest frozen — balance locked at $${loan.current_balance.toLocaleString()}` };
+    } catch (error) {
+      throw this.handleMongoError(error);
+    }
+  }
+
+  /** Undo freezeInterest — the loan resumes normal automatic penalty application and can roll over again. */
+  async unfreezeInterest(loanId, { reason } = {}, userId, requestMeta = {}) {
+    try {
+      const loan = await Loan.findById(loanId);
+      if (!loan) {
+        throw { status: 404, message: `Loan with ID ${loanId} not found` };
+      }
+      if (!loan.interest_frozen) {
+        throw { status: 400, message: "This loan's interest is not frozen." };
+      }
+
+      const actor = await User.findById(userId).select("first_name last_name email roles");
+      const actorName = actor
+        ? `${actor.first_name || ""} ${actor.last_name || ""}`.trim() || actor.email
+        : "Unknown";
+      const actorRole = actor?.roles?.[0] || null;
+
+      const before = { interest_frozen: loan.interest_frozen };
+
+      loan.interest_frozen = false;
+      loan.interest_frozen_by = null;
+      loan.interest_frozen_by_role = null;
+      loan.interest_frozen_at = null;
+      loan.interest_frozen_reason = null;
+      loan.interest_freeze_history.push({
+        action: "unfrozen",
+        by: userId || null,
+        by_name: actorName,
+        by_role: actorRole,
+        at: new Date(),
+        reason: reason?.trim() || null,
+        balance_at_action: loan.current_balance,
+      });
+
+      await loan.save();
+
+      auditLogService
+        .logLoanAction(
+          loanId,
+          userId,
+          "interest_unfrozen",
+          before,
+          { interest_frozen: false },
+          requestMeta.ip,
+          requestMeta.userAgent,
+          { loan_no: loan.loan_no, unfrozen_by: actorName, unfrozen_by_role: actorRole, reason: reason?.trim() || null },
+        )
+        .catch((err) => console.error("Interest unfreeze audit log failed:", err.message));
+
+      NotificationService.createNotification(
+        {
+          title: `Interest Unfrozen — Loan #${loan.loan_no}`,
+          message: `${actorName}${actorRole ? ` (${actorRole})` : ""} unfroze loan #${loan.loan_no}.${reason ? ` Reason: ${reason.trim()}` : ""}`,
+          type: "interest_frozen",
+          priority: "normal",
+          audience: {
+            scope: "roles",
+            roles: ["super_admin_vendor", "admin_pawn_limited", "loan_officer_processor", "loan_officer_approval", "management"],
+          },
+          channels: ["in_app"],
+          entity_type: "loan",
+          entity_id: loanId,
+          action_url: `/loans/${loanId}`,
+          action_text: "View Loan",
+        },
+        userId,
+      ).catch((err) => console.error("Interest unfreeze notification failed:", err.message));
+
+      return { success: true, data: loan, message: "Interest unfrozen — this loan can accrue penalties and roll over again." };
+    } catch (error) {
+      throw this.handleMongoError(error);
+    }
+  }
+
+  /**
    * Generate a loan number in the LON{yy}{mm}{random} format
    */
   generateLoanNo() {
@@ -2476,6 +2664,13 @@ class LoanService {
         throw {
           status: 400,
           message: `Cannot roll over a loan with status: ${loan.status}. Loan must be active, overdue, in_grace, partially_paid, or auction.`,
+        };
+      }
+
+      if (loan.interest_frozen) {
+        throw {
+          status: 400,
+          message: `Loan ${loan.loan_no}'s interest is frozen — unfreeze it before rolling over, or the freeze has no effect.`,
         };
       }
 

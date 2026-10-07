@@ -744,12 +744,12 @@ class LoanController {
   async waivePenalty(req, res) {
     try {
       const { id } = req.params;
-      const { reason } = req.body;
+      const { reason, overrideAmount } = req.body;
       const userId = req.user?.id;
 
       const result = await loanService.waivePenalty(
         id,
-        { reason },
+        { reason, overrideAmount },
         userId,
         { ip: req.ip, userAgent: req.headers["user-agent"] }
       );
@@ -796,6 +796,67 @@ class LoanController {
       res.status(status).json({
         success: false,
         message: error.message || "Failed to reverse penalty waiver",
+        detail: error.detail,
+      });
+    }
+  }
+
+  /**
+   * Freeze a loan's interest — stops the automatic penalty-on-grace charge and blocks
+   * rollover, so the balance owed stays put. Admin only (enforced at the route layer).
+   */
+  async freezeInterest(req, res) {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
+      const userId = req.user?.id;
+
+      const result = await loanService.freezeInterest(
+        id,
+        { reason },
+        userId,
+        { ip: req.ip, userAgent: req.headers["user-agent"] }
+      );
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to freeze interest",
+        detail: error.detail,
+      });
+    }
+  }
+
+  /** Undo freezeInterest. Admin only (enforced at the route layer). */
+  async unfreezeInterest(req, res) {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
+      const userId = req.user?.id;
+
+      const result = await loanService.unfreezeInterest(
+        id,
+        { reason },
+        userId,
+        { ip: req.ip, userAgent: req.headers["user-agent"] }
+      );
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to unfreeze interest",
         detail: error.detail,
       });
     }

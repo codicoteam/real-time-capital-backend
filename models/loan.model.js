@@ -127,16 +127,46 @@ const LoanSchema = new mongoose.Schema(
     expected_total_repayable: { type: Number, min: 0 },           // principal + interest + storage (+ admin fee if deferred)
     repayment_breakdown: { type: mongoose.Schema.Types.Mixed, default: null }, // full calculation detail
 
-    // Penalty waiver — Loan Processor/Admin can forgive the late-payment penalty for a
-    // customer (goodwill, dispute, hardship, etc). The waiver reduces current_balance by
-    // the unpaid penalty amount so the customer no longer owes it, but the foregone
-    // revenue is always tracked here so management can see the real impact.
+    // Penalty override — Admin can reduce (or fully forgive) the late-payment penalty for
+    // a customer (goodwill, dispute, hardship, etc). Reduces current_balance by whatever
+    // portion of the penalty is forgiven, so the customer no longer owes that part, but
+    // the foregone revenue is always tracked here so management can see the real impact.
+    // A full waive is just the amount-forgiven equalling the whole original penalty.
     penalty_waived: { type: Boolean, default: false },
     penalty_waived_amount: { type: Number, min: 0, default: 0 }, // $ value forgone
     penalty_waived_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     penalty_waived_by_role: { type: String, default: null },
     penalty_waived_at: { type: Date, default: null },
     penalty_waived_reason: { type: String, trim: true, default: null },
+
+    // Interest freeze — Admin can stop a loan's owed amount from growing any further
+    // (e.g. the customer has signaled they can't pay and the business is deciding what to
+    // do next). While frozen, the automatic penalty-on-grace-period charge is skipped and
+    // rollover is blocked, so current_balance stays exactly where it was when frozen.
+    // Storage/interest are already fixed at origination for every loan (never accrue
+    // daily), so the one-time grace-period penalty is the only automatic growth to stop.
+    interest_frozen: { type: Boolean, default: false },
+    interest_frozen_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    interest_frozen_by_role: { type: String, default: null },
+    interest_frozen_at: { type: Date, default: null },
+    interest_frozen_reason: { type: String, trim: true, default: null },
+    // Full history (freeze + unfreeze events), newest last — the top-level fields above
+    // only ever reflect the most recent freeze.
+    interest_freeze_history: {
+      type: [
+        {
+          _id: false,
+          action: { type: String, enum: ["frozen", "unfrozen"], required: true },
+          by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          by_name: { type: String, trim: true },
+          by_role: { type: String, trim: true },
+          at: { type: Date, default: Date.now },
+          reason: { type: String, trim: true },
+          balance_at_action: { type: Number, min: 0 },
+        },
+      ],
+      default: [],
+    },
 
     // Admin fee (0-10% of principal_amount) — negotiated by the Loan Processor/Super Admin
     // at loan CREATION time, not at application. This is pure RTC revenue: it never touches
