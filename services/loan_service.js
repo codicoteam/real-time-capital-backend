@@ -2120,6 +2120,18 @@ class LoanService {
         throw { status: 404, message: `Loan with ID ${loanId} not found` };
       }
 
+      // Loan processors can waive penalties on small loans (always RTC-funded, lower
+      // stakes) without admin sign-off; motor_vehicle/jewellery loans — which can carry
+      // external investor capital — still need an admin to do this.
+      const actorRoles = Array.isArray(requestMeta.actorRoles) ? requestMeta.actorRoles : [];
+      const isAdmin = actorRoles.includes("super_admin_vendor") || actorRoles.includes("admin_pawn_limited");
+      if (!isAdmin && actorRoles.includes("loan_officer_processor") && loan.collateral_category !== "small_loans") {
+        throw {
+          status: 403,
+          message: "Loan processors can only waive penalties on small loans. Ask an admin to override this one.",
+        };
+      }
+
       if (loan.penalty_waived) {
         throw {
           status: 400,

@@ -901,7 +901,7 @@ router.post(
  */
 router.post(
   "/:id/waive-penalty",
-  requireRoles("super_admin_vendor", "admin_pawn_limited"),
+  requireRoles("super_admin_vendor", "admin_pawn_limited", "loan_officer_processor"),
   loanController.waivePenalty,
 );
 

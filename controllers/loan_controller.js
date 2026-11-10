@@ -746,12 +746,13 @@ class LoanController {
       const { id } = req.params;
       const { reason, overrideAmount } = req.body;
       const userId = req.user?.id;
+      const actorRoles = Array.isArray(req.user?.roles) ? req.user.roles : [];
 
       const result = await loanService.waivePenalty(
         id,
         { reason, overrideAmount },
         userId,
-        { ip: req.ip, userAgent: req.headers["user-agent"] }
+        { ip: req.ip, userAgent: req.headers["user-agent"], actorRoles }
       );
 
       res.status(200).json({
